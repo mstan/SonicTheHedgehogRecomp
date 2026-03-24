@@ -1,0 +1,488 @@
+/*
+ * main.c — SDL2 frontend for Sonic the Hedgehog recompiled runner.
+ *
+ * Fully native Step 2 execution: recompiled 68K code runs on a game fiber,
+ * clownmdemu renders VDP scanlines and generates audio. DoCycles interleaves
+ * game code with VDP rendering inside ClownMDEmu_Iterate().
+ *
+ * Usage: SonicTheHedgehogRecomp <sonic.bin> [--framelog path]
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <SDL2/SDL.h>
+
+#include "clownmdemu.h"
+#include "audio.h"
+#include "glue.h"
+#include "png_write.h"
+
+/* =========================================================================
+ * Framebuffer and palette
+ * ========================================================================= */
+
+/* Maximum output dimensions we support. Sonic 1 uses 320x224 (H40, V28). */
+#define MAX_SCREEN_WIDTH  320
+#define MAX_SCREEN_HEIGHT 240
+
+static uint32_t s_framebuf[MAX_SCREEN_WIDTH * MAX_SCREEN_HEIGHT]; /* ARGB8888 */
+
+/* Expanded palette: 192 entries (64 CRAM x 3 brightness levels).
+ * colour_updated_cb converts each entry from Genesis format to ARGB8888. */
+static uint32_t s_cram[192];
+
+static int s_screen_width  = 320;
+static int s_screen_height = 224;
+
+/* Convert a Genesis CRAM value to ARGB8888.
+ *
+ * Genesis CRAM format (9 significant bits):
+ *   bits  3:1  = Red   (0-7)
+ *   bits  7:5  = Green (0-7)
+ *   bits 11:9  = Blue  (0-7)
+ * Expand 3-bit components to 8-bit using x 36 (7x36 = 252 ~ 255). */
+static uint32_t md_colour_to_argb(cc_u16f colour)
+{
+    /* Genesis CRAM: ----BBB-GGG-RRR- (bits 1-3=R, 5-7=G, 9-11=B) */
+    uint8_t r = (uint8_t)(((colour >>  1) & 7u) * 36u);
+    uint8_t g = (uint8_t)(((colour >>  5) & 7u) * 36u);
+    uint8_t b = (uint8_t)(((colour >>  9) & 7u) * 36u);
+    return 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+}
+
+/* =========================================================================
+ * clownmdemu callbacks
+ * ========================================================================= */
+
+static void colour_updated_cb(void *user_data,
+                               cc_u16f index, cc_u16f colour)
+{
+    (void)user_data;
+    if (index < 192)
+        s_cram[index] = md_colour_to_argb(colour);
+}
+
+static void scanline_rendered_cb(void *user_data,
+                                  cc_u16f scanline,
+                                  const cc_u8l *pixels,
+                                  cc_u16f left_boundary,
+                                  cc_u16f right_boundary,
+                                  cc_u16f screen_width,
+                                  cc_u16f screen_height)
+{
+    (void)user_data;
+
+    /* Track actual screen dimensions reported by VDP */
+    s_screen_width  = (int)screen_width;
+    s_screen_height = (int)screen_height;
+
+    if ((int)scanline >= MAX_SCREEN_HEIGHT)
+        return;
+
+    uint32_t *row = s_framebuf + (int)scanline * MAX_SCREEN_WIDTH;
+
+    /* pixels[0..count-1] are palette indices for columns
+     * [left_boundary, right_boundary). */
+    cc_u16f count = right_boundary - left_boundary;
+    for (cc_u16f i = 0; i < count; i++) {
+        int col = (int)left_boundary + (int)i;
+        if (col >= MAX_SCREEN_WIDTH)
+            break;
+        row[col] = s_cram[pixels[i]];
+    }
+}
+
+static cc_bool input_requested_cb(void *user_data,
+                                   cc_u8f player_id,
+                                   ClownMDEmu_Button button_id)
+{
+    (void)user_data;
+    if (player_id != 0)
+        return cc_false;    /* only P1 */
+
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+    switch (button_id) {
+        case CLOWNMDEMU_BUTTON_UP:    return keys[SDL_SCANCODE_UP]     ? cc_true : cc_false;
+        case CLOWNMDEMU_BUTTON_DOWN:  return keys[SDL_SCANCODE_DOWN]   ? cc_true : cc_false;
+        case CLOWNMDEMU_BUTTON_LEFT:  return keys[SDL_SCANCODE_LEFT]   ? cc_true : cc_false;
+        case CLOWNMDEMU_BUTTON_RIGHT: return keys[SDL_SCANCODE_RIGHT]  ? cc_true : cc_false;
+        case CLOWNMDEMU_BUTTON_A:     return keys[SDL_SCANCODE_Z]      ? cc_true : cc_false;
+        case CLOWNMDEMU_BUTTON_B:     return keys[SDL_SCANCODE_X]      ? cc_true : cc_false;
+        case CLOWNMDEMU_BUTTON_C:     return keys[SDL_SCANCODE_C]      ? cc_true : cc_false;
+        case CLOWNMDEMU_BUTTON_START: return keys[SDL_SCANCODE_RETURN] ? cc_true : cc_false;
+        default:                      return cc_false;
+    }
+}
+
+/*
+ * Audio accumulation buffers.
+ *
+ * ClownMDEmu_Iterate() calls fm_audio_cb and psg_audio_cb multiple times
+ * per video frame (once per sync point).  We accumulate all callbacks into
+ * these buffers and flush once per frame so we can mix FM + PSG together.
+ *
+ * Sizes: ~887 FM stereo frames / video-frame and ~3729 PSG mono frames /
+ * video-frame at 60 Hz NTSC.  4x headroom handles timing jitter.
+ */
+#define FM_ACCUM_FRAMES  4096
+#define PSG_ACCUM_FRAMES 16384
+
+static cc_s16l s_fm_accum [FM_ACCUM_FRAMES  * 2];  /* stereo */
+static cc_s16l s_psg_accum[PSG_ACCUM_FRAMES];       /* mono   */
+static size_t  s_fm_count  = 0;
+static size_t  s_psg_count = 0;
+
+static void fm_audio_cb(void *user_data,
+                         ClownMDEmu *clownmdemu,
+                         size_t total_frames,
+                         void (*generate)(ClownMDEmu*, cc_s16l*, size_t))
+{
+    (void)user_data;
+    size_t avail = FM_ACCUM_FRAMES - s_fm_count;
+    if (total_frames > avail) total_frames = avail;
+    if (total_frames > 0) {
+        generate(clownmdemu, s_fm_accum + s_fm_count * 2, total_frames);
+        s_fm_count += total_frames;
+    }
+}
+
+static void psg_audio_cb(void *user_data,
+                          ClownMDEmu *clownmdemu,
+                          size_t total_frames,
+                          void (*generate)(ClownMDEmu*, cc_s16l*, size_t))
+{
+    (void)user_data;
+    size_t avail = PSG_ACCUM_FRAMES - s_psg_count;
+    if (total_frames > avail) total_frames = avail;
+    if (total_frames > 0) {
+        generate(clownmdemu, s_psg_accum + s_psg_count, total_frames);
+        s_psg_count += total_frames;
+    }
+}
+
+static void pcm_audio_cb(void *user_data, ClownMDEmu *c, size_t f,
+                          void (*g)(ClownMDEmu*, cc_s16l*, size_t))
+{ (void)user_data; (void)c; (void)f; (void)g; }
+
+static void cdda_audio_cb(void *user_data, ClownMDEmu *c, size_t f,
+                           void (*g)(ClownMDEmu*, cc_s16l*, size_t))
+{ (void)user_data; (void)c; (void)f; (void)g; }
+
+/* CD and save-file stubs (cartridge-only game) */
+static void    cd_seeked_cb(void *u, cc_u32f s)
+               { (void)u; (void)s; }
+static void    cd_sector_read_cb(void *u, cc_u16l *b)
+               { (void)u; (void)b; }
+static cc_bool cd_track_seeked_cb(void *u, cc_u16f t, ClownMDEmu_CDDAMode m)
+               { (void)u; (void)t; (void)m; return cc_false; }
+static size_t  cd_audio_read_cb(void *u, cc_s16l *b, size_t f)
+               { (void)u; (void)b; return (size_t)0; (void)f; }
+static cc_bool save_opened_read_cb(void *u, const char *n)
+               { (void)u; (void)n; return cc_false; }
+static cc_s16f save_read_cb(void *u)
+               { (void)u; return -1; }
+static cc_bool save_opened_write_cb(void *u, const char *n)
+               { (void)u; (void)n; return cc_false; }
+static void    save_written_cb(void *u, cc_u8f b)
+               { (void)u; (void)b; }
+static void    save_closed_cb(void *u)
+               { (void)u; }
+static cc_bool save_removed_cb(void *u, const char *n)
+               { (void)u; (void)n; return cc_false; }
+static cc_bool save_size_cb(void *u, const char *n, size_t *sz)
+               { (void)u; (void)n; (void)sz; return cc_false; }
+
+/* =========================================================================
+ * ROM loading
+ * ========================================================================= */
+
+/* Reads the ROM file at path.  Allocates and returns a cc_u16l[] buffer
+ * (host-native 16-bit, values byte-swapped from the big-endian ROM file).
+ * *out_words receives the number of 16-bit words; *raw_bytes receives the
+ * raw byte buffer (for glue_init's g_rom copy); *raw_len receives byte count.
+ * Caller must free() both returned pointers. */
+static cc_u16l *load_rom(const char *path,
+                          cc_u32l *out_words,
+                          uint8_t **raw_bytes,
+                          cc_u32l *raw_len)
+{
+    FILE *fp = fopen(path, "rb");
+    if (!fp) { perror("fopen"); return NULL; }
+
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    if (sz <= 0 || sz > 0x800000L) {
+        fprintf(stderr, "ROM size out of range: %ld bytes\n", sz);
+        fclose(fp);
+        return NULL;
+    }
+
+    uint8_t *raw = (uint8_t *)malloc((size_t)sz);
+    if (!raw) { fclose(fp); return NULL; }
+    if (fread(raw, 1, (size_t)sz, fp) != (size_t)sz) {
+        fprintf(stderr, "ROM read error\n");
+        free(raw);
+        fclose(fp);
+        return NULL;
+    }
+    fclose(fp);
+
+    cc_u32l words = (cc_u32l)(sz / 2);
+    cc_u16l *buf  = (cc_u16l *)malloc(words * sizeof(cc_u16l));
+    if (!buf) { free(raw); return NULL; }
+
+    /* Genesis ROMs are big-endian.  Convert each 16-bit word to host order. */
+    for (cc_u32l i = 0; i < words; i++)
+        buf[i] = (cc_u16l)(((cc_u16l)raw[i * 2] << 8) | raw[i * 2 + 1]);
+
+    *out_words  = words;
+    *raw_bytes  = raw;
+    *raw_len    = (cc_u32l)sz;
+    return buf;
+}
+
+/* =========================================================================
+ * ClownMDEmu instance (static storage)
+ * ========================================================================= */
+
+static ClownMDEmu g_clownmdemu;
+
+/* =========================================================================
+ * Frame logging
+ * ========================================================================= */
+
+static FILE *s_framelog_file = NULL;
+
+static void write_framelog(uint32_t frame)
+{
+    if (!s_framelog_file) return;
+    if (frame > 9999) return;
+
+    /* Read from clownmdemu RAM (word-addressed, big-endian) */
+    #define EMU_BYTE(addr) \
+        ((uint8_t)(g_clownmdemu.state.m68k.ram[((addr) & 0xFFFF) / 2] >> \
+                   (((addr) & 1) ? 0 : 8)))
+    #define EMU_WORD(addr) \
+        ((uint16_t)(g_clownmdemu.state.m68k.ram[((addr) & 0xFFFF) / 2]))
+    #define EMU_LONG(addr) \
+        (((uint32_t)EMU_WORD(addr) << 16) | EMU_WORD((addr)+2))
+
+    fprintf(s_framelog_file,
+            "F%03u mode=%02X vbl=%02X cnt=%04X scrl=%04X plc=%04X "
+            "fcnt=%08X obj0=%02X/%02X ypos=%04X yvel=%04X rtn=%02X log=%02X/%02X phys=%02X/%02X st=%02X lk=%02X\n",
+            frame,
+            EMU_BYTE(0xF600), EMU_BYTE(0xF62A), EMU_WORD(0xF628),
+            EMU_WORD(0xF700), EMU_WORD(0xF680), EMU_LONG(0xFE0C),
+            EMU_BYTE(0xD000), EMU_BYTE(0xD001),
+            EMU_WORD(0xD00C),  /* Sonic Y position */
+            EMU_WORD(0xD012),  /* Sonic Y velocity */
+            EMU_BYTE(0xD024),  /* Sonic routine */
+            EMU_BYTE(0xF602),  /* P1 held (logical) */
+            EMU_BYTE(0xF603),  /* P1 pressed (logical) */
+            EMU_BYTE(0xF604),  /* P1 held (physical) */
+            EMU_BYTE(0xF605),  /* P1 pressed (physical) */
+            EMU_BYTE(0xD022),  /* Sonic status */
+            EMU_BYTE(0xF62A)); /* VBlank flag */
+    fflush(s_framelog_file);
+
+    #undef EMU_BYTE
+    #undef EMU_WORD
+    #undef EMU_LONG
+}
+
+/* =========================================================================
+ * main
+ * ========================================================================= */
+
+int main(int argc, char *argv[])
+{
+    /* --- Parse arguments --- */
+    const char *rom_path = NULL;
+    const char *framelog_path = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--framelog") == 0 && i + 1 < argc) {
+            framelog_path = argv[++i];
+        } else if (argv[i][0] != '-') {
+            rom_path = argv[i];
+        }
+    }
+    if (!rom_path) {
+        fprintf(stderr, "Usage: %s <sonic.bin> [--framelog path]\n", argv[0]);
+        return 1;
+    }
+
+    /* --- Load ROM --- */
+    cc_u32l rom_words = 0;
+    uint8_t *rom_raw  = NULL;
+    cc_u32l rom_raw_len = 0;
+    cc_u16l *rom_buf  = load_rom(rom_path, &rom_words, &rom_raw, &rom_raw_len);
+    if (!rom_buf) return 1;
+
+    /* --- SDL init --- */
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS) != 0) {
+        fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    SDL_Window *window = SDL_CreateWindow(
+        "Sonic the Hedgehog",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        640, 448,   /* 2x scale: 320x224 -> 640x448 */
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+    if (!window) {
+        fprintf(stderr, "SDL_CreateWindow: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    SDL_Renderer *renderer = SDL_CreateRenderer(
+        window, -1,
+        SDL_RENDERER_ACCELERATED);
+    if (!renderer) {
+        fprintf(stderr, "SDL_CreateRenderer: %s\n", SDL_GetError());
+        return 1;
+    }
+    SDL_RenderSetLogicalSize(renderer, MAX_SCREEN_WIDTH, MAX_SCREEN_HEIGHT);
+
+    SDL_Texture *texture = SDL_CreateTexture(
+        renderer,
+        SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING,
+        MAX_SCREEN_WIDTH, MAX_SCREEN_HEIGHT);
+    if (!texture) {
+        fprintf(stderr, "SDL_CreateTexture: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    /* Output at PSG rate (~223721 Hz NTSC) -- matches the reference mixer.
+     * PSG never needs resampling; FM is upsampled to this rate. */
+    audio_init(CLOWNMDEMU_PSG_SAMPLE_RATE_NTSC);
+
+    /* --- clownmdemu init --- */
+    ClownMDEmu_Constant_Initialise();
+
+    ClownMDEmu_InitialConfiguration config;
+    memset(&config, 0, sizeof(config));
+    config.general.region       = CLOWNMDEMU_REGION_OVERSEAS;
+    config.general.tv_standard  = CLOWNMDEMU_TV_STANDARD_NTSC;
+
+    static const ClownMDEmu_Callbacks cbs = {
+        NULL,                       /* user_data */
+        colour_updated_cb,
+        scanline_rendered_cb,
+        input_requested_cb,
+        fm_audio_cb,
+        psg_audio_cb,
+        pcm_audio_cb,
+        cdda_audio_cb,
+        cd_seeked_cb,
+        cd_sector_read_cb,
+        cd_track_seeked_cb,
+        cd_audio_read_cb,
+        save_opened_read_cb,
+        save_read_cb,
+        save_opened_write_cb,
+        save_written_cb,
+        save_closed_cb,
+        save_removed_cb,
+        save_size_cb,
+    };
+
+    ClownMDEmu_Initialise(&g_clownmdemu, &config, &cbs);
+    ClownMDEmu_SetCartridge(&g_clownmdemu, rom_buf, rom_words);
+    ClownMDEmu_HardReset(&g_clownmdemu, cc_true, cc_false);
+
+    glue_init(&g_clownmdemu, rom_raw, rom_raw_len);
+
+    free(rom_raw);   /* glue_init copied what it needs */
+
+    if (framelog_path)
+        s_framelog_file = fopen(framelog_path, "w");
+
+    /* --- Main loop --- */
+    int running = 1;
+    int turbo   = 0;   /* F5 toggles turbo (uncapped frame rate, no audio) */
+    uint32_t frame_num = 0;
+    Uint32 frame_start = SDL_GetTicks();
+    const Uint32 frame_ms = 1000u / 60u;   /* ~16 ms at 60 Hz */
+
+    while (running) {
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_QUIT) running = 0;
+            if (ev.type == SDL_KEYDOWN) {
+                if (ev.key.keysym.sym == SDLK_ESCAPE) running = 0;
+                if (ev.key.keysym.sym == SDLK_F5)     turbo = !turbo;
+                if (ev.key.keysym.sym == SDLK_F12) {
+                    char path[64];
+                    snprintf(path, sizeof(path), "screenshot_%04u.png", frame_num);
+                    png_write_argb(path, s_framebuf,
+                                   s_screen_width, s_screen_height,
+                                   MAX_SCREEN_WIDTH);
+                }
+            }
+        }
+
+        /* Zero accum buffers before Iterate(): PSG_Update (and FM_OutputSamples)
+         * use += to accumulate into the provided buffer, not overwrite.
+         * Without this, each frame adds to the previous frame's leftovers,
+         * railing to maximum amplitude within a few frames (the "drone"). */
+        memset(s_fm_accum,  0, s_fm_count  * 2 * sizeof(cc_s16l));
+        memset(s_psg_accum, 0, s_psg_count *     sizeof(cc_s16l));
+        s_fm_count  = 0;
+        s_psg_count = 0;
+
+        /* Single-threaded fiber loop:
+         * 1. Reset frame sync state
+         * 2. Prepare game fiber for this frame
+         * 3. Iterate: render VDP frame; DoCycles interleaves game code
+         * 4. Service VBlank: run handlers (palette DMA, joypad, PLC) */
+        glue_reset_frame_sync();
+        glue_run_game_frame();
+        ClownMDEmu_Iterate(&g_clownmdemu);
+        glue_service_vblank();
+
+        write_framelog(frame_num);
+
+        if (!turbo)
+            audio_flush((const int16_t *)s_fm_accum, s_fm_count,
+                        (const int16_t *)s_psg_accum, s_psg_count);
+
+        frame_num++;
+
+        /* Upload framebuffer to GPU texture */
+        SDL_UpdateTexture(texture, NULL, s_framebuf,
+                          MAX_SCREEN_WIDTH * (int)sizeof(uint32_t));
+
+        SDL_RenderClear(renderer);
+
+        /* Only show the active area the VDP reported */
+        SDL_Rect src = { 0, 0, s_screen_width, s_screen_height };
+        SDL_RenderCopy(renderer, texture, &src, NULL);
+        SDL_RenderPresent(renderer);
+
+        /* Soft cap at ~60 fps (VSync takes precedence if enabled) */
+        if (!turbo) {
+            Uint32 now     = SDL_GetTicks();
+            Uint32 elapsed = now - frame_start;
+            if (elapsed < frame_ms)
+                SDL_Delay(frame_ms - elapsed);
+        }
+        frame_start = SDL_GetTicks();
+    }
+
+    /* --- Cleanup --- */
+    if (s_framelog_file) fclose(s_framelog_file);
+    glue_shutdown();
+    audio_close();
+    SDL_DestroyTexture(texture);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    free(rom_buf);
+    return 0;
+}
