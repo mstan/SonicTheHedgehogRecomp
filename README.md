@@ -1,6 +1,16 @@
 # Sonic the Hedgehog — Recompiled Runner
 
-The game runner for the [Genesis 68K Static Recompiler](../segagenesisrecomp/). Takes 337 statically recompiled C functions generated from a Sonic 1 ROM and runs them natively inside [clownmdemu](https://github.com/Clownacy/clownmdemu), an open-source Mega Drive emulator core. This is a **tech demo with known bugs** — the game boots to the title screen, loads Green Hill Zone, and gameplay runs, but jumping doesn't work and audio is garbled.
+> **WARNING: This is an early prototype / work in progress.** It is not production-ready, not feature-complete, and has significant known bugs. The game boots and runs, but core mechanics like jumping are broken, audio is garbled, and 6 runtime hacks are required to prevent crashes. This repo is published for educational and archival purposes — expect rough edges everywhere.
+
+The game runner for the [Genesis 68K Static Recompiler](../segagenesisrecomp/). Takes 337 statically recompiled C functions generated from a Sonic 1 ROM and runs them natively inside [clownmdemu](https://github.com/Clownacy/clownmdemu), an open-source Mega Drive emulator core.
+
+## Status
+
+This is a proof-of-concept prototype. It demonstrates that static recompilation of Genesis games is viable, but it is far from a polished or correct implementation.
+
+**What works:** SEGA logo, title screen, Green Hill Zone loads, Sonic runs and interacts with terrain, rings/enemies/springs functional, HUD displays, palette fades work.
+
+**What doesn't:** Jumping (no height), audio (garbled FM synthesis), some sprite art (wrong tiles), scene transitions (too fast). The runner contains 6 runtime workarounds for timing and state management issues that don't exist in a real interpreter. See [STATUS.md](STATUS.md) for the full breakdown.
 
 ## How It Works
 
@@ -45,4 +55,4 @@ build\Release\SonicTheHedgehogRecomp.exe sonic.bin
 
 ## Known Issues
 
-See [STATUS.md](STATUS.md) for details on known bugs, runtime workarounds, and development history.
+See [STATUS.md](STATUS.md) for the full list of known bugs, runtime workarounds, architecture limitations, and development history (including which investigation approaches worked and which were dead ends).
