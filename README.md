@@ -1,12 +1,12 @@
-# Sonic the Hedgehog — Static Recompiler Tech Demo
+# Sonic the Hedgehog — Recompiled Runner
 
-A Sega Genesis 68000 static recompiler that takes a Sonic 1 ROM and runs it natively as compiled C code. This is a **tech demo with known bugs** — the game boots to the title screen, loads Green Hill Zone, and gameplay runs, but jumping doesn't work and audio is garbled.
+The game runner for the [Genesis 68K Static Recompiler](../segagenesisrecomp/). Takes 337 statically recompiled C functions generated from a Sonic 1 ROM and runs them natively inside [clownmdemu](https://github.com/Clownacy/clownmdemu), an open-source Mega Drive emulator core. This is a **tech demo with known bugs** — the game boots to the title screen, loads Green Hill Zone, and gameplay runs, but jumping doesn't work and audio is garbled.
 
 ## How It Works
 
-The recompiler tool (`segagenesisrecomp/genesisrecomp/`) analyzes a Sonic 1 ROM binary and emits native C functions for every 68K subroutine — 337 functions total. These generated functions use the same memory layout and register state as the original 68K code, but execute as compiled x64 instead of interpreted instructions.
+The [recompiler](../segagenesisrecomp/) analyzes a Sonic 1 ROM binary and emits native C functions for every 68K subroutine — 337 functions total. These generated functions use the same memory layout and register state as the original 68K code, but execute as compiled x64 instead of interpreted instructions.
 
-The runner (`SonicTheHedgehogRecomp/`) hosts this generated code inside clownmdemu, an open-source Mega Drive emulator core. clownmdemu provides VDP rendering (graphics), Z80/FM/PSG (audio), and I/O (controllers). The generated 68K code runs on a Windows Fiber that interleaves with VDP scanline rendering via a cooperative yield model.
+This runner hosts that generated code inside clownmdemu, which provides VDP rendering (graphics), Z80/FM/PSG (audio), and I/O (controllers). The generated 68K code runs on a Windows Fiber that interleaves with VDP scanline rendering via a cooperative yield model.
 
 ## Prerequisites
 
