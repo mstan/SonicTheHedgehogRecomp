@@ -8,9 +8,25 @@ The game runner for the [Genesis 68K Static Recompiler](../segagenesisrecomp/). 
 
 This is a proof-of-concept prototype. It demonstrates that static recompilation of Genesis games is viable, but it is far from a polished or correct implementation.
 
-**What works:** SEGA logo, title screen, Green Hill Zone loads, Sonic runs and interacts with terrain, rings/enemies/springs functional, HUD displays, palette fades work.
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Rendering (VDP, sprites, tilemaps, scroll planes) | Works | |
+| SEGA logo + voice sample | Works | |
+| Title screen / menus | Works | |
+| All zones (GHZ and others via attract demo) | Works | |
+| Sonic movement (run, roll, slopes, loops, springs) | Works | |
+| Ring pickups | Works | |
+| Enemies, item monitors | Works | |
+| HUD (score, lives, rings, timer) | Works | |
+| Palette fades | Works | Was broken, fixed via register save/restore |
+| Function dispatch | Works | 337 discovered functions, zero misses so far. Undiscovered functions likely exist on untested code paths |
+| **Jumping** | **Broken** | No height — joypad timing offset causes yvel to be overwritten to 0 |
+| **Scattered rings (damage)** | **Broken** | Rings scatter visually when Sonic takes damage, but can't be picked back up |
+| **Audio** | **Partial** | "SEGA!" sample plays, music/SFX faintly audible but garbled. Z80/FM don't advance during game code |
+| **Some sprite art** | **Broken** | Flower tiles use wrong art (VRAM timing issue) |
+| **Boot sequence transitions** | **Broken** | SEGA -> Sonic Team Presents -> title -> level transitions too fast. In-game transitions work fine |
 
-**What doesn't:** Jumping (no height), audio (garbled FM synthesis), some sprite art (wrong tiles), scene transitions (too fast). The runner contains 6 runtime workarounds for timing and state management issues that don't exist in a real interpreter. See [STATUS.md](STATUS.md) for the full breakdown.
+The runner contains 6 runtime workarounds for timing and state management issues that don't exist in a real interpreter. See [STATUS.md](STATUS.md) for the full breakdown.
 
 ## How It Works
 
@@ -56,3 +72,7 @@ build\Release\SonicTheHedgehogRecomp.exe sonic.bin
 ## Known Issues
 
 See [STATUS.md](STATUS.md) for the full list of known bugs, runtime workarounds, architecture limitations, and development history (including which investigation approaches worked and which were dead ends).
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE.md) — free for non-commercial use. See [LICENSE.md](LICENSE.md) for details.
