@@ -45,8 +45,8 @@ This runner hosts that generated code inside clownmdemu, which provides VDP rend
 
 ```bash
 # Clone both repos side by side:
-#   segagenesisrecomp-v3/segagenesisrecomp/
-#   segagenesisrecomp-v3/SonicTheHedgehogRecomp/
+git clone --recursive <segagenesisrecomp-url>
+git clone <SonicTheHedgehogRecomp-url>
 
 cd SonicTheHedgehogRecomp
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
