@@ -2,6 +2,8 @@
 
 > **WARNING: This is an early prototype / work in progress.** It is not production-ready, not feature-complete, and has significant known bugs. The game boots and runs, but core mechanics like jumping are broken, audio is garbled, and 6 runtime hacks are required to prevent crashes. This repo is published for educational and archival purposes — expect rough edges everywhere.
 
+[![Gameplay Demo](https://img.youtube.com/vi/tMkbDKK5y38/maxresdefault.jpg)](https://youtu.be/tMkbDKK5y38)
+
 The game runner for the [Genesis 68K Static Recompiler](../segagenesisrecomp/). Takes 337 statically recompiled C functions generated from a Sonic 1 ROM and runs them natively inside [clownmdemu](https://github.com/Clownacy/clownmdemu), an open-source Mega Drive emulator core.
 
 ## Status
