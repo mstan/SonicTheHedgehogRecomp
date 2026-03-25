@@ -4,22 +4,18 @@ project(SonicTheHedgehogRecomp C)
 set(CMAKE_C_STANDARD 11)
 
 # ---------------------------------------------------------------------------
-# Directory layout (v3)
+# Directory layout
 #
-#   segagenesisrecomp-v3/
-#     segagenesisrecomp/          <- recompiler + clownmdemu + generated code
-#       clownmdemu-core/
-#       sonicthehedgehog/
-#         generated/
-#       genesisrecomp/runner/include/
-#     SonicTheHedgehogRecomp/     <- this project (CMAKE_SOURCE_DIR)
-#       runner/
-#       CMakeLists.txt (this file)
+#   SonicTheHedgehogRecomp/         <- this project (CMAKE_SOURCE_DIR)
+#     runner/
+#     segagenesisrecomp/            <- submodule
+#       clownmdemu-core/            <- nested submodule
+#       sonicthehedgehog/generated/
+#       runner/include/             <- shared headers (genesis_runtime.h)
+#     CMakeLists.txt (this file)
 # ---------------------------------------------------------------------------
 
-get_filename_component(V1_ROOT
-    "${CMAKE_SOURCE_DIR}/../segagenesisrecomp"
-    ABSOLUTE)
+set(V1_ROOT "${CMAKE_SOURCE_DIR}/segagenesisrecomp")
 
 # ---------------------------------------------------------------------------
 # clownmdemu-core
@@ -39,7 +35,7 @@ add_subdirectory("${V1_ROOT}/clownmdemu-core" clownmdemu-core)
 # ---------------------------------------------------------------------------
 
 list(APPEND CMAKE_PREFIX_PATH
-    "${V1_ROOT}/genesisrecomp/runner/external/SDL2/SDL2-2.28.5/cmake")
+    "${V1_ROOT}/runner/external/SDL2/SDL2-2.28.5/cmake")
 
 find_package(SDL2 REQUIRED)
 
@@ -73,7 +69,7 @@ target_include_directories(SonicTheHedgehogRecomp PRIVATE
     "${V1_ROOT}/clownmdemu-core/source"
     "${V1_ROOT}/clownmdemu-core/libraries/clowncommon"
     # genesis_runtime.h, game_extras.h
-    "${V1_ROOT}/genesisrecomp/runner/include"
+    "${V1_ROOT}/runner/include"
     # extras.h (declares func_000206 etc.)
     "${V1_ROOT}/sonicthehedgehog"
     # clown68000.h (needed by stub_clown68000.c)
@@ -98,7 +94,7 @@ target_link_libraries(SonicTheHedgehogRecomp
 if(WIN32)
     add_custom_command(TARGET SonicTheHedgehogRecomp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${V1_ROOT}/genesisrecomp/runner/external/SDL2/SDL2-2.28.5/lib/x64/SDL2.dll"
+            "${V1_ROOT}/runner/external/SDL2/SDL2-2.28.5/lib/x64/SDL2.dll"
             "$<TARGET_FILE_DIR:SonicTheHedgehogRecomp>"
         COMMENT "Copying SDL2.dll"
     )
