@@ -28,5 +28,8 @@ void cmd_server_send_frame_result(int frames_run);
 /* Record per-frame state into the history ring buffer. Call after each frame. */
 void cmd_server_record_frame(uint32_t frame_num);
 
+/* Tick FM trace (check frame limit). Call once per frame. */
+void cmd_server_fm_trace_tick(void);
+
 /* Cleanup sockets. */
 void cmd_server_shutdown(void);

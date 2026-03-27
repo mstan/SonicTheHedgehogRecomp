@@ -457,34 +457,9 @@ int main(int argc, char *argv[])
         }
     }
     if (!rom_path) {
-        /* Try loading cached ROM path from last session */
-        static char cached_path[512] = {0};
-        {
-            const char *cache_file = exe_relative("last_rom.txt");
-            FILE *cf = fopen(cache_file, "r");
-            if (cf) {
-                if (fgets(cached_path, sizeof(cached_path), cf)) {
-                    /* Strip newline */
-                    char *nl = strchr(cached_path, '\n');
-                    if (nl) *nl = '\0';
-                    nl = strchr(cached_path, '\r');
-                    if (nl) *nl = '\0';
-                    /* Verify file exists */
-                    FILE *test = fopen(cached_path, "rb");
-                    if (test) {
-                        fclose(test);
-                        rom_path = cached_path;
-                        fprintf(stderr, "[ROM] Loaded from cache: %s\n", rom_path);
-                    }
-                }
-                fclose(cf);
-            }
-        }
-
 #ifdef _WIN32
-        if (!rom_path) {
-            /* Show file picker dialog */
-            static char picked_path[512] = {0};
+        static char picked_path[512] = {0};
+        {
             extern int __stdcall GetOpenFileNameA(void *);
             typedef struct {
                 unsigned long lStructSize; void *hwndOwner; void *hInstance;
@@ -503,13 +478,9 @@ int main(int argc, char *argv[])
             ofn.lpstrFile = picked_path;
             ofn.nMaxFile = sizeof(picked_path);
             ofn.lpstrTitle = "Select Sonic the Hedgehog ROM";
-            ofn.Flags = 0x00080000 | 0x00001000; /* OFN_EXPLORER | OFN_FILEMUSTEXIST */
-            if (GetOpenFileNameA(&ofn)) {
+            ofn.Flags = 0x00080000 | 0x00001000;
+            if (GetOpenFileNameA(&ofn))
                 rom_path = picked_path;
-                /* Cache for next launch */
-                FILE *cf = fopen(exe_relative("last_rom.txt"), "w");
-                if (cf) { fprintf(cf, "%s\n", rom_path); fclose(cf); }
-            }
         }
 #endif
         if (!rom_path) {
@@ -605,8 +576,14 @@ int main(int argc, char *argv[])
 
     free(rom_raw);   /* glue_init copied what it needs */
 
-    /* TCP debug server */
-    cmd_server_init(4378);
+    /* TCP debug server — only if debug.ini exists next to the exe */
+    static int s_debug_enabled = 0;
+    {
+        FILE *df = fopen(exe_relative("debug.ini"), "r");
+        if (df) { s_debug_enabled = 1; fclose(df); }
+    }
+    if (s_debug_enabled)
+        cmd_server_init(4378);
 
     if (framelog_path)
         s_framelog_file = fopen(framelog_path, "w");
@@ -626,7 +603,8 @@ int main(int argc, char *argv[])
         if (max_frames && frame_num >= max_frames) break;
 
         /* Poll TCP debug server */
-        CmdResult cmd_cr = cmd_server_poll();
+        CmdResult cmd_cr = {0};
+        if (s_debug_enabled) cmd_cr = cmd_server_poll();
         if (cmd_cr.should_quit) running = 0;
         if (cmd_cr.input_override) {
             s_tcp_input_active = 1;
@@ -740,7 +718,10 @@ int main(int argc, char *argv[])
         write_framelog(frame_num);
 
         /* Record frame state into debug server ring buffer */
-        cmd_server_record_frame(frame_num);
+        if (s_debug_enabled) {
+            cmd_server_record_frame(frame_num);
+            cmd_server_fm_trace_tick();
+        }
 
         /* Handle run_extra_frames from debug server */
         if (cmd_cr.run_extra_frames > 0) {
@@ -761,14 +742,24 @@ int main(int argc, char *argv[])
 #else
                 ClownMDEmu_Iterate(&g_clownmdemu);
 #endif
-                cmd_server_record_frame(frame_num);
+                if (s_debug_enabled) cmd_server_record_frame(frame_num);
             }
-            cmd_server_send_frame_result(cmd_cr.run_extra_frames);
+            if (s_debug_enabled) cmd_server_send_frame_result(cmd_cr.run_extra_frames);
         }
 
         if (!turbo)
             audio_flush((const int16_t *)s_fm_accum, s_fm_count,
                         (const int16_t *)s_psg_accum, s_psg_count);
+
+        /* Audio queue drift monitor — log every 300 frames (~5 seconds) */
+        if (s_debug_enabled && !turbo && (frame_num % 300) == 0 && frame_num > 0) {
+            Uint32 qb = audio_queued_bytes();
+            Uint32 one_frame_bytes = (Uint32)(s_psg_count * 2 * sizeof(int16_t));
+            fprintf(stderr, "[AUDIO-Q] frame=%u  queued=%u bytes (%.1f frames worth)  psg_count=%zu  fm_count=%zu\n",
+                    frame_num, qb,
+                    one_frame_bytes > 0 ? (double)qb / one_frame_bytes : 0.0,
+                    s_psg_count, s_fm_count);
+        }
 
         /* --- Screenshot capture (PNG) --- */
         {
@@ -801,13 +792,13 @@ int main(int argc, char *argv[])
         SDL_RenderCopy(renderer, texture, &src, NULL);
         SDL_RenderPresent(renderer);
 
-        /* Soft cap at ~60 fps using audio queue as timing reference.
-         * SDL_Delay has ~1ms resolution, which drifts ~4% at 60fps.
-         * Instead, sync to the audio queue: if it's growing, slow down. */
+        /* 60 fps frame cap with audio queue overflow protection.
+         *
+         * Use high-precision perf counter for frame timing (works for both
+         * native and interpreter builds).  If the audio queue grows too
+         * large (e.g. frame ran faster than real-time), the queue check
+         * adds extra delay to let it drain. */
         if (!turbo) {
-            /* High-precision 60fps cap using performance counter.
-             * SDL_GetTicks has 1ms resolution (16ms vs 16.667ms = 4% drift).
-             * Performance counter gives sub-microsecond precision. */
             static Uint64 s_perf_freq = 0;
             static Uint64 s_next_frame = 0;
             if (!s_perf_freq) {
@@ -817,15 +808,22 @@ int main(int argc, char *argv[])
             s_next_frame += s_perf_freq / 60;
             Uint64 now = SDL_GetPerformanceCounter();
             if (now < s_next_frame) {
-                /* Sleep for most of the wait, spin for the last bit */
                 Sint64 remaining_ms = (Sint64)(s_next_frame - now) * 1000 / (Sint64)s_perf_freq;
                 if (remaining_ms > 2)
                     SDL_Delay((Uint32)(remaining_ms - 1));
                 while (SDL_GetPerformanceCounter() < s_next_frame)
                     ;  /* spin-wait for precision */
             } else {
-                /* Fell behind — reset to avoid catchup burst */
                 s_next_frame = now;
+            }
+
+            /* If audio queue is growing (native runs slightly fast vs DAC),
+             * add a 1ms delay to let it drain. Prevents unbounded growth. */
+            {
+                Uint32 one_frame = (Uint32)(s_psg_count * 2 * sizeof(int16_t));
+                Uint32 limit = one_frame * 4;
+                if (audio_queued_bytes() > limit)
+                    SDL_Delay(1);
             }
         }
         frame_start = SDL_GetTicks();
@@ -835,7 +833,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "[DONE] %u frames completed\n", frame_num);
 
     /* --- Cleanup --- */
-    cmd_server_shutdown();
+    if (s_debug_enabled) cmd_server_shutdown();
     if (s_framelog_file) fclose(s_framelog_file);
 #if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
     glue_shutdown();

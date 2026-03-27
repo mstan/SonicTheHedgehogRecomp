@@ -32,6 +32,7 @@ typedef int sock_t;
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <inttypes.h>
 
 #include "cmd_server.h"
 #include "clownmdemu.h"
@@ -71,6 +72,45 @@ static int  s_recv_len = 0;
 
 /* Pending frame request */
 static int s_pending_frame_id = -1;
+
+/* =========================================================================
+ * FM write trace — captures every YM2612 register write with master-clock
+ * cycle position.  Controllable via TCP "fm_trace" command.
+ * Works in BOTH native and interpreter builds since the hook is in
+ * bus-main-m68k.c's M68kWriteCallbackWithCycle (shared code path).
+ * ========================================================================= */
+
+extern void (*g_fm_write_trace_fn)(uint32_t address, uint8_t value, uint32_t target_cycle);
+extern uint64_t g_frame_count;
+
+static FILE *s_fm_trace_file = NULL;
+static int    s_fm_trace_active = 0;
+static int    s_fm_trace_max_frames = 0;
+static int    s_fm_trace_frame_count = 0;
+static uint64_t s_fm_trace_start_frame = 0;
+
+static void fm_trace_callback(uint32_t address, uint8_t value, uint32_t target_cycle)
+{
+    if (!s_fm_trace_file) return;
+    /* Use our own frame counter (incremented by tick) rather than
+     * g_frame_count which only works in Step 2 mode. */
+    fprintf(s_fm_trace_file, "%d %u 0x%06X 0x%02X\n",
+            s_fm_trace_frame_count, (unsigned)target_cycle, address, value);
+}
+
+/* Called from main loop each frame to check if trace should stop */
+void cmd_server_fm_trace_tick(void)
+{
+    if (!s_fm_trace_active) return;
+    s_fm_trace_frame_count++;
+    if (s_fm_trace_max_frames > 0 && s_fm_trace_frame_count >= s_fm_trace_max_frames) {
+        fclose(s_fm_trace_file);
+        s_fm_trace_file = NULL;
+        s_fm_trace_active = 0;
+        g_fm_write_trace_fn = NULL;
+        fprintf(stderr, "[FM-TRACE] Captured %d frames\n", s_fm_trace_frame_count);
+    }
+}
 
 /* =========================================================================
  * Frame history ring buffer
@@ -956,6 +996,55 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
 #else
         send_err(id, "coverage_dump only available in interpreter mode");
 #endif
+    } else if (strcmp(cmd, "fm_trace") == 0) {
+        /* {"cmd":"fm_trace","action":"on","frames":300}
+         * {"cmd":"fm_trace","action":"off"}
+         * {"cmd":"fm_trace"}  — returns status */
+        char action[16];
+        if (json_get_str(json, "action", action, sizeof(action))) {
+            if (strcmp(action, "on") == 0) {
+                int max_f = json_get_int(json, "frames", 300);
+                if (max_f <= 0) max_f = 300;
+                const char *path =
+#if ENABLE_RECOMPILED_CODE
+                    "fm_trace_native.log";
+#else
+                    "fm_trace_interp.log";
+#endif
+                if (s_fm_trace_file) fclose(s_fm_trace_file);
+                s_fm_trace_file = fopen(path, "w");
+                if (s_fm_trace_file) {
+                    fprintf(s_fm_trace_file, "# frame master_cycle address value\n");
+                    s_fm_trace_active = 1;
+                    s_fm_trace_max_frames = max_f;
+                    s_fm_trace_frame_count = 0;
+                    s_fm_trace_start_frame = g_frame_count;
+                    g_fm_write_trace_fn = fm_trace_callback;
+                    char buf[256];
+                    snprintf(buf, sizeof(buf),
+                        "{\"id\":%d,\"ok\":true,\"file\":\"%s\",\"max_frames\":%d}\n",
+                        id, path, max_f);
+                    send_response(buf);
+                    fprintf(stderr, "[FM-TRACE] Started: %s (%d frames)\n", path, max_f);
+                } else {
+                    send_err(id, "failed to open trace file");
+                }
+            } else if (strcmp(action, "off") == 0) {
+                if (s_fm_trace_file) { fclose(s_fm_trace_file); s_fm_trace_file = NULL; }
+                s_fm_trace_active = 0;
+                g_fm_write_trace_fn = NULL;
+                fprintf(stderr, "[FM-TRACE] Stopped (%d frames)\n", s_fm_trace_frame_count);
+                send_ok(id);
+            } else {
+                send_err(id, "action must be on or off");
+            }
+        } else {
+            char buf[128];
+            snprintf(buf, sizeof(buf),
+                "{\"id\":%d,\"active\":%s,\"frames\":%d}\n",
+                id, s_fm_trace_active ? "true" : "false", s_fm_trace_frame_count);
+            send_response(buf);
+        }
     } else if (strcmp(cmd, "quit") == 0) {
 #if !ENABLE_RECOMPILED_CODE
         { extern int clown68000_coverage_count(void);
