@@ -3,3 +3,9 @@ build/
 *.bmp
 framedump/
 screenshots/
+*.bin
+*.bin
+build/
+last_rom.txt
+screenshots/
+*.log

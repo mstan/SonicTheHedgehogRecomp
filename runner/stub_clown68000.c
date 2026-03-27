@@ -1,23 +1,18 @@
 /*
- * stub_clown68000.c — replaces the clown68000 interpreter for native execution.
+ * stub_clown68000.c — replaces the clown68000 interpreter for Step 2.
  *
- * When CLOWNMDEMU_SKIP_CLOWN68000_INTERPRETER is set, clownmdemu's Iterate()
- * still calls the Clown68000_* entry points for timing coordination. This
- * stub provides those symbols:
+ * In Step 2 the recompiled code drives 68K execution on its own thread.
+ * clownmdemu still calls the Clown68000_* entry points for timing/interrupt
+ * coordination; we convert those calls to glue.c signals.
  *
- * - DoCycles: dispatches to glue_run_game_chunk(), which switches to the
- *   game fiber for each scanline's worth of cycles. This interleaves
- *   recompiled game code with VDP scanline rendering.
- *
- * - Interrupt: no-op. VBlank/HBlank handlers run at yield points via
- *   glue_check_vblank() and glue_handle_interrupt(), not inside Iterate.
- *   Running handlers inside Iterate caused a black screen due to dual
- *   cycle counters (Iterate's local vs glue's global).
+ * Compiled ONLY when ENABLE_RECOMPILED_CODE is set (see CMakeLists.txt).
+ * At that point clown68000-interpreter is excluded from the link, so these
+ * symbols are the sole definitions.
  */
 
 #include <stdio.h>
-#include "clown68000.h"
-#include "bus-main-m68k.h"
+#include "clown68000.h"   /* Clown68000_State, Clown68000_ReadWriteCallbacks */
+#include "bus-main-m68k.h" /* CPUCallbackUserData */
 #include "glue.h"
 
 void Clown68000_SetErrorCallback(
@@ -45,7 +40,13 @@ void Clown68000_DoCycles(Clown68000_State *state,
 
     glue_set_callbacks(callbacks);
 
+    /* Interleave: let game code run for cycles_to_do worth of execution.
+     * This is called ~500 times per Iterate (once per scanline sync).
+     * By yielding to the game fiber here, we interleave game code with
+     * VDP scanline rendering — matching the interpreter's behavior. */
     if (cycles_to_do > 0) {
+        static int s_first = 1;
+        if (s_first) { s_first = 0; fprintf(stderr, "[INTERLEAVE] DoCycles active, cycles=%u\n", (unsigned)cycles_to_do); }
         extern void glue_run_game_chunk(cc_u32f cycles);
         glue_run_game_chunk(cycles_to_do);
     }
@@ -55,6 +56,8 @@ void Clown68000_DoCycles(Clown68000_State *state,
 
 void Clown68000_Interrupt(Clown68000_State *state, cc_u16f level)
 {
+    /* Don't run handlers inside Iterate — VDP is mid-render and the
+     * dual cycle counters conflict. Handlers run at the yield point. */
     (void)state;
     (void)level;
 }

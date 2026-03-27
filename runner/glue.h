@@ -27,9 +27,4 @@ void glue_wait_vblank_done(void);
 /* Shutdown: signal game thread to stop (if running). */
 void glue_shutdown(void);
 
-/* Frame loop functions (called from main.c each frame) */
-void glue_reset_frame_sync(void);
-void glue_run_game_frame(void);
-void glue_service_vblank(void);
-
 #endif /* GLUE_H */

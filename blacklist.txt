@@ -1,0 +1,32 @@
+# Addresses that must NOT be added to game.cfg as extra_func.
+# These are interior labels or data addresses that break the
+# recompiler when treated as function entry points.
+#
+# Format: one hex address per line (with or without 0x prefix)
+# Lines starting with # are comments.
+
+0077B8  # Interior label — causes black screen when compiled as function entry
+007D90  # Interior of Hel_RotateSpikes — splits rotation logic
+000C64  # audit: interior label split
+000F82  # audit: interior label split
+001452  # audit: interior label split
+0014CC  # audit: interior label split
+0014D0  # audit: interior label split
+006488  # audit: interior label split
+00648C  # audit: interior label split
+006DEE  # audit: interior label split
+006EEA  # audit: interior label split
+006F02  # audit: interior label split
+006F9E  # audit: interior label split
+0070EA  # audit: interior label split
+007102  # audit: interior label split
+00715E  # audit: interior label split
+007178  # audit: interior label split
+007202  # audit: interior label split
+00721A  # audit: interior label split
+00AB34  # audit: interior label split
+00C8EC  # audit: interior label split
+00D0D0  # audit: interior label split
+01C106  # audit: interior label split
+072ADC  # audit: interior label split
+072AE0  # audit: interior label split
