@@ -4,7 +4,7 @@
 
 **sonic_full.c, sonic_dispatch.c, and ALL generated files are READ-ONLY.**
 
-- Codegen bugs → fix in the recompiler (`F:/Projects/segagenesisrecomp/genesisrecomp/`)
+- Codegen bugs → fix in the recompiler (`segagenesisrecomp/recompiler/src/`)
 - Game-specific patterns (VBlank yield) → game.cfg or runtime override in the runner
 - If you think you need to edit generated output, STOP. Find the right layer.
 
@@ -68,16 +68,15 @@ The comparison aligns by frame number. For deeper analysis, align by `fcnt` fiel
 
 ### 5. Regenerate → rebuild → test
 ```bash
-# Build recompiler
-cd F:/Projects/segagenesisrecomp/genesisrecomp && cmake --build build/recompiler --config Release
+# Build recompiler (from project root)
+cmake --build segagenesisrecomp/build/recompiler --config Release
 
-# Regenerate
-cd F:/Projects/segagenesisrecomp/sonicthehedgehog
-../genesisrecomp/build/recompiler/Release/GenesisRecomp.exe \
-  "F:/Projects/segagenesisrecomp-v2/sonicthehedgehog/sonic.bin" --game game.cfg
+# Regenerate (from segagenesisrecomp/sonicthehedgehog/)
+cd segagenesisrecomp/sonicthehedgehog
+../build/recompiler/Release/GenesisRecomp.exe sonic.bin --game game.cfg
 
-# Rebuild game
-cd F:/Projects/segagenesisrecomp-v2/sonicthehedgehog
+# Rebuild game (from SonicTheHedgehogRecomp/)
+cd ../../SonicTheHedgehogRecomp
 cmake --build build --config Release
 
 # Test
@@ -92,12 +91,12 @@ Then go back to step 1.
 
 | What | Path |
 |------|------|
-| Recompiler source | `F:/Projects/segagenesisrecomp/genesisrecomp/recompiler/src/` |
-| Recompiler binary | `F:/Projects/segagenesisrecomp/genesisrecomp/build/recompiler/Release/GenesisRecomp.exe` |
-| Game config | `F:/Projects/segagenesisrecomp/sonicthehedgehog/game.cfg` |
-| Annotations | `F:/Projects/segagenesisrecomp/sonicthehedgehog/annotations_from_disasm.csv` |
-| Generated output | `F:/Projects/segagenesisrecomp/sonicthehedgehog/generated/` |
-| ROM | `F:/Projects/segagenesisrecomp-v2/sonicthehedgehog/sonic.bin` |
+| Recompiler source | `segagenesisrecomp/recompiler/src/` (relative to project root) |
+| Recompiler binary | `segagenesisrecomp/build/recompiler/Release/GenesisRecomp.exe` |
+| Game config | `segagenesisrecomp/sonicthehedgehog/game.cfg` |
+| Annotations | `segagenesisrecomp/sonicthehedgehog/annotations_from_disasm.csv` |
+| Generated output | `segagenesisrecomp/sonicthehedgehog/generated/` |
+| ROM | `sonic.bin` (place in working directory or pass full path) |
 
 ## Key Files (v2 runner)
 

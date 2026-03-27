@@ -2,8 +2,11 @@
 """Remove blacklisted entries from game.cfg."""
 import sys
 
-BLACKLIST = "F:/Projects/segagenesisrecomp-v2/sonicthehedgehog/blacklist.txt"
-GAMECFG = "F:/Projects/segagenesisrecomp/sonicthehedgehog/game.cfg"
+import os
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)  # SonicTheHedgehogRecomp/
+BLACKLIST = os.path.join(PROJECT_ROOT, "blacklist.txt")
+GAMECFG = os.path.join(PROJECT_ROOT, "..", "segagenesisrecomp", "sonicthehedgehog", "game.cfg")
 
 # Parse blacklist
 blacklist = set()
