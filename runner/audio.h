@@ -26,4 +26,25 @@ void audio_close(void);
 void audio_flush(const int16_t *fm_buf,  size_t fm_frames,
                  const int16_t *psg_buf, size_t psg_frames);
 
+/*
+ * WAV capture: write mixed stereo output to a .wav file.
+ * Call audio_wav_start("out.wav") to begin, audio_wav_stop() to finalize.
+ * While active, audio_flush() writes to both SDL and the WAV file.
+ */
+int  audio_wav_start(const char *path);
+void audio_wav_stop(void);
+int  audio_wav_active(void);
+
+/* Audio stats for debug queries */
+typedef struct {
+    size_t last_fm_frames;
+    size_t last_psg_frames;
+    size_t total_fm_frames;
+    size_t total_psg_frames;
+    uint32_t total_flushes;
+    uint32_t dropped_flushes;  /* times SDL queue was full */
+} AudioStats;
+void audio_get_stats(AudioStats *out);
+uint32_t audio_queued_bytes(void);
+
 #endif /* AUDIO_H */

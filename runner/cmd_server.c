@@ -1,0 +1,1163 @@
+/*
+ * cmd_server.c - Non-blocking TCP command server for debug queries.
+ *
+ * Protocol: line-delimited JSON over TCP (one JSON object per line).
+ * Single client at a time. Polled each frame with non-blocking recv().
+ *
+ * Port: 4378 (Sega Genesis recomp project)
+ */
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+typedef SOCKET sock_t;
+#define SOCK_INVALID INVALID_SOCKET
+#define sock_close closesocket
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+typedef int sock_t;
+#define SOCK_INVALID (-1)
+#define sock_close close
+#endif
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "cmd_server.h"
+#include "clownmdemu.h"
+#include "audio.h"
+
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+#include "genesis_runtime.h"
+#endif
+
+/* =========================================================================
+ * External state we need to inspect
+ * ========================================================================= */
+
+extern ClownMDEmu g_clownmdemu;       /* defined in main.c */
+
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+extern uint32_t   g_cycle_accumulator;
+extern uint32_t   g_vblank_threshold;
+extern uint64_t   g_frame_count;
+
+/* IO port logging control (defined in glue.c) */
+extern int s_io_log_enabled;
+extern int s_io_log_count;
+#endif
+
+/* =========================================================================
+ * State
+ * ========================================================================= */
+
+static sock_t s_listen = SOCK_INVALID;
+static sock_t s_client = SOCK_INVALID;
+
+/* Recv line buffer */
+#define RECV_BUF_SIZE 8192
+static char s_recv_buf[RECV_BUF_SIZE];
+static int  s_recv_len = 0;
+
+/* Pending frame request */
+static int s_pending_frame_id = -1;
+
+/* =========================================================================
+ * Frame history ring buffer
+ * ========================================================================= */
+
+#define FRAME_HISTORY_CAP 36000  /* 10 minutes at 60fps */
+
+/* Sonic object RAM offsets (from $FF0000 base, so offset = addr & 0xFFFF) */
+#define SONIC_X_POS   0xD008
+#define SONIC_Y_POS   0xD00C
+#define SONIC_X_VEL   0xD010
+#define SONIC_Y_VEL   0xD012
+#define SONIC_INERTIA 0xD014
+#define SONIC_ROUTINE 0xD024
+#define SONIC_STATUS  0xD022
+#define SONIC_ANGLE   0xD026
+#define SONIC_OBJ_ID  0xD000
+
+#define GAME_MODE     0xF600
+#define VBLANK_FLAG   0xF62A
+#define FRAME_CTR     0xFE0C
+#define JOY1_HELD     0xF602
+#define JOY1_PRESS    0xF603
+#define SCROLL_X      0xF700
+
+typedef struct {
+    uint32_t frame;
+    /* Game state */
+    uint8_t  game_mode;
+    uint8_t  vblank_flag;
+    uint8_t  joy_held;
+    uint8_t  joy_press;
+    uint16_t scroll_x;
+    /* Sonic state */
+    uint16_t sonic_x;
+    uint16_t sonic_y;
+    int16_t  sonic_xvel;
+    int16_t  sonic_yvel;
+    int16_t  sonic_inertia;
+    uint8_t  sonic_routine;
+    uint8_t  sonic_status;
+    uint8_t  sonic_angle;
+    uint8_t  sonic_obj_id;
+} FrameRecord;
+
+static FrameRecord s_frame_history[FRAME_HISTORY_CAP];
+static uint32_t s_history_write = 0;  /* next write index */
+static uint32_t s_history_count = 0;  /* total frames recorded */
+
+/* Watchpoints */
+#define MAX_WATCHPOINTS 8
+typedef struct {
+    uint32_t addr;    /* 68K address */
+    uint8_t  prev;    /* previous value */
+    bool     active;
+} Watchpoint;
+static Watchpoint s_watchpoints[MAX_WATCHPOINTS];
+
+/* =========================================================================
+ * Read from clownmdemu RAM (word-addressed, big-endian)
+ * ========================================================================= */
+
+static uint8_t emu_read8(uint32_t addr)
+{
+    uint16_t offset = (uint16_t)(addr & 0xFFFF);
+    uint16_t word = g_clownmdemu.state.m68k.ram[offset / 2];
+    return (offset & 1) ? (uint8_t)(word & 0xFF) : (uint8_t)(word >> 8);
+}
+
+static uint16_t emu_read16(uint32_t addr)
+{
+    uint16_t offset = (uint16_t)(addr & 0xFFFF);
+    return g_clownmdemu.state.m68k.ram[offset / 2];
+}
+
+static int16_t emu_read16s(uint32_t addr)
+{
+    return (int16_t)emu_read16(addr);
+}
+
+static uint32_t emu_read32(uint32_t addr)
+{
+    return ((uint32_t)emu_read16(addr) << 16) | emu_read16(addr + 2);
+}
+
+/* =========================================================================
+ * Minimal JSON helpers (no external lib)
+ * ========================================================================= */
+
+static const char *json_get_str(const char *json, const char *key, char *out, int out_sz)
+{
+    char pattern[128];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return NULL;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p == '"') {
+        p++;
+        int i = 0;
+        while (*p && *p != '"' && i < out_sz - 1)
+            out[i++] = *p++;
+        out[i] = '\0';
+        return out;
+    }
+    return NULL;
+}
+
+static int json_get_int(const char *json, const char *key, int def)
+{
+    char pattern[128];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return def;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p == '-' || (*p >= '0' && *p <= '9'))
+        return atoi(p);
+    return def;
+}
+
+static uint32_t hex_to_u32(const char *s)
+{
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
+    return (uint32_t)strtoul(s, NULL, 16);
+}
+
+/* =========================================================================
+ * Send response
+ * ========================================================================= */
+
+static void send_response(const char *json)
+{
+    if (s_client == SOCK_INVALID) return;
+    int len = (int)strlen(json);
+    send(s_client, json, len, 0);
+    send(s_client, "\n", 1, 0);
+}
+
+static void send_ok(int id)
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf), "{\"id\":%d,\"ok\":true}", id);
+    send_response(buf);
+}
+
+static void send_err(int id, const char *msg)
+{
+    char buf[512];
+    snprintf(buf, sizeof(buf), "{\"id\":%d,\"ok\":false,\"error\":\"%s\"}", id, msg);
+    send_response(buf);
+}
+
+/* =========================================================================
+ * Command handlers
+ * ========================================================================= */
+
+static void handle_ping(int id, uint32_t frame_num)
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"frame\":%u}", id, frame_num);
+    send_response(buf);
+}
+
+static void handle_get_registers(int id)
+{
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+    char buf[1024];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,"
+        "\"D0\":%u,\"D1\":%u,\"D2\":%u,\"D3\":%u,"
+        "\"D4\":%u,\"D5\":%u,\"D6\":%u,\"D7\":%u,"
+        "\"A0\":%u,\"A1\":%u,\"A2\":%u,\"A3\":%u,"
+        "\"A4\":%u,\"A5\":%u,\"A6\":%u,\"A7\":%u,"
+        "\"PC\":%u,\"SR\":%u,\"USP\":%u,"
+        "\"C\":%d,\"V\":%d,\"Z\":%d,\"N\":%d,\"X\":%d,"
+        "\"S\":%d,\"imask\":%d}",
+        id,
+        g_cpu.D[0], g_cpu.D[1], g_cpu.D[2], g_cpu.D[3],
+        g_cpu.D[4], g_cpu.D[5], g_cpu.D[6], g_cpu.D[7],
+        g_cpu.A[0], g_cpu.A[1], g_cpu.A[2], g_cpu.A[3],
+        g_cpu.A[4], g_cpu.A[5], g_cpu.A[6], g_cpu.A[7],
+        g_cpu.PC, (uint32_t)g_cpu.SR, g_cpu.USP,
+        (g_cpu.SR & SR_C) ? 1 : 0,
+        (g_cpu.SR & SR_V) ? 1 : 0,
+        (g_cpu.SR & SR_Z) ? 1 : 0,
+        (g_cpu.SR & SR_N) ? 1 : 0,
+        (g_cpu.SR & SR_X) ? 1 : 0,
+        (g_cpu.SR & SR_S) ? 1 : 0,
+        (int)((g_cpu.SR >> 8) & 7));
+    send_response(buf);
+#else
+    send_err(id, "get_registers requires Step 2 or Hybrid build");
+#endif
+}
+
+static uint8_t bus_read8(uint32_t addr)
+{
+    /* For work RAM range, use direct emu read (always available) */
+    uint32_t masked = addr & 0xFFFFFF;
+    if (masked >= 0xFF0000)
+        return emu_read8(masked);
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+    return m68k_read8(addr);
+#else
+    /* Step 0: ROM access via clownmdemu cartridge buffer */
+    if (masked < 0x400000) {
+        uint16_t word = g_clownmdemu.cartridge_buffer[masked / 2];
+        return (masked & 1) ? (uint8_t)(word & 0xFF) : (uint8_t)(word >> 8);
+    }
+    return 0xFF;
+#endif
+}
+
+static void handle_read_memory(int id, const char *json)
+{
+    char addr_str[32];
+    if (!json_get_str(json, "addr", addr_str, sizeof(addr_str))) {
+        send_err(id, "missing addr");
+        return;
+    }
+    int size = json_get_int(json, "size", 16);
+    if (size <= 0 || size > 4096) {
+        send_err(id, "size must be 1-4096");
+        return;
+    }
+    uint32_t addr = hex_to_u32(addr_str);
+
+    char *hex = (char *)malloc(size * 2 + 1);
+    for (int i = 0; i < size; i++) {
+        uint8_t b = bus_read8(addr + i);
+        sprintf(hex + i * 2, "%02X", b);
+    }
+    hex[size * 2] = '\0';
+
+    char *resp = (char *)malloc(size * 2 + 256);
+    snprintf(resp, size * 2 + 256,
+             "{\"id\":%d,\"ok\":true,\"addr\":\"0x%06X\",\"size\":%d,\"hex\":\"%s\"}",
+             id, addr & 0xFFFFFF, size, hex);
+    send_response(resp);
+    free(hex);
+    free(resp);
+}
+
+static void handle_write_memory(int id, const char *json)
+{
+    char addr_str[32], hex[8192];
+    if (!json_get_str(json, "addr", addr_str, sizeof(addr_str))) {
+        send_err(id, "missing addr");
+        return;
+    }
+    if (!json_get_str(json, "hex", hex, sizeof(hex))) {
+        send_err(id, "missing hex data");
+        return;
+    }
+    uint32_t addr = hex_to_u32(addr_str);
+    int len = (int)strlen(hex) / 2;
+
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+    for (int i = 0; i < len; i++) {
+        char byte_str[3] = { hex[i*2], hex[i*2+1], '\0' };
+        uint8_t val = (uint8_t)strtoul(byte_str, NULL, 16);
+        m68k_write8(addr + i, val);
+    }
+#else
+    /* Step 0: only support writing to work RAM */
+    uint32_t masked = addr & 0xFFFFFF;
+    if (masked < 0xFF0000) {
+        send_err(id, "write_memory only supports RAM ($FF0000+) in Step 0");
+        return;
+    }
+    for (int i = 0; i < len; i++) {
+        char byte_str[3] = { hex[i*2], hex[i*2+1], '\0' };
+        uint8_t val = (uint8_t)strtoul(byte_str, NULL, 16);
+        uint16_t off = (uint16_t)((masked + i) & 0xFFFF);
+        uint16_t word = g_clownmdemu.state.m68k.ram[off / 2];
+        if (off & 1)
+            word = (word & 0xFF00) | val;
+        else
+            word = (val << 8) | (word & 0xFF);
+        g_clownmdemu.state.m68k.ram[off / 2] = word;
+    }
+#endif
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "{\"id\":%d,\"ok\":true,\"bytes_written\":%d}", id, len);
+    send_response(buf);
+}
+
+static void handle_read_ram(int id, const char *json)
+{
+    /* Direct read from g_ram[] shadow — no bus routing */
+    char addr_str[32];
+    if (!json_get_str(json, "addr", addr_str, sizeof(addr_str))) {
+        send_err(id, "missing addr");
+        return;
+    }
+    int size = json_get_int(json, "size", 16);
+    if (size <= 0 || size > 4096) {
+        send_err(id, "size must be 1-4096");
+        return;
+    }
+    uint32_t addr = hex_to_u32(addr_str);
+    uint16_t offset = (uint16_t)(addr & 0xFFFF);
+
+    char *hex = (char *)malloc(size * 2 + 1);
+    for (int i = 0; i < size; i++) {
+        uint8_t b = emu_read8(offset + i);
+        sprintf(hex + i * 2, "%02X", b);
+    }
+    hex[size * 2] = '\0';
+
+    char *resp = (char *)malloc(size * 2 + 256);
+    snprintf(resp, size * 2 + 256,
+             "{\"id\":%d,\"ok\":true,\"addr\":\"0x%04X\",\"size\":%d,\"hex\":\"%s\"}",
+             id, offset, size, hex);
+    send_response(resp);
+    free(hex);
+    free(resp);
+}
+
+static void handle_sonic_state(int id)
+{
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,"
+        "\"x\":%u,\"y\":%u,\"xvel\":%d,\"yvel\":%d,"
+        "\"inertia\":%d,\"ground_speed\":%d,"
+        "\"routine\":%u,\"status\":%u,\"angle\":%u,"
+        "\"obj_id\":%u,\"game_mode\":%u,"
+        "\"joy_held\":%u,\"joy_press\":%u}",
+        id,
+        (uint32_t)emu_read16(SONIC_X_POS),
+        (uint32_t)emu_read16(SONIC_Y_POS),
+        (int)emu_read16s(SONIC_X_VEL),
+        (int)emu_read16s(SONIC_Y_VEL),
+        (int)emu_read16s(SONIC_INERTIA),
+        (int)emu_read16s(SONIC_INERTIA),  /* ground_speed = inertia in Sonic 1 */
+        (uint32_t)emu_read8(SONIC_ROUTINE),
+        (uint32_t)emu_read8(SONIC_STATUS),
+        (uint32_t)emu_read8(SONIC_ANGLE),
+        (uint32_t)emu_read8(SONIC_OBJ_ID),
+        (uint32_t)emu_read8(GAME_MODE),
+        (uint32_t)emu_read8(JOY1_HELD),
+        (uint32_t)emu_read8(JOY1_PRESS));
+    send_response(buf);
+}
+
+static void handle_sonic_history(int id, const char *json)
+{
+    int start = json_get_int(json, "start", -1);
+    int end   = json_get_int(json, "end",   -1);
+    if (start < 0 || end < 0 || end < start) {
+        send_err(id, "invalid start/end");
+        return;
+    }
+    if (end - start + 1 > 600) {
+        send_err(id, "max 600 frames per request");
+        return;
+    }
+
+    int nframes = end - start + 1;
+    size_t buf_size = (size_t)nframes * 256 + 256;
+    char *buf = (char *)malloc(buf_size);
+    if (!buf) { send_err(id, "alloc failed"); return; }
+
+    int pos = 0;
+    pos += snprintf(buf + pos, buf_size - pos,
+                    "{\"id\":%d,\"ok\":true,\"frames\":[", id);
+
+    for (int f = start; f <= end; f++) {
+        /* Find frame in ring buffer */
+        if (f > start) buf[pos++] = ',';
+
+        bool found = false;
+        if (s_history_count > 0) {
+            /* Calculate ring buffer position */
+            uint32_t oldest = (s_history_count > FRAME_HISTORY_CAP)
+                ? s_history_count - FRAME_HISTORY_CAP : 0;
+            if ((uint32_t)f >= oldest && (uint32_t)f < s_history_count) {
+                uint32_t idx = (uint32_t)f % FRAME_HISTORY_CAP;
+                const FrameRecord *r = &s_frame_history[idx];
+                if (r->frame == (uint32_t)f) {
+                    pos += snprintf(buf + pos, buf_size - pos,
+                        "{\"frame\":%u,\"x\":%u,\"y\":%u,"
+                        "\"xvel\":%d,\"yvel\":%d,\"inertia\":%d,"
+                        "\"routine\":%u,\"status\":%u,\"angle\":%u,"
+                        "\"game_mode\":%u,\"joy_held\":%u,\"joy_press\":%u}",
+                        r->frame, r->sonic_x, r->sonic_y,
+                        (int)r->sonic_xvel, (int)r->sonic_yvel,
+                        (int)r->sonic_inertia,
+                        r->sonic_routine, r->sonic_status, r->sonic_angle,
+                        r->game_mode, r->joy_held, r->joy_press);
+                    found = true;
+                }
+            }
+        }
+        if (!found) {
+            pos += snprintf(buf + pos, buf_size - pos,
+                "{\"frame\":%d,\"available\":false}", f);
+        }
+
+        /* Grow buffer if needed */
+        if ((size_t)pos > buf_size - 512) {
+            buf_size *= 2;
+            buf = (char *)realloc(buf, buf_size);
+            if (!buf) return;
+        }
+    }
+
+    pos += snprintf(buf + pos, buf_size - pos, "]}");
+    send_response(buf);
+    free(buf);
+}
+
+static void handle_addr_history(int id, const char *json)
+{
+    char addr_str[32];
+    if (!json_get_str(json, "addr", addr_str, sizeof(addr_str))) {
+        send_err(id, "missing addr");
+        return;
+    }
+    int start = json_get_int(json, "start", -1);
+    int end   = json_get_int(json, "end",   -1);
+    int size  = json_get_int(json, "size",   1);  /* 1=byte, 2=word */
+    if (start < 0 || end < 0 || end < start) {
+        send_err(id, "invalid start/end");
+        return;
+    }
+    if (end - start + 1 > 600) {
+        send_err(id, "max 600 frames per request");
+        return;
+    }
+    uint32_t addr = hex_to_u32(addr_str);
+
+    /* For addr_history, we just read the current value since we don't store
+     * arbitrary address history. Return current value and frame range info. */
+    send_err(id, "addr_history requires watchpoint recording (use watch + sonic_history for now)");
+}
+
+static void handle_frame_info(int id)
+{
+    uint32_t oldest = (s_history_count > FRAME_HISTORY_CAP)
+        ? s_history_count - FRAME_HISTORY_CAP : 0;
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"current_frame\":%u,"
+        "\"oldest_frame\":%u,\"capacity\":%u}",
+        id, s_history_count, oldest, (uint32_t)FRAME_HISTORY_CAP);
+    send_response(buf);
+}
+
+static void handle_frame_range(int id, const char *json)
+{
+    int start = json_get_int(json, "start", -1);
+    int end   = json_get_int(json, "end",   -1);
+    if (start < 0 || end < 0 || end < start) {
+        send_err(id, "invalid start/end");
+        return;
+    }
+    if (end - start + 1 > 600) {
+        send_err(id, "max 600 frames per request");
+        return;
+    }
+
+    int nframes = end - start + 1;
+    size_t buf_size = (size_t)nframes * 256 + 256;
+    char *buf = (char *)malloc(buf_size);
+    if (!buf) { send_err(id, "alloc failed"); return; }
+
+    int pos = 0;
+    pos += snprintf(buf + pos, buf_size - pos,
+                    "{\"id\":%d,\"ok\":true,\"frames\":[", id);
+
+    for (int f = start; f <= end; f++) {
+        if (f > start) buf[pos++] = ',';
+
+        bool found = false;
+        if (s_history_count > 0) {
+            uint32_t oldest = (s_history_count > FRAME_HISTORY_CAP)
+                ? s_history_count - FRAME_HISTORY_CAP : 0;
+            if ((uint32_t)f >= oldest && (uint32_t)f < s_history_count) {
+                uint32_t idx = (uint32_t)f % FRAME_HISTORY_CAP;
+                const FrameRecord *r = &s_frame_history[idx];
+                if (r->frame == (uint32_t)f) {
+                    pos += snprintf(buf + pos, buf_size - pos,
+                        "{\"frame\":%u,\"game_mode\":%u,\"yvel\":%d,"
+                        "\"routine\":%u,\"joy\":%u,\"scroll_x\":%u}",
+                        r->frame, r->game_mode, (int)r->sonic_yvel,
+                        r->sonic_routine, r->joy_held, r->scroll_x);
+                    found = true;
+                }
+            }
+        }
+        if (!found) {
+            pos += snprintf(buf + pos, buf_size - pos,
+                "{\"frame\":%d,\"available\":false}", f);
+        }
+
+        if ((size_t)pos > buf_size - 512) {
+            buf_size *= 2;
+            buf = (char *)realloc(buf, buf_size);
+            if (!buf) return;
+        }
+    }
+
+    pos += snprintf(buf + pos, buf_size - pos, "]}");
+    send_response(buf);
+    free(buf);
+}
+
+static void handle_vblank_info(int id)
+{
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"cycle_accum\":%u,\"threshold\":%u,"
+        "\"imask\":%d,\"frame_count\":%llu}",
+        id, g_cycle_accumulator, g_vblank_threshold,
+        (int)((g_cpu.SR >> 8) & 7),
+        (unsigned long long)g_frame_count);
+    send_response(buf);
+#else
+    send_err(id, "vblank_info requires Step 2 or Hybrid build");
+#endif
+}
+
+static void handle_object_table(int id, const char *json)
+{
+    /* Dump active objects from $D000-$DFFF (object status table).
+     * Each object slot is $40 bytes. There are 64 slots total.
+     * Byte 0 = object ID (0 = empty). */
+    int max_objs = json_get_int(json, "count", 64);
+    if (max_objs > 64) max_objs = 64;
+
+    size_t buf_size = (size_t)max_objs * 256 + 256;
+    char *buf = (char *)malloc(buf_size);
+    if (!buf) { send_err(id, "alloc failed"); return; }
+
+    int pos = 0;
+    pos += snprintf(buf + pos, buf_size - pos,
+                    "{\"id\":%d,\"ok\":true,\"objects\":[", id);
+
+    int first = 1;
+    for (int i = 0; i < max_objs; i++) {
+        uint32_t base = 0xD000 + (uint32_t)(i * 0x40);
+        uint8_t obj_id = emu_read8(base);
+        if (obj_id == 0) continue;
+
+        if (!first) buf[pos++] = ',';
+        first = 0;
+
+        pos += snprintf(buf + pos, buf_size - pos,
+            "{\"slot\":%d,\"id\":%u,"
+            "\"x\":%u,\"y\":%u,"
+            "\"xvel\":%d,\"yvel\":%d,"
+            "\"routine\":%u,\"status\":%u}",
+            i, obj_id,
+            (uint32_t)emu_read16(base + 0x08),
+            (uint32_t)emu_read16(base + 0x0C),
+            (int)emu_read16s(base + 0x10),
+            (int)emu_read16s(base + 0x12),
+            (uint32_t)emu_read8(base + 0x24),
+            (uint32_t)emu_read8(base + 0x22));
+
+        if ((size_t)pos > buf_size - 512) {
+            buf_size *= 2;
+            buf = (char *)realloc(buf, buf_size);
+            if (!buf) return;
+        }
+    }
+
+    pos += snprintf(buf + pos, buf_size - pos, "]}");
+    send_response(buf);
+    free(buf);
+}
+
+static void handle_watch(int id, const char *json)
+{
+    char addr_str[32];
+    if (!json_get_str(json, "addr", addr_str, sizeof(addr_str))) {
+        send_err(id, "missing addr");
+        return;
+    }
+    uint32_t addr = hex_to_u32(addr_str);
+
+    for (int i = 0; i < MAX_WATCHPOINTS; i++) {
+        if (!s_watchpoints[i].active) {
+            s_watchpoints[i].addr = addr;
+            s_watchpoints[i].prev = emu_read8(addr & 0xFFFF);
+            s_watchpoints[i].active = true;
+            char buf[128];
+            snprintf(buf, sizeof(buf),
+                "{\"id\":%d,\"ok\":true,\"slot\":%d,\"addr\":\"0x%04X\"}",
+                id, i, addr & 0xFFFF);
+            send_response(buf);
+            return;
+        }
+    }
+    send_err(id, "all 8 watchpoint slots full");
+}
+
+static void handle_unwatch(int id, const char *json)
+{
+    char addr_str[32];
+    if (!json_get_str(json, "addr", addr_str, sizeof(addr_str))) {
+        send_err(id, "missing addr");
+        return;
+    }
+    uint32_t addr = hex_to_u32(addr_str);
+
+    for (int i = 0; i < MAX_WATCHPOINTS; i++) {
+        if (s_watchpoints[i].active && s_watchpoints[i].addr == addr) {
+            s_watchpoints[i].active = false;
+            char buf[128];
+            snprintf(buf, sizeof(buf),
+                "{\"id\":%d,\"ok\":true,\"cleared\":\"0x%04X\"}",
+                id, addr & 0xFFFF);
+            send_response(buf);
+            return;
+        }
+    }
+    send_err(id, "watchpoint not found");
+}
+
+static void handle_read_vram(int id, const char *json)
+{
+    char addr_str[32];
+    if (!json_get_str(json, "addr", addr_str, sizeof(addr_str))) {
+        send_err(id, "missing addr");
+        return;
+    }
+    int size = json_get_int(json, "size", 32);
+    if (size <= 0 || size > 4096) { send_err(id, "size must be 1-4096"); return; }
+    uint32_t addr = hex_to_u32(addr_str);
+    if (addr + size > 0x10000) { send_err(id, "addr+size exceeds 64KB VRAM"); return; }
+
+    char *hex = (char *)malloc(size * 2 + 1);
+    for (int i = 0; i < size; i++)
+        sprintf(hex + i * 2, "%02X", g_clownmdemu.vdp.state.vram[addr + i]);
+    hex[size * 2] = '\0';
+
+    char *resp = (char *)malloc(size * 2 + 256);
+    snprintf(resp, size * 2 + 256,
+             "{\"id\":%d,\"ok\":true,\"addr\":\"0x%04X\",\"size\":%d,\"hex\":\"%s\"}",
+             id, addr, size, hex);
+    send_response(resp);
+    free(hex);
+    free(resp);
+}
+
+static void handle_read_cram(int id)
+{
+    /* CRAM: 64 entries × 16-bit = 128 bytes. Return as hex. */
+    char hex[256 + 1];
+    for (int i = 0; i < 64; i++) {
+        uint16_t c = g_clownmdemu.vdp.state.cram[i];
+        sprintf(hex + i * 4, "%04X", c);
+    }
+    hex[256] = '\0';
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"entries\":64,\"hex\":\"%s\"}", id, hex);
+    send_response(buf);
+}
+
+static void handle_dump_vram(int id, const char *json)
+{
+    /* Dump VRAM region to a file for offline comparison */
+    char path[256];
+    if (!json_get_str(json, "path", path, sizeof(path)))
+        strcpy(path, "vram_dump.bin");
+    int offset = json_get_int(json, "offset", 0);
+    int size = json_get_int(json, "size", 0x10000);
+    if (offset < 0 || offset + size > 0x10000) {
+        send_err(id, "offset+size exceeds 64KB VRAM");
+        return;
+    }
+    FILE *f = fopen(path, "wb");
+    if (!f) { send_err(id, "cannot open file"); return; }
+    fwrite(g_clownmdemu.vdp.state.vram + offset, 1, size, f);
+    fclose(f);
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"path\":\"%s\",\"offset\":%d,\"size\":%d}",
+        id, path, offset, size);
+    send_response(buf);
+}
+
+static void handle_audio_stats(int id)
+{
+    AudioStats st;
+    audio_get_stats(&st);
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,"
+        "\"last_fm_frames\":%zu,\"last_psg_frames\":%zu,"
+        "\"total_fm_frames\":%zu,\"total_psg_frames\":%zu,"
+        "\"total_flushes\":%u,\"dropped_flushes\":%u,"
+        "\"wav_active\":%d}",
+        id, st.last_fm_frames, st.last_psg_frames,
+        st.total_fm_frames, st.total_psg_frames,
+        st.total_flushes, st.dropped_flushes,
+        audio_wav_active());
+    send_response(buf);
+}
+
+static void handle_audio_wav(int id, const char *json)
+{
+    char action[32];
+    if (!json_get_str(json, "action", action, sizeof(action))) {
+        send_err(id, "missing action (start/stop/status)");
+        return;
+    }
+    if (strcmp(action, "start") == 0) {
+        char path[256];
+        if (!json_get_str(json, "path", path, sizeof(path)))
+            strcpy(path, "audio_capture.wav");
+        if (audio_wav_start(path) == 0)
+            send_ok(id);
+        else
+            send_err(id, "cannot open wav file");
+    } else if (strcmp(action, "stop") == 0) {
+        audio_wav_stop();
+        send_ok(id);
+    } else if (strcmp(action, "status") == 0) {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+            "{\"id\":%d,\"ok\":true,\"active\":%d}", id, audio_wav_active());
+        send_response(buf);
+    } else {
+        send_err(id, "action must be start/stop/status");
+    }
+}
+
+static void handle_io_log(int id, const char *json)
+{
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+    int enable = json_get_int(json, "enable", -1);
+    if (enable >= 0) {
+        s_io_log_enabled = enable;
+        s_io_log_count = 0;
+    }
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"enabled\":%d,\"logged\":%d}",
+        id, s_io_log_enabled, s_io_log_count);
+    send_response(buf);
+#else
+    send_err(id, "io_log requires Step 2 or Hybrid build");
+#endif
+}
+
+static void handle_read_joypad_port(int id)
+{
+    /* Manually read the joypad port the same way ReadJoypads does.
+     * Phase 1: write 0x00 to $A10003, read $A10003
+     * Phase 2: write 0x40 to $A10003, read $A10003
+     * Combine and invert. */
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+    extern uint8_t m68k_read8(uint32_t);
+    extern void m68k_write8(uint32_t, uint8_t);
+
+    /* TH=0 phase */
+    m68k_write8(0xA10003, 0x00);
+    uint8_t phase0 = m68k_read8(0xA10003);
+
+    /* TH=1 phase */
+    m68k_write8(0xA10003, 0x40);
+    uint8_t phase1 = m68k_read8(0xA10003);
+
+    /* Combine: phase0 bits 6-7 (shifted from Start,A), phase1 bits 0-5 (CBRLDU) */
+    uint8_t combined = ((phase0 << 2) & 0xC0) | (phase1 & 0x3F);
+    uint8_t buttons = ~combined;  /* invert: hardware is active-low */
+
+    /* Also read current $F604/$F605 for comparison */
+    uint8_t f604 = emu_read8(0xF604);
+    uint8_t f605 = emu_read8(0xF605);
+
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,"
+        "\"phase0_raw\":\"0x%02X\",\"phase1_raw\":\"0x%02X\","
+        "\"combined\":\"0x%02X\",\"buttons\":\"0x%02X\","
+        "\"F604_held\":\"0x%02X\",\"F605_press\":\"0x%02X\"}",
+        id, phase0, phase1, combined, buttons, f604, f605);
+    send_response(buf);
+#else
+    send_err(id, "read_joypad_port requires Step 2 or Hybrid build");
+#endif
+}
+
+/* =========================================================================
+ * Command dispatch
+ * ========================================================================= */
+
+static CmdResult dispatch_command(const char *json, uint32_t frame_num)
+{
+    CmdResult cr = {0};
+    char cmd[64];
+    int id = json_get_int(json, "id", 0);
+
+    if (!json_get_str(json, "cmd", cmd, sizeof(cmd))) {
+        send_err(id, "missing cmd");
+        return cr;
+    }
+
+    if (strcmp(cmd, "ping") == 0) {
+        handle_ping(id, frame_num);
+    } else if (strcmp(cmd, "get_registers") == 0) {
+        handle_get_registers(id);
+    } else if (strcmp(cmd, "read_memory") == 0) {
+        handle_read_memory(id, json);
+    } else if (strcmp(cmd, "write_memory") == 0) {
+        handle_write_memory(id, json);
+    } else if (strcmp(cmd, "read_ram") == 0) {
+        handle_read_ram(id, json);
+    } else if (strcmp(cmd, "sonic_state") == 0) {
+        handle_sonic_state(id);
+    } else if (strcmp(cmd, "sonic_history") == 0) {
+        handle_sonic_history(id, json);
+    } else if (strcmp(cmd, "object_table") == 0) {
+        handle_object_table(id, json);
+    } else if (strcmp(cmd, "vblank_info") == 0) {
+        handle_vblank_info(id);
+    } else if (strcmp(cmd, "frame_info") == 0) {
+        handle_frame_info(id);
+    } else if (strcmp(cmd, "frame_range") == 0) {
+        handle_frame_range(id, json);
+    } else if (strcmp(cmd, "watch") == 0) {
+        handle_watch(id, json);
+    } else if (strcmp(cmd, "unwatch") == 0) {
+        handle_unwatch(id, json);
+    } else if (strcmp(cmd, "run_frames") == 0) {
+        int count = json_get_int(json, "count", 0);
+        if (count > 0 && count <= 36000) {
+            cr.run_extra_frames = count;
+            s_pending_frame_id = id;
+        } else {
+            send_err(id, "count must be 1-36000");
+        }
+    } else if (strcmp(cmd, "set_input") == 0) {
+        /* Genesis button bits: 0=Up,1=Down,2=Left,3=Right,4=B,5=C,6=A,7=Start */
+        char keys_str[32];
+        if (json_get_str(json, "keys", keys_str, sizeof(keys_str))) {
+            cr.input_override = true;
+            cr.input_keys = (uint8_t)hex_to_u32(keys_str);
+            send_ok(id);
+        } else {
+            cr.input_override = true;
+            cr.input_keys = (uint8_t)json_get_int(json, "keys", 0);
+            send_ok(id);
+        }
+    } else if (strcmp(cmd, "addr_history") == 0) {
+        handle_addr_history(id, json);
+    } else if (strcmp(cmd, "read_vram") == 0) {
+        handle_read_vram(id, json);
+    } else if (strcmp(cmd, "read_cram") == 0) {
+        handle_read_cram(id);
+    } else if (strcmp(cmd, "dump_vram") == 0) {
+        handle_dump_vram(id, json);
+    } else if (strcmp(cmd, "audio_stats") == 0) {
+        handle_audio_stats(id);
+    } else if (strcmp(cmd, "audio_wav") == 0) {
+        handle_audio_wav(id, json);
+    } else if (strcmp(cmd, "io_log") == 0) {
+        handle_io_log(id, json);
+    } else if (strcmp(cmd, "read_joypad_port") == 0) {
+        handle_read_joypad_port(id);
+    } else if (strcmp(cmd, "coverage_dump") == 0) {
+#if !ENABLE_RECOMPILED_CODE
+        extern int clown68000_coverage_count(void);
+        extern void clown68000_coverage_dump(const char *);
+        extern const char *exe_relative(const char *);
+        const char *path = exe_relative("coverage.log");
+        clown68000_coverage_dump(path);
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+            "{\"id\":%d,\"ok\":true,\"count\":%d,\"path\":\"%s\"}",
+            id, clown68000_coverage_count(), path);
+        send_response(buf);
+#else
+        send_err(id, "coverage_dump only available in interpreter mode");
+#endif
+    } else if (strcmp(cmd, "quit") == 0) {
+#if !ENABLE_RECOMPILED_CODE
+        { extern int clown68000_coverage_count(void);
+          extern void clown68000_coverage_dump(const char *);
+          extern const char *exe_relative(const char *);
+          if (clown68000_coverage_count() > 0)
+              clown68000_coverage_dump(exe_relative("coverage.log")); }
+#endif
+        send_ok(id);
+        cr.should_quit = true;
+    } else {
+        send_err(id, "unknown command");
+    }
+
+    return cr;
+}
+
+/* =========================================================================
+ * Socket setup
+ * ========================================================================= */
+
+static void set_nonblocking(sock_t s)
+{
+#ifdef _WIN32
+    u_long mode = 1;
+    ioctlsocket(s, FIONBIO, &mode);
+#else
+    int flags = fcntl(s, F_GETFL, 0);
+    fcntl(s, F_SETFL, flags | O_NONBLOCK);
+#endif
+}
+
+/* Track current frame for dispatch (set by poll caller) */
+static uint32_t s_current_frame = 0;
+
+/* =========================================================================
+ * Public API
+ * ========================================================================= */
+
+void cmd_server_init(int port)
+{
+#ifdef _WIN32
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
+
+    s_listen = socket(AF_INET, SOCK_STREAM, 0);
+    if (s_listen == SOCK_INVALID) {
+        fprintf(stderr, "[cmd] Failed to create socket\n");
+        return;
+    }
+
+    int yes = 1;
+    setsockopt(s_listen, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons((uint16_t)port);
+
+    if (bind(s_listen, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        fprintf(stderr, "[cmd] Failed to bind port %d\n", port);
+        sock_close(s_listen);
+        s_listen = SOCK_INVALID;
+        return;
+    }
+
+    listen(s_listen, 1);
+    set_nonblocking(s_listen);
+
+    memset(s_watchpoints, 0, sizeof(s_watchpoints));
+
+    fprintf(stderr, "[cmd] Listening on 127.0.0.1:%d\n", port);
+}
+
+CmdResult cmd_server_poll(void)
+{
+    CmdResult cr = {0};
+    if (s_listen == SOCK_INVALID) return cr;
+
+    /* Accept new client if none connected */
+    if (s_client == SOCK_INVALID) {
+        struct sockaddr_in caddr;
+        int clen = sizeof(caddr);
+        sock_t c = accept(s_listen, (struct sockaddr *)&caddr, &clen);
+        if (c != SOCK_INVALID) {
+            s_client = c;
+            set_nonblocking(s_client);
+            s_recv_len = 0;
+            fprintf(stderr, "[cmd] Client connected\n");
+        }
+    }
+
+    if (s_client == SOCK_INVALID) return cr;
+
+    /* Check watchpoints */
+    for (int i = 0; i < MAX_WATCHPOINTS; i++) {
+        if (!s_watchpoints[i].active) continue;
+        uint8_t cur = emu_read8(s_watchpoints[i].addr & 0xFFFF);
+        if (cur != s_watchpoints[i].prev) {
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                "{\"watchpoint\":{\"addr\":\"0x%04X\",\"old\":%u,\"new\":%u,\"frame\":%u}}",
+                s_watchpoints[i].addr & 0xFFFF,
+                s_watchpoints[i].prev, cur, s_current_frame);
+            send_response(buf);
+            s_watchpoints[i].prev = cur;
+        }
+    }
+
+    /* Try to read data */
+    int space = RECV_BUF_SIZE - s_recv_len - 1;
+    if (space > 0) {
+        int n = recv(s_client, s_recv_buf + s_recv_len, space, 0);
+        if (n > 0) {
+            s_recv_len += n;
+            s_recv_buf[s_recv_len] = '\0';
+        } else if (n == 0) {
+            fprintf(stderr, "[cmd] Client disconnected\n");
+            sock_close(s_client);
+            s_client = SOCK_INVALID;
+            s_recv_len = 0;
+            return cr;
+        }
+    }
+
+    /* Process complete lines */
+    char *nl;
+    while ((nl = strchr(s_recv_buf, '\n')) != NULL) {
+        *nl = '\0';
+        if (s_recv_buf[0] != '\0') {
+            CmdResult line_cr = dispatch_command(s_recv_buf, s_current_frame);
+            if (line_cr.should_quit) cr.should_quit = true;
+            if (line_cr.run_extra_frames > 0) cr.run_extra_frames = line_cr.run_extra_frames;
+            if (line_cr.input_override) { cr.input_override = true; cr.input_keys = line_cr.input_keys; }
+        }
+        int consumed = (int)(nl - s_recv_buf) + 1;
+        s_recv_len -= consumed;
+        memmove(s_recv_buf, nl + 1, s_recv_len + 1);
+    }
+
+    return cr;
+}
+
+void cmd_server_send_frame_result(int frames_run)
+{
+    if (s_pending_frame_id < 0) return;
+
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"frames_run\":%d}",
+        s_pending_frame_id, frames_run);
+    send_response(buf);
+    s_pending_frame_id = -1;
+}
+
+void cmd_server_record_frame(uint32_t frame_num)
+{
+    s_current_frame = frame_num;
+
+    uint32_t idx = frame_num % FRAME_HISTORY_CAP;
+    FrameRecord *r = &s_frame_history[idx];
+
+    r->frame      = frame_num;
+    r->game_mode  = emu_read8(GAME_MODE);
+    r->vblank_flag = emu_read8(VBLANK_FLAG);
+    r->joy_held   = emu_read8(JOY1_HELD);
+    r->joy_press  = emu_read8(JOY1_PRESS);
+    r->scroll_x   = emu_read16(SCROLL_X);
+
+    r->sonic_x       = emu_read16(SONIC_X_POS);
+    r->sonic_y       = emu_read16(SONIC_Y_POS);
+    r->sonic_xvel    = emu_read16s(SONIC_X_VEL);
+    r->sonic_yvel    = emu_read16s(SONIC_Y_VEL);
+    r->sonic_inertia = emu_read16s(SONIC_INERTIA);
+    r->sonic_routine = emu_read8(SONIC_ROUTINE);
+    r->sonic_status  = emu_read8(SONIC_STATUS);
+    r->sonic_angle   = emu_read8(SONIC_ANGLE);
+    r->sonic_obj_id  = emu_read8(SONIC_OBJ_ID);
+
+    s_history_count = frame_num + 1;
+}
+
+void cmd_server_shutdown(void)
+{
+    if (s_client != SOCK_INVALID) { sock_close(s_client); s_client = SOCK_INVALID; }
+    if (s_listen != SOCK_INVALID) { sock_close(s_listen); s_listen = SOCK_INVALID; }
+#ifdef _WIN32
+    WSACleanup();
+#endif
+#if !ENABLE_RECOMPILED_CODE
+    /* Auto-dump coverage on shutdown (interpreter mode only) */
+    { extern int clown68000_coverage_count(void);
+      extern void clown68000_coverage_dump(const char *);
+      extern const char *exe_relative(const char *);
+      int count = clown68000_coverage_count();
+      if (count > 0) {
+          clown68000_coverage_dump(exe_relative("coverage.log"));
+          fprintf(stderr, "[cmd] Dumped %d coverage entries to coverage.log\n", count);
+      }
+    }
+#endif
+    fprintf(stderr, "[cmd] Shutdown\n");
+}
