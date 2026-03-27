@@ -19,6 +19,13 @@ PROJECT_ROOT = SCRIPT_DIR.parent  # SonicTheHedgehogRecomp/
 RECOMP_ROOT = PROJECT_ROOT / "segagenesisrecomp"
 DISASM_DIR = PROJECT_ROOT.parent / "_s1disasm" if (PROJECT_ROOT.parent / "_s1disasm").exists() else None
 
+# Protected ranges: disasm-discovered labels in these ranges are excluded
+# from subroutines/table_targets sections (only extra_seeds from game.cfg
+# are kept). Aggressive boundary splitting in the sound driver breaks audio.
+PROTECTED_RANGES = [
+    (0x071000, 0x072FFF, "sound driver"),
+]
+
 SONIC_DIR_SUB = RECOMP_ROOT / "sonicthehedgehog"          # via submodule
 SONIC_DIR_TOP = PROJECT_ROOT.parent / "segagenesisrecomp" / "sonicthehedgehog"  # top-level
 
@@ -215,15 +222,26 @@ def generate_toml(sections, existing_extra_funcs, blacklist, addr_to_names, outp
     lines.append("#   extra_seeds   — addresses from game.cfg not found in disasm labels")
     lines.append("")
 
+    def in_protected_range(addr):
+        for lo, hi, _desc in PROTECTED_RANGES:
+            if lo <= addr <= hi:
+                return True
+        return False
+
     # Subroutines section
     lines.append("[[section]]")
     lines.append('name = "subroutines"')
     lines.append('source = "s1disasm SUBROUTINE banner"')
     lines.append("functions = [")
     sub_count = 0
+    protected_count = 0
     for addr, name in sorted(sections["subroutines"].items()):
         if addr in blacklist:
             lines.append(f'    # BLACKLISTED: {{ name = "{name}", addr = 0x{addr:06X} }},')
+            continue
+        if in_protected_range(addr) and addr not in existing_extra_funcs:
+            lines.append(f'    # PROTECTED (sound driver): {{ name = "{name}", addr = 0x{addr:06X} }},')
+            protected_count += 1
             continue
         lines.append(f'    {{ name = "{name}", addr = 0x{addr:06X} }},')
         all_addrs.add(addr)
@@ -243,6 +261,10 @@ def generate_toml(sections, existing_extra_funcs, blacklist, addr_to_names, outp
             continue
         if addr in all_addrs:
             continue  # already covered
+        if in_protected_range(addr) and addr not in existing_extra_funcs:
+            lines.append(f'    # PROTECTED (sound driver): {{ name = "{name}", addr = 0x{addr:06X} }},')
+            protected_count += 1
+            continue
         lines.append(f'    {{ name = "{name}", addr = 0x{addr:06X} }},')
         all_addrs.add(addr)
         tbl_count += 1
