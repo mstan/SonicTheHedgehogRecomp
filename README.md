@@ -1,61 +1,61 @@
 # Sonic the Hedgehog — Recompiled Runner
 
-> **WARNING: This is an early prototype / work in progress.** It is not production-ready, not feature-complete, and has significant known bugs. The game boots and runs, but core mechanics like jumping are broken, audio is garbled, and 6 runtime hacks are required to prevent crashes. This repo is published for educational and archival purposes — expect rough edges everywhere.
+> A native x64 static recompilation of Sonic the Hedgehog (Sega Genesis/Mega Drive). Green Hill Zone is fully playable — all 3 acts including the Robotnik boss fight.
 
 [![Gameplay Demo](https://img.youtube.com/vi/tMkbDKK5y38/maxresdefault.jpg)](https://youtu.be/tMkbDKK5y38)
 
-The game runner for the [Genesis 68K Static Recompiler](../segagenesisrecomp/). Takes 337 statically recompiled C functions generated from a Sonic 1 ROM and runs them natively inside [clownmdemu](https://github.com/Clownacy/clownmdemu), an open-source Mega Drive emulator core.
+The game runner for the [Genesis 68K Static Recompiler](https://github.com/mstan/segagenesisrecomp). Takes 530+ statically recompiled C functions generated from a Sonic 1 ROM and runs them natively inside [clownmdemu](https://github.com/Clownacy/clownmdemu), an open-source Mega Drive emulator core.
 
 ## Status
 
-This is a proof-of-concept prototype. It demonstrates that static recompilation of Genesis games is viable, but it is far from a polished or correct implementation.
+Green Hill Zone (Acts 1–3) is fully completable. Later zones are partially functional with ongoing function discovery.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Rendering (VDP, sprites, tilemaps, scroll planes) | Works | |
-| SEGA logo + voice sample | Works | |
-| Title screen / menus | Works | |
-| All zones (GHZ and others via attract demo) | Works | |
-| Sonic movement (run, roll, slopes, loops, springs) | Works | |
-| Ring pickups | Works | |
-| Enemies, item monitors | Works | |
-| HUD (score, lives, rings, timer) | Works | |
-| Palette fades | Works | Was broken, fixed via register save/restore |
-| Function dispatch | Works | 337 discovered functions, zero misses so far. Undiscovered functions likely exist on untested code paths |
-| **Jumping** | **Broken** | No height — joypad timing offset causes yvel to be overwritten to 0 |
-| **Scattered rings (damage)** | **Broken** | Rings scatter visually when Sonic takes damage, but can't be picked back up |
-| **Audio** | **Partial** | "SEGA!" sample plays, music/SFX faintly audible but garbled. Z80/FM don't advance during game code |
-| **Some sprite art** | **Broken** | Flower tiles use wrong art (VRAM timing issue) |
-| **Boot sequence transitions** | **Broken** | SEGA -> Sonic Team Presents -> title -> level transitions too fast. In-game transitions work fine |
-
-The runner contains 6 runtime workarounds for timing and state management issues that don't exist in a real interpreter. See [STATUS.md](STATUS.md) for the full breakdown.
+| Rendering (VDP, sprites, tilemaps, scroll) | ✅ Works | Sprite art, flowers, animated tiles all correct |
+| SEGA logo + voice sample | ✅ Works | |
+| Title screen / menus | ✅ Works | |
+| Boot sequence transitions | ✅ Works | SEGA → title → level load all functional |
+| Sonic movement (run, roll, slopes, loops) | ✅ Works | |
+| **Jumping** | ✅ **Fixed** | `addq.l #4,sp` + `rts` pattern now handled by recompiler |
+| Ring pickups | ✅ Works | |
+| Enemies, item monitors, springs | ✅ Works | |
+| Bridges, spike helixes, swinging platforms | ✅ Works | Interior label splits identified and fixed |
+| HUD (score, lives, rings, timer) | ✅ Works | |
+| Palette fades | ✅ Works | |
+| **Audio** | ✅ **Mostly fixed** | Music and SFX play correctly. Minor timing drift over long sessions |
+| Function dispatch | ✅ 530+ functions | Zero dispatch misses on GHZ. Later zones may have undiscovered functions |
+| **Green Hill Zone (all 3 acts + boss)** | ✅ **Complete** | First zone fully playable end to end |
+| Later zones | ⚠️ Partial | Functions discovered via interpreter coverage logging. Some objects missing |
+| Save states | ✅ Works | 9 slots (Shift+F1-F9 save, F1-F9 load) |
 
 ## How It Works
 
-The [recompiler](../segagenesisrecomp/) analyzes a Sonic 1 ROM binary and emits native C functions for every 68K subroutine — 337 functions total. These generated functions use the same memory layout and register state as the original 68K code, but execute as compiled x64 instead of interpreted instructions.
+The [recompiler](https://github.com/mstan/segagenesisrecomp) analyzes a Sonic 1 ROM binary and emits native C functions for every 68K subroutine — 530+ functions total. These generated functions use the same memory layout and register state as the original 68K code, but execute as compiled x64 instead of interpreted instructions.
 
 This runner hosts that generated code inside clownmdemu, which provides VDP rendering (graphics), Z80/FM/PSG (audio), and I/O (controllers). The generated 68K code runs on a Windows Fiber that interleaves with VDP scanline rendering via a cooperative yield model.
+
+A TCP debug server (port 4378) provides live game state inspection, time-series Sonic state queries, VRAM inspection, and scriptable input injection for automated testing.
 
 ## Prerequisites
 
 - Visual Studio 2022 (MSVC)
 - CMake 3.16+
 - SDL2 2.28+ (bundled)
-- A Sonic the Hedgehog (Genesis) ROM file
+- A Sonic the Hedgehog (Genesis) ROM file (.bin/.md/.gen/.smd)
 
 ## Build and Run
 
 ```bash
-# Clone both repos side by side:
-git clone --recursive <segagenesisrecomp-url>
-git clone <SonicTheHedgehogRecomp-url>
-
+git clone --recursive https://github.com/mstan/SonicTheHedgehogRecomp.git
 cd SonicTheHedgehogRecomp
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DENABLE_RECOMPILED_CODE=ON
 cmake --build build --config Release
 
-# Place your ROM in the project directory
-build\Release\SonicTheHedgehogRecomp.exe sonic.bin
+# Launch — file picker appears if no ROM argument given
+build\Release\SonicTheHedgehogRecomp.exe
+# Or specify ROM directly:
+build\Release\SonicTheHedgehogRecomp.exe path\to\sonic.bin
 ```
 
 ## Controls
@@ -63,18 +63,38 @@ build\Release\SonicTheHedgehogRecomp.exe sonic.bin
 | Key | Action |
 |-----|--------|
 | Arrow keys | D-pad |
-| Z | A button |
+| Z | A button (jump) |
 | X | B button |
 | C | C button |
 | Enter | Start |
-| F5 | Toggle turbo mode |
-| F12 | Screenshot |
+| Tab (hold) | Turbo mode |
+| Shift+F1-F9 | Save state |
+| F1-F9 | Load state |
 | Escape | Quit |
 
-## Known Issues
+## Debug Tools
 
-See [STATUS.md](STATUS.md) for the full list of known bugs, runtime workarounds, architecture limitations, and development history (including which investigation approaches worked and which were dead ends).
+A TCP debug server listens on port 4378 while the game runs. Use `tools/dbg.py` for CLI access:
+
+```bash
+python tools/dbg.py ping              # Check connection
+python tools/dbg.py sonic_state       # Sonic's position, velocity, status
+python tools/dbg.py sonic_history 100 200  # Time-series state
+python tools/dbg.py object_table      # Active objects
+python tools/dbg.py read_memory 0xFF0000 32  # Memory inspection
+```
+
+## Adding New Functions
+
+When the game hits an uncompiled function, it logs `dispatch miss: $XXXXXX` to the console. To compile it:
+
+1. Play the game (or use the interpreter build for full coverage)
+2. Run `python tools/diff_coverage.py` to find missing functions
+3. Add safe entries to `game.cfg` (check `blacklist.txt` for known-bad interior labels)
+4. Regenerate with the recompiler, rebuild
 
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE.md) — free for non-commercial use. See [LICENSE.md](LICENSE.md) for details.
+
+ROM files are NOT included — you must provide your own legally obtained copy.
