@@ -19,3 +19,10 @@ void (*g_hybrid_pre_insn_fn)(cc_u32l pc);
  * so VDP/Z80 sync progresses. Reset before each native function call.
  * Throwaway shim; dies when the interpreter is dropped. */
 cc_u32f g_hybrid_cycle_counter;
+
+/* Frame counter — defined in glue.c for native/hybrid builds.
+ * Provide a fallback here for interpreter-only builds so cmd_server.c links. */
+#if !ENABLE_RECOMPILED_CODE && !HYBRID_RECOMPILED_CODE
+#include <stdint.h>
+uint64_t g_frame_count = 0;
+#endif
