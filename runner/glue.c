@@ -23,9 +23,6 @@
 
 /* genesis_runtime.h interface */
 #include "genesis_runtime.h"
-#ifndef MAX_MISS_UNIQUE
-#define MAX_MISS_UNIQUE 64
-#endif
 
 /* clownmdemu bus layer */
 #include "bus-main-m68k.h"
@@ -152,7 +149,20 @@ void glue_reset_frame_sync(void)
     s_cpu_data.sync.io_ports[2].current_cycle = 0;
 }
 
+/* Hybrid verifier sync snapshot/restore — saves s_cpu_data sync state */
+#if HYBRID_RECOMPILED_CODE
+static CPUCallbackUserData s_sync_snapshot;
 
+void glue_snapshot_sync(void)
+{
+    memcpy(&s_sync_snapshot, &s_cpu_data, sizeof(s_cpu_data));
+}
+
+void glue_restore_sync(void)
+{
+    memcpy(&s_cpu_data, &s_sync_snapshot, sizeof(s_cpu_data));
+}
+#endif
 
 /* =========================================================================
  * VBlank / single-threaded fiber sync (Step 2)
@@ -574,7 +584,11 @@ void glue_load_state(FILE *sf)
  * access including non-bus instructions), we use budget/48 ≈ 10 per access.
  * This keeps g_hybrid_cycle_counter aligned with Iterate's scanline timing. */
 #define CYCLES_PER_BUS_ACCESS 10u
+#if ENABLE_RECOMPILED_CODE
 #define HYBRID_BUMP_CYCLES() do { g_hybrid_cycle_counter += CYCLES_PER_BUS_ACCESS; check_cycle_budget(); } while(0)
+#else
+#define HYBRID_BUMP_CYCLES() do { g_hybrid_cycle_counter += CYCLES_PER_BUS_ACCESS; } while(0)
+#endif
 
 uint16_t m68k_read16(uint32_t byte_addr)
 {
@@ -716,7 +730,11 @@ void m68k_write32(uint32_t byte_addr, uint32_t val)
  * Dispatch
  * ========================================================================= */
 
-static void log_true_miss(uint32_t target_pc);  /* forward decl */
+#if ENABLE_RECOMPILED_CODE
+static void log_true_miss(uint32_t target_pc);  /* forward decl — defined below */
+#else
+static void log_true_miss(uint32_t target_pc) { (void)target_pc; }
+#endif
 
 /* Check if addr falls inside an existing compiled function's range.
  * Uses the dispatch table exported by game_dispatch_get_table(). */
