@@ -20,6 +20,10 @@ FULL_C        = GEN_DIR / "sonic_full.c"
 DISP_C        = GEN_DIR / "sonic_dispatch.c"
 L1_FIXTURE    = (REPO_ROOT / "segagenesisrecomp" / "tests" / "fixtures"
                  / "sonic1" / "l1" / "instructions.txt")
+# Every disasm-emitted code address, including macro-expanded
+# instructions that don't make it into the L1 fixture itself.
+CODE_ADDRS    = (REPO_ROOT / "segagenesisrecomp" / "tests" / "fixtures"
+                 / "sonic1" / "l1" / "code_addresses.txt")
 
 FUNC_DEF_RE  = re.compile(r"^void (func_[0-9A-Fa-f]+)\(void\)\s*\{", re.MULTILINE)
 FUNC_DECL_RE = re.compile(r"^void (func_[0-9A-Fa-f]+)\(void\)\s*;",   re.MULTILINE)
@@ -326,6 +330,33 @@ def _is_interior_label(addr: int) -> bool:
             continue
         return mnems[pa] not in _TERMINATORS
     return False
+
+
+def test_no_data_addresses_promoted_to_functions():
+    """HARD failure: any defined func_XXXXXX whose address is NOT a
+    code address according to the disasm. Uses the code_addresses.txt
+    side file (every disasm-emitted code address, including macro-
+    expanded instructions that don't make it into the L1 fixture).
+    Common cause of a hit: stale `extra_func` entries in game.cfg
+    pointing at jump-table data labels (PalCycle_Index, DLE_Index,
+    etc.)."""
+    if not CODE_ADDRS.exists():
+        return
+    code_set: set[int] = set()
+    for line in CODE_ADDRS.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"): continue
+        try: code_set.add(int(line, 16))
+        except ValueError: pass
+    defs = _func_addr_set(_read(FULL_C))
+    data_promoted = sorted(a for a in defs if a not in code_set)
+    if data_promoted:
+        sample = ", ".join(f"${a:06X}" for a in data_promoted[:8])
+        raise AssertionError(
+            f"{len(data_promoted)} func_XXXXXX entries point at addresses "
+            f"the disasm marks as data (not code). Likely stale game.cfg "
+            f"extra_func entries. First few: {sample}"
+        )
 
 
 def test_no_interior_labels_split_into_functions():
