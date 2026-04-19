@@ -13,10 +13,13 @@ from __future__ import annotations
 import pathlib
 import re
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-GEN_DIR   = REPO_ROOT / "segagenesisrecomp" / "sonicthehedgehog" / "generated"
-FULL_C    = GEN_DIR / "sonic_full.c"
-DISP_C    = GEN_DIR / "sonic_dispatch.c"
+REPO_ROOT     = pathlib.Path(__file__).resolve().parents[1]
+SONIC_DIR     = REPO_ROOT / "segagenesisrecomp" / "sonicthehedgehog"
+GEN_DIR       = SONIC_DIR / "generated"
+FULL_C        = GEN_DIR / "sonic_full.c"
+DISP_C        = GEN_DIR / "sonic_dispatch.c"
+L1_FIXTURE    = (REPO_ROOT / "segagenesisrecomp" / "tests" / "fixtures"
+                 / "sonic1" / "l1" / "instructions.txt")
 
 FUNC_DEF_RE  = re.compile(r"^void (func_[0-9A-Fa-f]+)\(void\)\s*\{", re.MULTILINE)
 FUNC_DECL_RE = re.compile(r"^void (func_[0-9A-Fa-f]+)\(void\)\s*;",   re.MULTILINE)
@@ -148,3 +151,125 @@ def test_every_direct_call_resolves():
         f"{len(unresolved)} direct func_XXXX() calls in sonic_full.c have no "
         f"definition (link would fail): {sorted(unresolved)[:5]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Disasm coverage: every JSR/BSR target the disasm reaches must be a
+# defined function in our generated C. Missing entries are HARD failures
+# (the recompiler is leaving real subroutines un-translated). Extra
+# functions in the codegen that the disasm doesn't reach as call targets
+# are reported as a soft WARNING — they may be valid (e.g. interrupt
+# handlers, dispatch-table targets) or they may indicate over-eager
+# discovery from decoded data.
+#
+# Oracle: the L1 fixture (assembled from the s1disasm REV00 listing,
+# sha1-verified to match sonic.bin). Decoding JSR/BSR target addresses
+# from raw bytes is independent of our recompiler decoder, so this test
+# can fail even if the decoder agrees with itself.
+# ---------------------------------------------------------------------------
+
+# Fixture row: "<addr_hex> <bytes_hex>\t<mnem>\t<ops>"
+_FIX_ROW_RE = re.compile(
+    r"^([0-9a-fA-F]+)\s+([0-9a-fA-F]+)\t([^\t]+)\t",
+)
+
+def _disasm_call_targets() -> set[int]:
+    """Return the set of static JSR/BSR target addresses the disasm calls.
+
+    Decodes target offsets from the assembled bytes (independent of our
+    decoder). Skips dynamic forms (register-indirect JSR (An), indexed
+    JSR table(PC,Dn.W) etc.) — those have no static target so they
+    don't claim a specific address must exist.
+    """
+    if not L1_FIXTURE.exists():
+        return set()
+    targets: set[int] = set()
+    for line in L1_FIXTURE.read_text(encoding="utf-8").splitlines():
+        m = _FIX_ROW_RE.match(line)
+        if not m:
+            continue
+        addr = int(m.group(1), 16)
+        bh   = m.group(2)
+        mn   = m.group(3).lower()
+        if not (mn.startswith("jsr") or mn.startswith("bsr")):
+            continue
+        b = bytes.fromhex(bh)
+        if len(b) < 2:
+            continue
+        op = (b[0] << 8) | b[1]
+        # BSR family: 0x61xx
+        if (op & 0xFF00) == 0x6100:
+            disp8 = op & 0xFF
+            if disp8 == 0:        # 0x6100 = BSR.W word displacement
+                if len(b) < 4: continue
+                d = (b[2] << 8) | b[3]
+                if d & 0x8000: d -= 0x10000
+                targets.add((addr + 2 + d) & 0xFFFFFF)
+            elif disp8 == 0xFF:   # 0x61FF = BSR.L long displacement (rare)
+                if len(b) < 6: continue
+                d = (b[2] << 24) | (b[3] << 16) | (b[4] << 8) | b[5]
+                if d & 0x80000000: d -= 0x100000000
+                targets.add((addr + 2 + d) & 0xFFFFFF)
+            else:                  # BSR.S short displacement
+                d = disp8
+                if d & 0x80: d -= 0x100
+                targets.add((addr + 2 + d) & 0xFFFFFF)
+            continue
+        # JSR with absolute-long EA: 0x4EB9 + 4-byte abs address
+        if op == 0x4EB9 and len(b) >= 6:
+            t = (b[2] << 24) | (b[3] << 16) | (b[4] << 8) | b[5]
+            targets.add(t & 0xFFFFFF)
+            continue
+        # JSR with absolute-word EA: 0x4EB8 + 2-byte signed-extended addr
+        if op == 0x4EB8 and len(b) >= 4:
+            t = (b[2] << 8) | b[3]
+            if t & 0x8000: t -= 0x10000
+            targets.add(t & 0xFFFFFF)
+            continue
+        # JSR (d16,PC): 0x4EBA + 2-byte signed displacement from PC
+        if op == 0x4EBA and len(b) >= 4:
+            d = (b[2] << 8) | b[3]
+            if d & 0x8000: d -= 0x10000
+            targets.add((addr + 2 + d) & 0xFFFFFF)
+            continue
+        # Other JSR forms have no static target — skip.
+    return targets
+
+
+def _func_addr_set(src: str) -> set[int]:
+    return {int(name[5:], 16) for name in FUNC_DEF_RE.findall(src)}
+
+
+def test_no_disasm_subroutines_missing_from_codegen():
+    """HARD failure: any disasm-reachable JSR/BSR target that isn't a
+    defined func_XXXXXX in the generated code."""
+    targets = _disasm_call_targets()
+    if not targets:
+        return  # fixture not generated yet; not this test's job to enforce
+    defs = _func_addr_set(_read(FULL_C))
+    missing = sorted(targets - defs)
+    if missing:
+        sample = ", ".join(f"${a:06X}" for a in missing[:8])
+        raise AssertionError(
+            f"{len(missing)} disasm-reached JSR/BSR targets have no "
+            f"matching func_XXXXXX in sonic_full.c (missing translations). "
+            f"First few: {sample}"
+        )
+
+
+def test_codegen_extras_not_in_disasm_call_set():
+    """SOFT warning: defined functions that the disasm never call-targets
+    statically. Could be legitimate (interrupt handlers, dispatch-table
+    targets the recompiler discovered through other means) or over-eager
+    function discovery. Printed as info; never fails."""
+    targets = _disasm_call_targets()
+    if not targets:
+        return
+    defs = _func_addr_set(_read(FULL_C))
+    extras = sorted(defs - targets)
+    if extras:
+        sample = ", ".join(f"${a:06X}" for a in extras[:8])
+        # Print to stdout — the runner picks it up but never fails on it.
+        print(f"  WARN  {len(extras)} codegen functions not in disasm "
+              f"call set (interrupt handlers / dispatch targets / over-"
+              f"eager discovery). First few: {sample}")
