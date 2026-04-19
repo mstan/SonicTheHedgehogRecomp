@@ -273,3 +273,74 @@ def test_codegen_extras_not_in_disasm_call_set():
         print(f"  WARN  {len(extras)} codegen functions not in disasm "
               f"call set (interrupt handlers / dispatch targets / over-"
               f"eager discovery). First few: {sample}")
+
+
+# ---------------------------------------------------------------------------
+# Wrong-splits warning: defined functions whose physical predecessor is a
+# non-terminator instruction. These addresses are interior labels of the
+# preceding function (reached by fall-through), not subroutine entries.
+# Promoting them to func_XXXXXX produces early-RTS-mid-function patterns
+# when the parent's body terminates early at the split. SOFT warning until
+# we have a properly-tested auto-merge implementation; tracking the count
+# lets us detect regressions.
+# ---------------------------------------------------------------------------
+
+# Cache: parse the L1 fixture into (start_addr -> instruction_byte_length,
+# start_addr -> mnemonic_no_size). Used to find the predecessor of a given
+# address without a reverse decoder.
+_FIX_INSN_CACHE: tuple[dict[int, int], dict[int, str]] | None = None
+
+def _fixture_insn_index() -> tuple[dict[int, int], dict[int, str]]:
+    global _FIX_INSN_CACHE
+    if _FIX_INSN_CACHE is not None:
+        return _FIX_INSN_CACHE
+    starts: dict[int, int] = {}
+    mnems:  dict[int, str] = {}
+    if L1_FIXTURE.exists():
+        for line in L1_FIXTURE.read_text(encoding="utf-8").splitlines():
+            m = _FIX_ROW_RE.match(line)
+            if not m: continue
+            addr = int(m.group(1), 16)
+            nbytes = len(m.group(2)) // 2
+            starts[addr] = nbytes
+            mnems[addr]  = m.group(3).lower().split(".")[0]
+    _FIX_INSN_CACHE = (starts, mnems)
+    return _FIX_INSN_CACHE
+
+
+_TERMINATORS = frozenset({"rts", "rte", "rtr", "stop", "jmp", "bra"})
+
+def _is_interior_label(addr: int) -> bool:
+    """True iff some instruction in the fixture ends exactly at `addr` and
+    that instruction is NOT a terminator. Returns False if no predecessor
+    is found (safer default — treats unknown as fresh entry)."""
+    starts, mnems = _fixture_insn_index()
+    for back in (2, 4, 6, 8, 10):
+        pa = addr - back
+        if pa < 0:
+            return False
+        n = starts.get(pa)
+        if n is None:
+            continue
+        if pa + n != addr:
+            continue
+        return mnems[pa] not in _TERMINATORS
+    return False
+
+
+def test_no_interior_labels_split_into_functions():
+    """SOFT warning (high-watermark tracker): defined functions whose
+    predecessor instruction is a non-terminator. These were promoted by
+    boundary-split when the disasm intends them as interior labels of the
+    preceding function. Until proper auto-merge is implemented, we just
+    track the count so regressions show up immediately."""
+    if not L1_FIXTURE.exists():
+        return
+    defs = _func_addr_set(_read(FULL_C))
+    interior = sorted(a for a in defs if _is_interior_label(a))
+    if interior:
+        sample = ", ".join(f"${a:06X}" for a in interior[:8])
+        print(f"  WARN  {len(interior)} interior-label addresses promoted "
+              f"to functions (auto-merge not implemented; bcc-from-sibling "
+              f"references will hit early-RTS-mid-function). "
+              f"First few: {sample}")
