@@ -138,3 +138,12 @@ if(MSVC)
     )
     target_link_options(SonicTheHedgehogRecomp PRIVATE /MAP)
 endif()
+
+# ---------------------------------------------------------------------------
+# Framework tests (L1 decoder harness). Opt-in via -DBUILD_TESTS=ON.
+# ---------------------------------------------------------------------------
+
+option(BUILD_TESTS "Build L1 decoder test harness" OFF)
+if(BUILD_TESTS)
+    add_subdirectory("${RECOMP_ROOT}/tests" tests)
+endif()
