@@ -33,6 +33,8 @@ if(ENABLE_RECOMPILED_CODE)
         "Use stub instead of clown68000-interpreter" FORCE)
 endif()
 
+include("${RECOMP_ROOT}/runner/clownmdemu_patches.cmake")
+
 add_subdirectory("${RECOMP_ROOT}/clownmdemu-core" clownmdemu-core)
 
 # ---------------------------------------------------------------------------
