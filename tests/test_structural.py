@@ -360,18 +360,58 @@ def test_no_data_addresses_promoted_to_functions():
 
 
 def test_no_interior_labels_split_into_functions():
-    """SOFT warning (high-watermark tracker): defined functions whose
-    predecessor instruction is a non-terminator. These were promoted by
-    boundary-split when the disasm intends them as interior labels of the
-    preceding function. Until proper auto-merge is implemented, we just
-    track the count so regressions show up immediately."""
+    """SOFT warning: interior-label functions whose parent doesn't tail-
+    call them. The bigger set of "interior labels" (functions whose prior
+    instruction is a non-terminator) includes a lot of cosmetic noise:
+    legitimate multi-entry routines + boundary-split discoveries that
+    the recompiler ALREADY handles by emitting a fall-through tail call
+    (`func_NEXT(); return;`) at the parent's end. Only when that tail
+    call DOESN'T fire is the wrong-split a real runtime bug. This test
+    counts the actual unhandled cases."""
     if not L1_FIXTURE.exists():
         return
-    defs = _func_addr_set(_read(FULL_C))
-    interior = sorted(a for a in defs if _is_interior_label(a))
-    if interior:
-        sample = ", ".join(f"${a:06X}" for a in interior[:8])
-        print(f"  WARN  {len(interior)} interior-label addresses promoted "
-              f"to functions (auto-merge not implemented; bcc-from-sibling "
+    src = _read(FULL_C)
+    defs_sorted = sorted(_func_addr_set(src))
+    interior = sorted(a for a in defs_sorted if _is_interior_label(a))
+    if not interior:
+        return
+
+    # Slice each function's body once; check if it ends with
+    # `func_<NEXT>(); return;` for the next defined function.
+    body_re = re.compile(r"^void (func_[0-9A-Fa-f]+)\(void\)\s*\{", re.MULTILINE)
+    starts: list[tuple[int, int]] = []  # (file_offset, addr)
+    for m in body_re.finditer(src):
+        starts.append((m.start(), int(m.group(1)[5:], 16)))
+    starts.append((len(src), 0))
+    body_of: dict[int, str] = {}
+    for i in range(len(starts) - 1):
+        body_of[starts[i][1]] = src[starts[i][0]:starts[i + 1][0]]
+
+    def parent_of(addr: int) -> int | None:
+        prev = None
+        for d in defs_sorted:
+            if d >= addr: break
+            prev = d
+        return prev
+
+    unhandled = []
+    for a in interior:
+        p = parent_of(a)
+        if p is None:
+            unhandled.append(a); continue
+        body = body_of.get(p, "")
+        # Match either `func_X(); return;` or `func_X();<newline>return`
+        # near the end. Last instruction of parent emits the tail call
+        # before the closing brace.
+        wanted = f"func_{a:06X}();"
+        if wanted in body:
+            continue
+        unhandled.append(a)
+
+    if unhandled:
+        sample = ", ".join(f"${a:06X}" for a in unhandled[:8])
+        print(f"  WARN  {len(unhandled)} interior-label functions whose "
+              f"parent does NOT tail-call them (real wrong-splits — "
+              f"bcc-from-sibling "
               f"references will hit early-RTS-mid-function). "
               f"First few: {sample}")
