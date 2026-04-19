@@ -411,7 +411,8 @@ def test_no_interior_labels_split_into_functions():
     if unhandled:
         sample = ", ".join(f"${a:06X}" for a in unhandled[:8])
         print(f"  WARN  {len(unhandled)} interior-label functions whose "
-              f"parent does NOT tail-call them (real wrong-splits — "
-              f"bcc-from-sibling "
+              f"parent doesn't tail-call them. Usually means the parent "
+              f"isn't generated at all — missing cfg seed for the "
+              f"preceding labeled subroutine. bcc-from-sibling "
               f"references will hit early-RTS-mid-function). "
               f"First few: {sample}")
