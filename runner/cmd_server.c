@@ -1076,6 +1076,34 @@ static void handle_frame_timeseries(int id, const char *json)
         else if (strcmp(field, "z80.SP")         == 0) jb_printf(&j, "%u",  r->z80.SP);
         else if (strcmp(field, "vdp.access_addr")== 0) jb_printf(&j, "%u",  r->vdp.access_address);
         else if (strcmp(field, "verify_pass")    == 0) jb_printf(&j, "%d",  r->verify_pass);
+        /* Generic memory taps — accept "wram[HEX]" / "wram16[HEX]" /
+         * "wram32[HEX]" for arbitrary-address timeseries against the
+         * 64 KB 68K work-RAM snapshot in this frame. HEX is a 16-bit
+         * offset (low 16 bits of $FF0000-$FFFFFF). */
+        else if (strncmp(field, "wram[",   5) == 0) {
+            unsigned a = (unsigned)strtoul(field + 5, NULL, 16) & 0xFFFFu;
+            jb_printf(&j, "%u", (unsigned)r->wram[a]);
+        }
+        else if (strncmp(field, "wram16[", 7) == 0) {
+            unsigned a = (unsigned)strtoul(field + 7, NULL, 16) & 0xFFFEu;
+            jb_printf(&j, "%u", ((unsigned)r->wram[a] << 8) | r->wram[a+1]);
+        }
+        else if (strncmp(field, "wram32[", 7) == 0) {
+            unsigned a = (unsigned)strtoul(field + 7, NULL, 16) & 0xFFFCu;
+            jb_printf(&j, "%u",
+                ((unsigned)r->wram[a]   << 24) |
+                ((unsigned)r->wram[a+1] << 16) |
+                ((unsigned)r->wram[a+2] <<  8) |
+                 (unsigned)r->wram[a+3]);
+        }
+        else if (strncmp(field, "z80ram[", 7) == 0) {
+            unsigned a = (unsigned)strtoul(field + 7, NULL, 16) & 0x1FFFu;
+            jb_printf(&j, "%u", (unsigned)r->z80.ram[a]);
+        }
+        else if (strncmp(field, "fm[",     3) == 0) {
+            unsigned a = (unsigned)strtoul(field + 3, NULL, 16);
+            jb_printf(&j, "%u", a < r->fm.raw_len ? (unsigned)r->fm.raw[a] : 0u);
+        }
         else                                            jb_printf(&j, "null");
     }
     jb_printf(&j, "]}");
