@@ -32,6 +32,7 @@ typedef int sock_t;
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <inttypes.h>
 
 #include "cmd_server.h"
@@ -807,6 +808,369 @@ static void handle_read_joypad_port(int id)
 }
 
 /* =========================================================================
+ * Phase 4 — full ring-buffer queries + live subsystem snapshots
+ *
+ * These commands surface the per-frame hardware snapshot captured in
+ * cmd_server_record_frame() (see frame_record.h). For the audio-debug
+ * use case the consumer is tools/compare_runs.py which polls both
+ * native and oracle and walks until first divergence.
+ * ========================================================================= */
+
+/* Hex-encode a byte buffer into out (must hold at least 2*len+1 bytes,
+ * caller-allocated). Trailing NUL written. Returns bytes written. */
+static int hex_encode(const uint8_t *in, int len, char *out)
+{
+    static const char H[] = "0123456789abcdef";
+    int i;
+    for (i = 0; i < len; i++) {
+        out[i * 2 + 0] = H[(in[i] >> 4) & 0xF];
+        out[i * 2 + 1] = H[ in[i]       & 0xF];
+    }
+    out[len * 2] = '\0';
+    return len * 2;
+}
+
+/* Locate a frame in the ring; returns NULL if not present. */
+static const FrameRecord *frame_lookup(uint32_t f)
+{
+    if (s_history_count == 0) return NULL;
+    uint32_t oldest = (s_history_count > FRAME_HISTORY_CAP)
+        ? s_history_count - FRAME_HISTORY_CAP : 0;
+    if (f < oldest || f >= s_history_count) return NULL;
+    const FrameRecord *r = &s_frame_history[f % FRAME_HISTORY_CAP];
+    if (r->frame != f) return NULL;
+    return r;
+}
+
+/* True if "include" string contains the named field token. The include
+ * arg is a comma-list, e.g. "m68k,vdp,vram". A NULL or empty include
+ * returns true for the small fields and false for blob fields. */
+static bool include_has(const char *include, const char *tok)
+{
+    if (!include || !*include) return false;
+    size_t tl = strlen(tok);
+    const char *p = include;
+    while (*p) {
+        const char *c = strchr(p, ',');
+        size_t n = c ? (size_t)(c - p) : strlen(p);
+        if (n == tl && strncmp(p, tok, tl) == 0) return true;
+        if (!c) break;
+        p = c + 1;
+    }
+    return false;
+}
+
+/* Dynamic JSON buffer, grows as needed. */
+typedef struct { char *buf; size_t len, cap; } JBuf;
+static void jb_init(JBuf *j) { j->cap = 4096; j->len = 0; j->buf = (char *)malloc(j->cap); j->buf[0] = '\0'; }
+static void jb_free(JBuf *j) { free(j->buf); j->buf = NULL; }
+static void jb_reserve(JBuf *j, size_t extra)
+{
+    if (j->len + extra + 1 > j->cap) {
+        while (j->len + extra + 1 > j->cap) j->cap *= 2;
+        j->buf = (char *)realloc(j->buf, j->cap);
+    }
+}
+static void jb_printf(JBuf *j, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    /* probe size */
+    va_list ap2; va_copy(ap2, ap);
+    int n = vsnprintf(NULL, 0, fmt, ap2);
+    va_end(ap2);
+    if (n < 0) { va_end(ap); return; }
+    jb_reserve(j, (size_t)n);
+    vsnprintf(j->buf + j->len, j->cap - j->len, fmt, ap);
+    j->len += n;
+    va_end(ap);
+}
+static void jb_append_hex(JBuf *j, const uint8_t *data, int len)
+{
+    jb_reserve(j, (size_t)len * 2 + 4);
+    j->buf[j->len++] = '"';
+    j->len += hex_encode(data, len, j->buf + j->len);
+    j->buf[j->len++] = '"';
+    j->buf[j->len] = '\0';
+}
+
+/* ---------- Per-snapshot JSON serializers ---------- */
+
+static void json_m68k(JBuf *j, const M68KRegSnap *m)
+{
+    jb_printf(j, "\"m68k\":{\"D\":[%u,%u,%u,%u,%u,%u,%u,%u],"
+                 "\"A\":[%u,%u,%u,%u,%u,%u,%u,%u],"
+                 "\"USP\":%u,\"PC\":%u,\"SR\":%u,"
+                 "\"flags\":{\"C\":%u,\"V\":%u,\"Z\":%u,\"N\":%u,\"X\":%u,\"S\":%u,\"imask\":%u}}",
+        m->D[0], m->D[1], m->D[2], m->D[3], m->D[4], m->D[5], m->D[6], m->D[7],
+        m->A[0], m->A[1], m->A[2], m->A[3], m->A[4], m->A[5], m->A[6], m->A[7],
+        m->USP, m->PC, m->SR,
+        m->flag_C, m->flag_V, m->flag_Z, m->flag_N, m->flag_X, m->flag_S, m->imask);
+}
+
+static void json_z80(JBuf *j, const Z80RegSnap *z, bool include_ram)
+{
+    jb_printf(j,
+        "\"z80\":{\"A\":%u,\"F\":%u,\"B\":%u,\"C\":%u,\"D\":%u,\"E\":%u,\"H\":%u,\"L\":%u,"
+        "\"Ap\":%u,\"Fp\":%u,\"Bp\":%u,\"Cp\":%u,\"Dp\":%u,\"Ep\":%u,\"Hp\":%u,\"Lp\":%u,"
+        "\"IXH\":%u,\"IXL\":%u,\"IYH\":%u,\"IYL\":%u,\"I\":%u,\"R\":%u,"
+        "\"SP\":%u,\"PC\":%u,\"iff\":%u,\"irq_pending\":%u,"
+        "\"bus_requested\":%u,\"reset_held\":%u,\"bank\":%u",
+        z->A, z->F, z->B, z->C, z->D, z->E, z->H, z->L,
+        z->Ap, z->Fp, z->Bp, z->Cp, z->Dp, z->Ep, z->Hp, z->Lp,
+        z->IXH, z->IXL, z->IYH, z->IYL, z->I, z->R,
+        z->SP, z->PC, z->iff_enabled, z->irq_pending,
+        z->bus_requested, z->reset_held, z->bank);
+    if (include_ram) {
+        jb_printf(j, ",\"ram\":");
+        jb_append_hex(j, z->ram, sizeof(z->ram));
+    }
+    jb_printf(j, "}");
+}
+
+static void json_vdp(JBuf *j, const VdpSnap *v, const char *include)
+{
+    jb_printf(j,
+        "\"vdp\":{\"plane_a\":%u,\"plane_b\":%u,\"window\":%u,\"sprite_table\":%u,\"hscroll\":%u,"
+        "\"access_addr\":%u,\"access_code\":%u,\"increment\":%u,"
+        "\"display\":%u,\"vint\":%u,\"hint\":%u,\"h40\":%u,\"v30\":%u,"
+        "\"shadow_hl\":%u,\"bg_color\":%u,\"hint_int\":%u,"
+        "\"plane_w_shift\":%u,\"plane_h_mask\":%u,\"hscroll_mask\":%u,\"vscroll_mode\":%u,"
+        "\"in_vblank\":%u,\"dma\":%u,\"dma_mode\":%u,\"dma_len\":%u,\"dma_src\":%u",
+        v->plane_a_addr, v->plane_b_addr, v->window_addr, v->sprite_table_addr, v->hscroll_addr,
+        v->access_address, v->access_code, v->access_increment,
+        v->display_enabled, v->v_int_enabled, v->h_int_enabled, v->h40_enabled, v->v30_enabled,
+        v->shadow_highlight_enabled, v->background_colour, v->h_int_interval,
+        v->plane_width_shift, v->plane_height_bitmask, v->hscroll_mask, v->vscroll_mode,
+        v->currently_in_vblank, v->dma_enabled, v->dma_mode, v->dma_length, v->dma_source);
+    if (include_has(include, "vram")) {
+        jb_printf(j, ",\"vram\":");
+        jb_append_hex(j, v->vram, sizeof(v->vram));
+    }
+    if (include_has(include, "cram")) {
+        jb_printf(j, ",\"cram\":[");
+        for (int i = 0; i < 64; i++) jb_printf(j, "%s%u", i ? "," : "", v->cram[i]);
+        jb_printf(j, "]");
+    }
+    if (include_has(include, "vsram")) {
+        jb_printf(j, ",\"vsram\":[");
+        for (int i = 0; i < 64; i++) jb_printf(j, "%s%u", i ? "," : "", v->vsram[i]);
+        jb_printf(j, "]");
+    }
+    jb_printf(j, "}");
+}
+
+static void json_fm(JBuf *j, const FmSnap *fm)
+{
+    jb_printf(j, "\"fm\":{\"len\":%u,\"raw\":", (unsigned)fm->raw_len);
+    jb_append_hex(j, fm->raw, fm->raw_len);
+    jb_printf(j, "}");
+}
+
+static void json_psg(JBuf *j, const PsgSnap *p)
+{
+    jb_printf(j, "\"psg\":{\"len\":%u,\"raw\":", (unsigned)p->raw_len);
+    jb_append_hex(j, p->raw, p->raw_len);
+    jb_printf(j, "}");
+}
+
+static void json_game_data(JBuf *j, const uint8_t *gd)
+{
+    /* Sonic-decoded view + raw hex for general consumers. */
+    const SonicGameData *sd = sonic_extras_view(gd);
+    jb_printf(j,
+        "\"game_data\":{\"sonic\":{\"version\":%u,\"game_mode\":%u,\"vblank_flag\":%u,"
+        "\"joy_held\":%u,\"joy_press\":%u,\"scroll_x\":%u,"
+        "\"x\":%u,\"y\":%u,\"xvel\":%d,\"yvel\":%d,\"inertia\":%d,"
+        "\"routine\":%u,\"status\":%u,\"angle\":%u,\"obj_id\":%u},"
+        "\"raw\":",
+        sd->version, sd->game_mode, sd->vblank_flag,
+        sd->joy_held, sd->joy_press, sd->scroll_x,
+        sd->sonic_x, sd->sonic_y, (int)sd->sonic_xvel, (int)sd->sonic_yvel, (int)sd->sonic_inertia,
+        sd->sonic_routine, sd->sonic_status, sd->sonic_angle, sd->sonic_obj_id);
+    jb_append_hex(j, gd, 64);
+    jb_printf(j, "}");
+}
+
+/* ---------- get_frame ---------- */
+
+static void handle_get_frame(int id, const char *json)
+{
+    int f = json_get_int(json, "frame", -1);
+    if (f < 0) { send_err(id, "missing or invalid frame"); return; }
+    const FrameRecord *r = frame_lookup((uint32_t)f);
+    if (!r) { send_err(id, "frame not in ring buffer"); return; }
+
+    char include_buf[256] = {0};
+    json_get_str(json, "include", include_buf, sizeof(include_buf));
+    const char *inc = include_buf;
+    bool inc_all = include_has(inc, "all");
+
+    JBuf j; jb_init(&j);
+    jb_printf(&j, "{\"id\":%d,\"ok\":true,\"frame\":%u,\"verify_pass\":%d,",
+              id, r->frame, r->verify_pass);
+
+    json_m68k(&j, &r->m68k);
+    jb_printf(&j, ",");
+    json_z80(&j, &r->z80, inc_all || include_has(inc, "z80_ram"));
+    jb_printf(&j, ",");
+    json_vdp(&j, &r->vdp, inc_all ? "vram,cram,vsram" : inc);
+    jb_printf(&j, ",");
+    json_fm(&j, &r->fm);
+    jb_printf(&j, ",");
+    json_psg(&j, &r->psg);
+    jb_printf(&j, ",");
+    json_game_data(&j, r->game_data);
+    if (inc_all || include_has(inc, "wram")) {
+        jb_printf(&j, ",\"wram\":");
+        jb_append_hex(&j, r->wram, sizeof(r->wram));
+    }
+    jb_printf(&j, "}");
+    cmd_send_response(j.buf);
+    jb_free(&j);
+}
+
+/* ---------- frame_timeseries ---------- */
+/* Returns a single field across a frame range. Avoids the cost of
+ * marshaling the full record for many frames when you only need one
+ * scalar (e.g., "fm.raw[0x28] across frames 100-400"). */
+
+static void handle_frame_timeseries(int id, const char *json)
+{
+    int from = json_get_int(json, "from", -1);
+    int to   = json_get_int(json, "to",   -1);
+    char field[64] = {0};
+    if (from < 0 || to < 0 || to < from) { send_err(id, "invalid from/to"); return; }
+    if (to - from + 1 > FRAME_HISTORY_CAP) { send_err(id, "range exceeds ring"); return; }
+    if (!json_get_str(json, "field", field, sizeof(field))) { send_err(id, "missing field"); return; }
+
+    JBuf j; jb_init(&j);
+    jb_printf(&j, "{\"id\":%d,\"ok\":true,\"field\":\"%s\",\"values\":[", id, field);
+
+    for (int f = from; f <= to; f++) {
+        if (f > from) jb_printf(&j, ",");
+        const FrameRecord *r = frame_lookup((uint32_t)f);
+        if (!r) { jb_printf(&j, "null"); continue; }
+        const SonicGameData *sd = sonic_extras_view(r->game_data);
+
+        /* Field aliases — extend as needed. */
+        if      (strcmp(field, "sonic.x")        == 0) jb_printf(&j, "%u",  sd->sonic_x);
+        else if (strcmp(field, "sonic.y")        == 0) jb_printf(&j, "%u",  sd->sonic_y);
+        else if (strcmp(field, "sonic.xvel")     == 0) jb_printf(&j, "%d",  sd->sonic_xvel);
+        else if (strcmp(field, "sonic.yvel")     == 0) jb_printf(&j, "%d",  sd->sonic_yvel);
+        else if (strcmp(field, "sonic.routine")  == 0) jb_printf(&j, "%u",  sd->sonic_routine);
+        else if (strcmp(field, "game_mode")      == 0) jb_printf(&j, "%u",  sd->game_mode);
+        else if (strcmp(field, "scroll_x")       == 0) jb_printf(&j, "%u",  sd->scroll_x);
+        else if (strcmp(field, "m68k.SR")        == 0) jb_printf(&j, "%u",  r->m68k.SR);
+        else if (strcmp(field, "m68k.A7")        == 0) jb_printf(&j, "%u",  r->m68k.A[7]);
+        else if (strcmp(field, "z80.PC")         == 0) jb_printf(&j, "%u",  r->z80.PC);
+        else if (strcmp(field, "z80.SP")         == 0) jb_printf(&j, "%u",  r->z80.SP);
+        else if (strcmp(field, "vdp.access_addr")== 0) jb_printf(&j, "%u",  r->vdp.access_address);
+        else if (strcmp(field, "verify_pass")    == 0) jb_printf(&j, "%d",  r->verify_pass);
+        else                                            jb_printf(&j, "null");
+    }
+    jb_printf(&j, "]}");
+    cmd_send_response(j.buf);
+    jb_free(&j);
+}
+
+/* ---------- live state snapshots ---------- */
+
+static void handle_z80_state(int id, const char *json)
+{
+    Z80RegSnap z; z80_snapshot(&z, &g_clownmdemu);
+    bool with_ram = json_get_int(json, "include_ram", 0) != 0;
+    JBuf j; jb_init(&j);
+    jb_printf(&j, "{\"id\":%d,\"ok\":true,", id);
+    json_z80(&j, &z, with_ram);
+    jb_printf(&j, "}");
+    cmd_send_response(j.buf);
+    jb_free(&j);
+}
+
+static void handle_read_z80_ram(int id, const char *json)
+{
+    int addr = json_get_int(json, "addr", 0);
+    int len  = json_get_int(json, "len",  16);
+    if (addr < 0 || len < 0 || addr + len > 0x2000) {
+        send_err(id, "addr/len out of Z80 RAM range");
+        return;
+    }
+    Z80RegSnap z; z80_snapshot(&z, &g_clownmdemu);
+    JBuf j; jb_init(&j);
+    jb_printf(&j, "{\"id\":%d,\"ok\":true,\"addr\":%d,\"len\":%d,\"data\":", id, addr, len);
+    jb_append_hex(&j, &z.ram[addr], len);
+    jb_printf(&j, "}");
+    cmd_send_response(j.buf);
+    jb_free(&j);
+}
+
+static void handle_fm_state(int id)
+{
+    FmSnap fm; fm_snapshot(&fm, &g_clownmdemu);
+    JBuf j; jb_init(&j);
+    jb_printf(&j, "{\"id\":%d,\"ok\":true,", id);
+    json_fm(&j, &fm);
+    jb_printf(&j, "}");
+    cmd_send_response(j.buf);
+    jb_free(&j);
+}
+
+static void handle_psg_state(int id)
+{
+    PsgSnap p; psg_snapshot(&p, &g_clownmdemu);
+    JBuf j; jb_init(&j);
+    jb_printf(&j, "{\"id\":%d,\"ok\":true,", id);
+    json_psg(&j, &p);
+    jb_printf(&j, "}");
+    cmd_send_response(j.buf);
+    jb_free(&j);
+}
+
+static void handle_vdp_state(int id, const char *json)
+{
+    VdpSnap v; vdp_snapshot(&v, &g_clownmdemu);
+    char include_buf[64] = {0};
+    json_get_str(json, "include", include_buf, sizeof(include_buf));
+    JBuf j; jb_init(&j);
+    jb_printf(&j, "{\"id\":%d,\"ok\":true,", id);
+    json_vdp(&j, &v, include_buf);
+    jb_printf(&j, "}");
+    cmd_send_response(j.buf);
+    jb_free(&j);
+}
+
+static void handle_read_vsram(int id)
+{
+    JBuf j; jb_init(&j);
+    jb_printf(&j, "{\"id\":%d,\"ok\":true,\"vsram\":[", id);
+    const VDP_State *vs = &g_clownmdemu.vdp.state;
+    for (int i = 0; i < 64; i++) jb_printf(&j, "%s%u", i ? "," : "", (uint32_t)vs->vsram[i]);
+    jb_printf(&j, "]}");
+    cmd_send_response(j.buf);
+    jb_free(&j);
+}
+
+/* ---------- dispatch_miss_info ---------- */
+
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+static void handle_dispatch_miss_info(int id)
+{
+    JBuf j; jb_init(&j);
+    jb_printf(&j, "{\"id\":%d,\"ok\":true,\"count\":%u,\"unique_count\":%d,\"last_addr\":%u,\"last_frame\":%llu,\"unique\":[",
+              id,
+              (unsigned)g_miss_count_any, g_miss_unique_count,
+              (unsigned)g_miss_last_addr,
+              (unsigned long long)g_miss_last_frame);
+    for (int i = 0; i < g_miss_unique_count; i++)
+        jb_printf(&j, "%s%u", i ? "," : "", (unsigned)g_miss_unique_addrs[i]);
+    jb_printf(&j, "]}");
+    cmd_send_response(j.buf);
+    jb_free(&j);
+}
+#endif
+
+/* =========================================================================
  * Command dispatch
  * ========================================================================= */
 
@@ -885,6 +1249,27 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         handle_io_log(id, json);
     } else if (strcmp(cmd, "read_joypad_port") == 0) {
         handle_read_joypad_port(id);
+    /* ---- Phase 4: full ring-buffer queries + live snapshots ---- */
+    } else if (strcmp(cmd, "get_frame") == 0) {
+        handle_get_frame(id, json);
+    } else if (strcmp(cmd, "frame_timeseries") == 0) {
+        handle_frame_timeseries(id, json);
+    } else if (strcmp(cmd, "z80_state") == 0) {
+        handle_z80_state(id, json);
+    } else if (strcmp(cmd, "read_z80_ram") == 0) {
+        handle_read_z80_ram(id, json);
+    } else if (strcmp(cmd, "fm_state") == 0) {
+        handle_fm_state(id);
+    } else if (strcmp(cmd, "psg_state") == 0) {
+        handle_psg_state(id);
+    } else if (strcmp(cmd, "vdp_state") == 0) {
+        handle_vdp_state(id, json);
+    } else if (strcmp(cmd, "read_vsram") == 0) {
+        handle_read_vsram(id);
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+    } else if (strcmp(cmd, "dispatch_miss_info") == 0) {
+        handle_dispatch_miss_info(id);
+#endif
     } else if (strcmp(cmd, "coverage_dump") == 0) {
 #if !ENABLE_RECOMPILED_CODE
         extern int clown68000_coverage_count(void);
@@ -1149,6 +1534,28 @@ void cmd_server_shutdown(void)
       if (count > 0) {
           clown68000_coverage_dump(exe_relative("coverage.log"));
           fprintf(stderr, "[cmd] Dumped %d coverage entries to coverage.log\n", count);
+      }
+    }
+#endif
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+    /* Dispatch-miss log per PRINCIPLES.md rule 13a — always write next to
+     * the exe so the next session can find it. Empty file if no misses
+     * (the principle's "is the file empty?" check still answers cleanly). */
+    { extern const char *exe_relative(const char *);
+      const char *path = exe_relative("dispatch_misses.log");
+      FILE *f = fopen(path, "w");
+      if (f) {
+          fprintf(f, "# dispatch_misses.log — addresses the recompiled binary\n");
+          fprintf(f, "# called via call_by_address() that have no generated function.\n");
+          fprintf(f, "# Add each as `extra_func 0xADDR` to game.cfg, regenerate, rebuild.\n");
+          fprintf(f, "# Total misses (any address): %u\n", (unsigned)g_miss_count_any);
+          fprintf(f, "# Unique missing addresses: %d\n", g_miss_unique_count);
+          for (int i = 0; i < g_miss_unique_count; i++)
+              fprintf(f, "extra_func 0x%06X\n", (unsigned)g_miss_unique_addrs[i]);
+          fclose(f);
+          if (g_miss_unique_count > 0)
+              fprintf(stderr, "[cmd] %d unique dispatch misses written to %s\n",
+                      g_miss_unique_count, path);
       }
     }
 #endif
