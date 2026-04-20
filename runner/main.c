@@ -674,6 +674,17 @@ int main(int argc, char *argv[])
     if (framelog_path)
         s_framelog_file = fopen(framelog_path, "w");
 
+#if ENABLE_RECOMPILED_CODE
+    {
+        extern FILE *g_yield_log_file;
+        const char *yp = exe_relative("yield_log_native.log");
+        g_yield_log_file = fopen(yp, "w");
+        if (g_yield_log_file) {
+            fprintf(g_yield_log_file, "# frame cycle_acc v_vblank_count vbla_routine\n");
+        }
+    }
+#endif
+
     /* --- Save state (quick & dirty: snapshot the entire ClownMDEmu struct) --- */
     static ClownMDEmu s_savestate;
     int s_savestate_valid = 0;

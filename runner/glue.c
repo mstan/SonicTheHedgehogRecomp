@@ -309,12 +309,36 @@ void glue_handle_interrupt(cc_u16f level)
     }
 }
 
+/* Yield-site cycle-accumulator log.  Each line records the state of
+ * g_cycle_accumulator at the moment the game fiber yields for VBlank.
+ * This captures native's belief about how many 68K cycles it spent
+ * executing since the last frame reset — including any sub-VBla work
+ * before the game's own WaitForVBlank call.  Paired oracle run writes
+ * equivalent data (interpreter master_cycle counter at same yield).
+ * Column layout:
+ *   frame cycle_acc v_vblank_count vbla_routine
+ */
+FILE *g_yield_log_file = NULL;
+extern uint16_t m68k_read16(uint32_t);
+extern uint8_t  m68k_read8(uint32_t);
+extern uint32_t m68k_read32(uint32_t);
+
 /* Called from func_0029A8: yield to main loop for one frame. */
 void glue_yield_for_vblank(void)
 {
     if (s_in_vblank_service)
         return;
     s_watchdog_counter = 0;
+    if (g_yield_log_file) {
+        uint32_t vbc = m68k_read32(0xFE0C);
+        uint8_t  vr  = m68k_read8(0xF62A);
+        fprintf(g_yield_log_file,
+                "%llu %u %u %u\n",
+                (unsigned long long)g_frame_count,
+                g_cycle_accumulator,
+                vbc,
+                vr);
+    }
     /* At yield, the game is inside WaitForVBlank (func_0029A8), which was
      * called via JSR from the game loop.  The expected A7 at yield is
      * initial_SSP - 4 (one return address pushed for the JSR to func_0029A8)
@@ -339,8 +363,13 @@ void glue_yield_for_vblank(void)
     /* If VBlank hasn't fired yet this frame (game yielded early, e.g. during
      * init when frames are very short), fire it now.  This matches the
      * interpreter where WaitForVBlank polls until VBlank fires — the game
-     * doesn't continue until the handler has run. */
+     * doesn't continue until the handler has run.
+     *
+     * glue_check_vblank now requires accumulator >= threshold to fire, so
+     * bump the accumulator just past threshold to force one fire here. */
     if (!s_vblank_fired_this_frame) {
+        if (g_cycle_accumulator < g_vblank_threshold)
+            g_cycle_accumulator = g_vblank_threshold;
         glue_check_vblank();
         s_vblank_fired_this_frame = 1;  /* ensure it's marked */
     }
@@ -468,47 +497,67 @@ void glue_signal_hblank(void)
 
 /* Contextual recompiler: called from generated code when cycle accumulator
  * crosses the VBlank threshold.  Fires VBlank handler between instructions
- * on the game fiber — matching the interpreter's interrupt behavior. */
+ * on the game fiber — matching the interpreter's interrupt behavior.
+ *
+ * Previously gated by s_vblank_fired_this_frame, causing native to fire at
+ * most ONE VBla per wall frame.  Measured consequence: heavy boot / init
+ * blocks that execute N × threshold cycles of 68K work in a single wall
+ * frame generated 1 VBla fire on native vs N fires on hardware/oracle,
+ * making native's game_state-per-VBla-count overshoot.  ISSUE-003 round 6.
+ *
+ * New behavior: consume threshold-worth of cycles per fire.  Re-fire while
+ * accumulator still has threshold-worth available.  s_in_vblank_service
+ * prevents recursion from handler-internal accumulator crosses. */
 uint64_t g_cvblank_fires_total = 0;
 
 void glue_check_vblank(void)
 {
-    if (s_vblank_fired_this_frame)
-        return;
-    s_vblank_fired_this_frame = 1;
-    g_cvblank_fires_total++;
-    { static int s_cv = 0; if (s_cv < 50) { s_cv++;
-      fprintf(stderr, "[CVBLANK] fired at cycle %u (frame %"PRIu64") [#%llu]\n",
-              g_cycle_accumulator, g_frame_count,
-              (unsigned long long)g_cvblank_fires_total); } }
+    if (s_in_vblank_service)
+        return;  /* already servicing — don't re-enter from handler's own accumulator */
 
-    int imask = (g_cpu.SR >> 8) & 7;
-    if (imask >= 6)
-        return;  /* interrupts masked — VBlank suppressed */
+    while (g_cycle_accumulator >= g_vblank_threshold) {
+        g_cycle_accumulator -= g_vblank_threshold;
+        s_vblank_fired_this_frame = 1;
+        g_cvblank_fires_total++;
+        { static int s_cv = 0; if (s_cv < 50) { s_cv++;
+          fprintf(stderr, "[CVBLANK] fired at cycle %u (frame %"PRIu64") [#%llu]\n",
+                  g_cycle_accumulator, g_frame_count,
+                  (unsigned long long)g_cvblank_fires_total); } }
 
-    /* Run VBlank handler with register save/restore */
-    M68KState saved = g_cpu;
+        int imask = (g_cpu.SR >> 8) & 7;
+        if (imask >= 6)
+            continue;  /* interrupts masked — cycles consumed, handler suppressed */
 
-    #define VBLK_STACK 0x00FFD000u
-    #define VBLK_SAVE  128
-    cc_u16l vblk_ram[VBLK_SAVE];
-    uint32_t vbase = ((VBLK_STACK - VBLK_SAVE * 2) & 0xFFFF) / 2;
-    for (int i = 0; i < VBLK_SAVE; i++)
-        vblk_ram[i] = s_emu->state.m68k.ram[vbase + i];
+        /* Run VBlank handler with register save/restore */
+        M68KState saved = g_cpu;
 
-    g_cpu.A[7] = VBLK_STACK;
-    s_in_vblank_service = 1;
-    g_rte_pending = 0;
-    g_rte_pending_ptr = &s_rte_dummy;
-    func_000B10();
-    g_rte_pending_ptr = &s_rte_real;
-    g_rte_pending = 0;
-    s_in_vblank_service = 0;
+        #define VBLK_STACK 0x00FFD000u
+        #define VBLK_SAVE  128
+        cc_u16l vblk_ram[VBLK_SAVE];
+        uint32_t vbase = ((VBLK_STACK - VBLK_SAVE * 2) & 0xFFFF) / 2;
+        for (int i = 0; i < VBLK_SAVE; i++)
+            vblk_ram[i] = s_emu->state.m68k.ram[vbase + i];
 
-    for (int i = 0; i < VBLK_SAVE; i++)
-        s_emu->state.m68k.ram[vbase + i] = vblk_ram[i];
+        g_cpu.A[7] = VBLK_STACK;
+        s_in_vblank_service = 1;
+        g_rte_pending = 0;
+        g_rte_pending_ptr = &s_rte_dummy;
+        /* Save/restore cycle_accumulator around handler so handler's own
+         * cycle cost doesn't bill against the next VBla threshold — matches
+         * hardware where the VBla handler runs during the vblank interval
+         * and doesn't consume main-line frame budget. */
+        uint32_t acc_saved = g_cycle_accumulator;
+        func_000B10();
+        g_cycle_accumulator = acc_saved;
+        g_rte_pending_ptr = &s_rte_real;
+        g_rte_pending = 0;
+        s_in_vblank_service = 0;
 
-    g_cpu = saved;
+        for (int i = 0; i < VBLK_SAVE; i++)
+            s_emu->state.m68k.ram[vbase + i] = vblk_ram[i];
+
+        g_cpu = saved;
+    }
 }
 
 void glue_set_callbacks(const void *callbacks)
