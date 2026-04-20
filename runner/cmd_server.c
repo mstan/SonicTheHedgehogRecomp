@@ -80,6 +80,13 @@ static int s_pending_frame_id = -1;
 static int s_paused = 0;
 bool cmd_server_is_paused(void) { return s_paused != 0; }
 
+/* Wall-frame counter, kept in sync by cmd_server_record_frame() each
+ * frame. Lives here (not in glue.c) because glue's g_frame_count is
+ * gated by ENABLE_RECOMPILED_CODE and never advances in oracle builds.
+ * Forward-declared here so fm_trace handler (above the definition
+ * site) can read it. */
+static uint32_t s_current_frame = 0;
+
 /* =========================================================================
  * FM write trace — captures every YM2612 register write with master-clock
  * cycle position.  Controllable via TCP "fm_trace" command.
@@ -1350,12 +1357,18 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
                     s_fm_trace_active = 1;
                     s_fm_trace_max_frames = max_f;
                     s_fm_trace_frame_count = 0;
-                    s_fm_trace_start_frame = g_frame_count;
+                    /* Use cmd_server's own wall-frame counter (kept in
+                     * sync by cmd_server_record_frame()). g_frame_count
+                     * only advances in native builds — using it for
+                     * oracle would always report start_frame=0. */
+                    s_fm_trace_start_frame = (uint64_t)s_current_frame;
                     g_fm_write_trace_fn = fm_trace_callback;
-                    char buf[256];
+                    char buf[320];
                     snprintf(buf, sizeof(buf),
-                        "{\"id\":%d,\"ok\":true,\"file\":\"%s\",\"max_frames\":%d}\n",
-                        id, path, max_f);
+                        "{\"id\":%d,\"ok\":true,\"file\":\"%s\",\"max_frames\":%d,"
+                        "\"start_frame\":%llu}",
+                        id, path, max_f,
+                        (unsigned long long)s_fm_trace_start_frame);
                     send_response(buf);
                     fprintf(stderr, "[FM-TRACE] Started: %s (%d frames)\n", path, max_f);
                 } else {
@@ -1409,8 +1422,8 @@ static void set_nonblocking(sock_t s)
 #endif
 }
 
-/* Track current frame for dispatch (set by poll caller) */
-static uint32_t s_current_frame = 0;
+/* s_current_frame is forward-declared above (near s_paused) so the
+ * fm_trace handler can read it. Updated by cmd_server_record_frame(). */
 
 /* =========================================================================
  * Public API
