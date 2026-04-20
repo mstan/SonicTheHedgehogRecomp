@@ -16,23 +16,51 @@
 
 extern ClownMDEmu g_clownmdemu;
 
-/* ---------------------------------------------------------------- 68K */
+/* ---------------------------------------------------------------- 68K
+ *
+ * In native mode the recompiled C code drives g_cpu directly — that's
+ * the authoritative 68K state.
+ *
+ * In oracle mode the clown68000 interpreter drives g_clownmdemu.m68k;
+ * g_cpu is just a stale shadow because no recompiled instruction has
+ * touched it. We MUST read from the interpreter struct so the snapshot
+ * reflects what actually executed. Otherwise the cpu snapshot is all
+ * zeros and every comparison reports a spurious divergence at frame 0.
+ *
+ * The two structs differ in field names but represent the same 68K. */
 
 void m68k_snapshot(M68KRegSnap *out)
 {
     memset(out, 0, sizeof(*out));
+
+#if ENABLE_RECOMPILED_CODE && !defined(SONIC_ORACLE_BUILD)
+    /* Native build: g_cpu is live state. */
     for (int i = 0; i < 8; i++) out->D[i] = g_cpu.D[i];
     for (int i = 0; i < 8; i++) out->A[i] = g_cpu.A[i];
     out->USP = g_cpu.USP;
     out->PC  = g_cpu.PC;
     out->SR  = g_cpu.SR;
-    out->flag_C = (uint8_t)((g_cpu.SR >> 0) & 1u);
-    out->flag_V = (uint8_t)((g_cpu.SR >> 1) & 1u);
-    out->flag_Z = (uint8_t)((g_cpu.SR >> 2) & 1u);
-    out->flag_N = (uint8_t)((g_cpu.SR >> 3) & 1u);
-    out->flag_X = (uint8_t)((g_cpu.SR >> 4) & 1u);
-    out->flag_S = (uint8_t)((g_cpu.SR >> 13) & 1u);
-    out->imask  = (uint8_t)((g_cpu.SR >> 8) & 7u);
+#else
+    /* Oracle build: read from the interpreter's own state. A7 follows
+     * the supervisor/user stack pointer based on the S flag. */
+    const Clown68000_State *cs = &g_clownmdemu.m68k;
+    for (int i = 0; i < 8; i++) out->D[i] = (uint32_t)cs->data_registers[i];
+    for (int i = 0; i < 7; i++) out->A[i] = (uint32_t)cs->address_registers[i];
+    out->A[7] = ((uint16_t)cs->status_register & (1u << 13))
+                ? (uint32_t)cs->supervisor_stack_pointer
+                : (uint32_t)cs->user_stack_pointer;
+    out->USP = (uint32_t)cs->user_stack_pointer;
+    out->PC  = (uint32_t)cs->program_counter;
+    out->SR  = (uint16_t)cs->status_register;
+#endif
+
+    out->flag_C = (uint8_t)((out->SR >> 0) & 1u);
+    out->flag_V = (uint8_t)((out->SR >> 1) & 1u);
+    out->flag_Z = (uint8_t)((out->SR >> 2) & 1u);
+    out->flag_N = (uint8_t)((out->SR >> 3) & 1u);
+    out->flag_X = (uint8_t)((out->SR >> 4) & 1u);
+    out->flag_S = (uint8_t)((out->SR >> 13) & 1u);
+    out->imask  = (uint8_t)((out->SR >> 8) & 7u);
 }
 
 /* ---------------------------------------------------------------- Z80 */
