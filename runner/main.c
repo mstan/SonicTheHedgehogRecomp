@@ -937,6 +937,13 @@ int main(int argc, char *argv[])
                       "%d unique true-miss addrs, %llu raw miss events\n",
               glue_interp_total_calls(), glue_interp_seen_count(),
               (unsigned long long)glue_miss_count_any()); }
+    { extern uint64_t g_cvblank_fires_total;
+      extern int g_dbg_b64_count;
+      extern int g_dbg_b5e_count;
+      extern int g_dbg_b88_count;
+      fprintf(stderr, "[VBLA] cvblank_fires=%llu VBla_Exit=%d VBla_Music=%d loc_B88=%d\n",
+              (unsigned long long)g_cvblank_fires_total,
+              g_dbg_b64_count, g_dbg_b5e_count, g_dbg_b88_count); }
 #endif
 
     /* --- Cleanup --- */

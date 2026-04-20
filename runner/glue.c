@@ -469,14 +469,18 @@ void glue_signal_hblank(void)
 /* Contextual recompiler: called from generated code when cycle accumulator
  * crosses the VBlank threshold.  Fires VBlank handler between instructions
  * on the game fiber — matching the interpreter's interrupt behavior. */
+uint64_t g_cvblank_fires_total = 0;
+
 void glue_check_vblank(void)
 {
     if (s_vblank_fired_this_frame)
         return;
     s_vblank_fired_this_frame = 1;
-    { static int s_cv = 0; if (s_cv < 3) { s_cv++;
-      fprintf(stderr, "[CVBLANK] fired at cycle %u (frame %"PRIu64")\n",
-              g_cycle_accumulator, g_frame_count); } }
+    g_cvblank_fires_total++;
+    { static int s_cv = 0; if (s_cv < 50) { s_cv++;
+      fprintf(stderr, "[CVBLANK] fired at cycle %u (frame %"PRIu64") [#%llu]\n",
+              g_cycle_accumulator, g_frame_count,
+              (unsigned long long)g_cvblank_fires_total); } }
 
     int imask = (g_cpu.SR >> 8) & 7;
     if (imask >= 6)
