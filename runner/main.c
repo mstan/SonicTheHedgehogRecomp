@@ -440,6 +440,13 @@ int main(int argc, char *argv[])
     const char *framelog_path = NULL;
     uint32_t max_frames  = 0;   /* 0 = unlimited */
     int start_turbo      = 0;   /* --turbo: skip frame delay + audio */
+    /* Debug-server port: precedence is --port > debug.ini "port" > compile-time
+     * DEFAULT_DEBUG_PORT (4378 native, 4379 oracle). 0 here means "unset; use
+     * the compile-time default unless debug.ini overrides it". */
+#ifndef DEFAULT_DEBUG_PORT
+#  define DEFAULT_DEBUG_PORT 4378
+#endif
+    int debug_port_cli = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--max-frames") == 0 && i + 1 < argc) {
@@ -448,6 +455,8 @@ int main(int argc, char *argv[])
             framelog_path = argv[++i];
         } else if (strcmp(argv[i], "--turbo") == 0) {
             start_turbo = 1;
+        } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
+            debug_port_cli = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--script-start") == 0 && i + 1 < argc) {
             s_script_start_frame = (uint32_t)atol(argv[++i]);
         } else if (strcmp(argv[i], "--script-right") == 0 && i + 1 < argc) {
@@ -576,14 +585,40 @@ int main(int argc, char *argv[])
 
     free(rom_raw);   /* glue_init copied what it needs */
 
-    /* TCP debug server — only if debug.ini exists next to the exe */
+    /* TCP debug server — only if debug.ini exists next to the exe.
+     * Port resolution (highest priority first):
+     *   1. --port N                  command-line flag
+     *   2. "port=N" in debug.ini     project-level config
+     *   3. DEFAULT_DEBUG_PORT macro  compile-time default per build target
+     *      (4378 native, 4379 oracle — set in CMakeLists.txt) */
     static int s_debug_enabled = 0;
+    int debug_port_from_ini    = 0;
     {
         FILE *df = fopen(exe_relative("debug.ini"), "r");
-        if (df) { s_debug_enabled = 1; fclose(df); }
+        if (df) {
+            s_debug_enabled = 1;
+            char ln[256];
+            while (fgets(ln, sizeof(ln), df)) {
+                /* tolerant key=value parser; skips blanks/comments */
+                char *eq = strchr(ln, '=');
+                if (!eq) continue;
+                *eq = '\0';
+                char *k = ln, *v = eq + 1;
+                while (*k == ' ' || *k == '\t') k++;
+                char *ke = k + strlen(k);
+                while (ke > k && (ke[-1] == ' ' || ke[-1] == '\t')) ke--;
+                *ke = '\0';
+                while (*v == ' ' || *v == '\t') v++;
+                if (strcmp(k, "port") == 0) debug_port_from_ini = atoi(v);
+            }
+            fclose(df);
+        }
     }
+    int debug_port = debug_port_cli ? debug_port_cli :
+                     (debug_port_from_ini ? debug_port_from_ini :
+                      DEFAULT_DEBUG_PORT);
     if (s_debug_enabled)
-        cmd_server_init(4378);
+        cmd_server_init(debug_port);
 
     if (framelog_path)
         s_framelog_file = fopen(framelog_path, "w");

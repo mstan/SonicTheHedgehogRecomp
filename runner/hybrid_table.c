@@ -250,4 +250,10 @@ HybridEntry g_hybrid_table[] = {
     { 0x012E18u, func_012E18 },   /* Obj01_MdNormal (full chain) */
 };
 
+/* Oracle build runs EVERYTHING through the interpreter (no native overrides).
+ * Native debug builds use the curated table for stack-level divergence tests. */
+#ifdef SONIC_ORACLE_BUILD
+int g_hybrid_table_size = 0;
+#else
 int g_hybrid_table_size = 1;
+#endif
