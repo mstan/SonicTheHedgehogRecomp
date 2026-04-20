@@ -86,40 +86,8 @@ int       g_dbg_b88_count     = 0;
 #define WATCHDOG_LIMIT  10000000u  /* 10M bus ops ≈ way too many for one frame */
 static uint32_t s_watchdog_counter = 0;
 
-/* A7 drift detector — log when A7 drifts above the normal stack bottom
- * ($FFFE00).  Fires ONCE per new drift level per frame; skips repeats at
- * the same drift.  ISSUE-003 round 7: locate the function that pops too
- * much off the stack in the Spring Yard demo code path. */
-static uint32_t s_a7_drift_last_a7   = 0xFFFE00u;
-
-extern int s_in_vblank_service_get(void);
 static void watchdog_check(uint32_t addr, int is_write, uint32_t val)
 {
-    /* A7 drift one-shot logger — fires once per wall frame when A7
-     * points above $FFFE00 (normal stack bottom).  Helps locate stack-
-     * discipline bugs in the recompiled code.  Skip while servicing a
-     * VBla handler (uses VBLK_STACK at $FFD000). */
-    if (!s_in_vblank_service_get() &&
-        g_cpu.A[7] <= 0x00FFFE00u)
-        s_a7_drift_last_a7 = 0x00FFFE00u;
-    if (!s_in_vblank_service_get() &&
-        g_cpu.A[7] > 0x00FFFE00u && g_cpu.A[7] < 0x00FFFF00u &&
-        g_cpu.A[7] != s_a7_drift_last_a7) {
-        s_a7_drift_last_a7 = g_cpu.A[7];
-        fprintf(stderr,
-            "[A7-DRIFT] frame=%"PRIu64" A7=$%08X  (%s $%06X val=$%04X)\n"
-            "  D0-3=$%08X $%08X $%08X $%08X\n"
-            "  D4-7=$%08X $%08X $%08X $%08X\n"
-            "  A0-3=$%08X $%08X $%08X $%08X\n"
-            "  A4-6=$%08X $%08X $%08X  SR=$%04X\n",
-            g_frame_count, g_cpu.A[7],
-            is_write ? "WRITE" : "READ", addr, val,
-            g_cpu.D[0], g_cpu.D[1], g_cpu.D[2], g_cpu.D[3],
-            g_cpu.D[4], g_cpu.D[5], g_cpu.D[6], g_cpu.D[7],
-            g_cpu.A[0], g_cpu.A[1], g_cpu.A[2], g_cpu.A[3],
-            g_cpu.A[4], g_cpu.A[5], g_cpu.A[6], g_cpu.SR);
-    }
-
     if (++s_watchdog_counter != WATCHDOG_LIMIT)
         return;
 
@@ -207,7 +175,6 @@ void glue_restore_sync(void)
 
 /* Re-entrancy guard (used by glue_check_vblank, must be in global scope) */
 static int s_in_vblank_service = 0;
-int s_in_vblank_service_get(void) { return s_in_vblank_service; }
 
 #if ENABLE_RECOMPILED_CODE
 
