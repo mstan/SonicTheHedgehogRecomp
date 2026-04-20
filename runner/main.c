@@ -448,6 +448,15 @@ int main(int argc, char *argv[])
 #endif
     int debug_port_cli = 0;
 
+    /* --- Paced-native spike (option 2) ---
+     * --target-fps N artificially throttles the wall-clock frame rate.
+     * Default 0 = use NTSC 59.94 Hz. Non-zero forces the pacer to wait
+     * until 1/N seconds have elapsed per frame. Both binaries can be
+     * launched with the same --target-fps so they run in wall-clock
+     * lockstep — making wall-frame N a meaningful sync key in addition
+     * to the state-marker sync compare_runs.py uses by default. */
+    double target_fps_cli = 0.0;
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--max-frames") == 0 && i + 1 < argc) {
             max_frames = (uint32_t)atol(argv[++i]);
@@ -457,6 +466,8 @@ int main(int argc, char *argv[])
             start_turbo = 1;
         } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
             debug_port_cli = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--target-fps") == 0 && i + 1 < argc) {
+            target_fps_cli = atof(argv[++i]);
         } else if (strcmp(argv[i], "--script-start") == 0 && i + 1 < argc) {
             s_script_start_frame = (uint32_t)atol(argv[++i]);
         } else if (strcmp(argv[i], "--script-right") == 0 && i + 1 < argc) {
@@ -591,8 +602,9 @@ int main(int argc, char *argv[])
      *   2. "port=N" in debug.ini     project-level config
      *   3. DEFAULT_DEBUG_PORT macro  compile-time default per build target
      *      (4378 native, 4379 oracle — set in CMakeLists.txt) */
-    static int s_debug_enabled = 0;
-    int debug_port_from_ini    = 0;
+    static int s_debug_enabled    = 0;
+    int    debug_port_from_ini    = 0;
+    double target_fps_from_ini    = 0.0;
     {
         FILE *df = fopen(exe_relative("debug.ini"), "r");
         if (df) {
@@ -609,11 +621,17 @@ int main(int argc, char *argv[])
                 while (ke > k && (ke[-1] == ' ' || ke[-1] == '\t')) ke--;
                 *ke = '\0';
                 while (*v == ' ' || *v == '\t') v++;
-                if (strcmp(k, "port") == 0) debug_port_from_ini = atoi(v);
+                if      (strcmp(k, "port")       == 0) debug_port_from_ini = atoi(v);
+                else if (strcmp(k, "target_fps") == 0) target_fps_from_ini = atof(v);
             }
             fclose(df);
         }
     }
+    /* --target-fps wins over debug.ini, which wins over default 59.94. */
+    double target_fps = (target_fps_cli > 0.0)     ? target_fps_cli :
+                        (target_fps_from_ini > 0.0) ? target_fps_from_ini :
+                                                       (60000.0 / 1001.0);  /* NTSC */
+    fprintf(stderr, "[pacer] target frame rate: %.4f fps\n", target_fps);
     int debug_port = debug_port_cli ? debug_port_cli :
                      (debug_port_from_ini ? debug_port_from_ini :
                       DEFAULT_DEBUG_PORT);
@@ -854,8 +872,9 @@ int main(int argc, char *argv[])
                 s_perf_freq = SDL_GetPerformanceFrequency();
                 s_next_frame = SDL_GetPerformanceCounter();
             }
-            /* perf_freq * 1001 / 60000 == perf_freq / 59.94 in integer math. */
-            s_next_frame += (s_perf_freq * 1001) / 60000;
+            /* Target wall budget per frame, derived from --target-fps /
+             * debug.ini target_fps. Default = NTSC 59.94 Hz. */
+            s_next_frame += (Uint64)((double)s_perf_freq / target_fps);
             Uint64 now = SDL_GetPerformanceCounter();
             if (now < s_next_frame) {
                 Sint64 remaining_ms = (Sint64)(s_next_frame - now) * 1000 / (Sint64)s_perf_freq;
