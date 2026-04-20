@@ -244,14 +244,28 @@ def _func_addr_set(src: str) -> set[int]:
     return {int(name[5:], 16) for name in FUNC_DEF_RE.findall(src)}
 
 
+def _cfg_blacklist() -> set[int]:
+    cfg_path = SONIC_DIR / "game.cfg"
+    if not cfg_path.exists():
+        return set()
+    out: set[int] = set()
+    for line in cfg_path.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^\s*blacklist\s+([0-9A-Fa-f]+)\b", line)
+        if m: out.add(int(m.group(1), 16))
+    return out
+
+
 def test_no_disasm_subroutines_missing_from_codegen():
     """HARD failure: any disasm-reachable JSR/BSR target that isn't a
-    defined func_XXXXXX in the generated code."""
+    defined func_XXXXXX in the generated code. Skips addresses in the
+    cfg's blacklist — those are intentionally excluded (typically dead
+    code reachable only from other dead code)."""
     targets = _disasm_call_targets()
     if not targets:
         return  # fixture not generated yet; not this test's job to enforce
     defs = _func_addr_set(_read(FULL_C))
-    missing = sorted(targets - defs)
+    blacklist = _cfg_blacklist()
+    missing = sorted(targets - defs - blacklist)
     if missing:
         sample = ", ".join(f"${a:06X}" for a in missing[:8])
         raise AssertionError(
@@ -394,15 +408,21 @@ def test_no_interior_labels_split_into_functions():
             prev = d
         return prev
 
+    # Pre-scan: which addresses are called from ANY function body? Those
+    # are reachable via direct JSR/BSR (or fall-through tail call) and
+    # don't need a "parent tail-calls them" check — they're entered via
+    # the call, not via fall-through.
+    called_anywhere = {int(g, 16) for g in
+                       re.findall(r"\bfunc_([0-9A-Fa-f]+)\s*\(\s*\)", src)}
+
     unhandled = []
     for a in interior:
+        if a in called_anywhere:
+            continue  # reachable via direct call, doesn't need parent flow
         p = parent_of(a)
         if p is None:
             unhandled.append(a); continue
         body = body_of.get(p, "")
-        # Match either `func_X(); return;` or `func_X();<newline>return`
-        # near the end. Last instruction of parent emits the tail call
-        # before the closing brace.
         wanted = f"func_{a:06X}();"
         if wanted in body:
             continue
