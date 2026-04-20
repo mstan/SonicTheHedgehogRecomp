@@ -612,17 +612,41 @@ uint8_t m68k_read8(uint32_t byte_addr)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 0, 0);
-    /* Z80 sound driver "ready" flag: the game polls specific Z80 RAM
-     * addresses waiting for command acknowledgment.  In Step 2, the Z80
-     * only runs during Iterate().  Return 0 for known polling targets. */
-    if (byte_addr == 0xA01FFDu || byte_addr == 0xA01FFFu)
-        return 0x00u;
-    /* Z80 bus grant shortcut: after requesting the bus ($A11100 write),
-     * the polling loop reads $A11100 until bit 0 is clear (granted).
-     * In Step 2, SyncZ80 doesn't advance enough cycles for the grant
-     * to take effect.  Return "granted" immediately. */
-    if (byte_addr == 0xA11100u)
-        return 0x00u;  /* bit 0 clear = bus granted */
+    /* Z80 sync polls — the SMPS sound driver and Z80 bus arbiter both
+     * require the Z80 to actually advance before responding. In native
+     * mode the game fiber can run thousands of instructions without
+     * yielding, so Z80 never gets cycles inside a polling loop.
+     *
+     * Old behavior: return constant 0 → 68K loop exits immediately,
+     * but never actually waits for Z80 → SMPS commands queue up faster
+     * than Z80 can drain them → notes drop ("squelching").
+     *
+     * New behavior: yield game fiber → Iterate's next DoCycles advances
+     * Z80 by one scanline → resume → re-read the real Z80 RAM / bus
+     * register. Loop self-paces against actual Z80 throughput.
+     *
+     * Bounded fallback: if a single read polls > 256 times without
+     * resolving (corrupted Z80 state, dead driver), return 0 so we
+     * don't hang. Counter resets across distinct read addresses. */
+    static uint32_t last_poll_addr  = 0;
+    static int      poll_streak     = 0;
+    if (byte_addr == 0xA01FFDu || byte_addr == 0xA01FFFu || byte_addr == 0xA11100u) {
+        if (s_interleave_active && !s_in_vblank_service) {
+            if (byte_addr == last_poll_addr) {
+                if (++poll_streak > 256) return 0x00u;
+            } else {
+                last_poll_addr = byte_addr;
+                poll_streak    = 1;
+            }
+            SwitchToFiber(s_main_fiber);
+            /* fall through to real read */
+        } else {
+            return 0x00u;  /* outside interleave: keep old shortcut */
+        }
+    } else {
+        last_poll_addr = 0;
+        poll_streak    = 0;
+    }
 #endif
     HYBRID_BUMP_CYCLES();
     cc_bool hi = (byte_addr & 1) == 0;
