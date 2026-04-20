@@ -31,5 +31,11 @@ void cmd_server_record_frame(uint32_t frame_num);
 /* Tick FM trace (check frame limit). Call once per frame. */
 void cmd_server_fm_trace_tick(void);
 
+/* True while a TCP client has issued "pause". Main loop should poll
+ * cmd_server but skip game-frame advancement until cleared by
+ * "continue". Used by tools/compare_runs.py to hold the ring buffer
+ * still during multi-fetch comparisons. */
+bool cmd_server_is_paused(void);
+
 /* Cleanup sockets. */
 void cmd_server_shutdown(void);

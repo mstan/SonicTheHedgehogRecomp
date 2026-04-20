@@ -647,6 +647,21 @@ int main(int argc, char *argv[])
         }
         /* run_extra_frames handled after normal frame */
 
+        /* Pause loop — hold ring buffer steady for multi-fetch tools.
+         * Drain SDL events so the window stays responsive; spin on the
+         * cmd server so "continue" / "quit" can break us out. */
+        if (s_debug_enabled && cmd_server_is_paused()) {
+            SDL_Event pev;
+            while (SDL_PollEvent(&pev)) {
+                if (pev.type == SDL_QUIT) { running = 0; break; }
+            }
+            if (!running) break;
+            CmdResult pcr = cmd_server_poll();
+            if (pcr.should_quit) { running = 0; break; }
+            SDL_Delay(5);
+            continue;   /* re-check at loop top */
+        }
+
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_QUIT) running = 0;
