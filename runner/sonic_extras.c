@@ -46,6 +46,11 @@ static uint16_t emu_read16(uint32_t addr)
 
 static int16_t emu_read16s(uint32_t addr) { return (int16_t)emu_read16(addr); }
 
+static uint32_t emu_read32(uint32_t addr)
+{
+    return ((uint32_t)emu_read16(addr) << 16) | (uint32_t)emu_read16(addr + 2);
+}
+
 /* ---------------------------------------------------------------- */
 /* Sonic 1 RAM offsets (relative to $FF0000) */
 
@@ -54,6 +59,11 @@ static int16_t emu_read16s(uint32_t addr) { return (int16_t)emu_read16(addr); }
 #define ADDR_JOY_HELD     0xF602
 #define ADDR_JOY_PRESS    0xF603
 #define ADDR_SCROLL_X     0xF700
+/* VBlank frame counter — empirically observed to be the longword at
+ * $FFFE0C: increments by 1 every game frame. ($FFFE04 is a routine
+ * pointer, not a counter.) Confirmed by reading 5 consecutive frames
+ * during native execution. */
+#define ADDR_VINT_CTR     0xFE0C
 
 #define SONIC_OBJ_BASE    0xD000
 #define ADDR_SONIC_OBJ_ID (SONIC_OBJ_BASE + 0x00)
@@ -90,6 +100,7 @@ void game_fill_frame_record(uint8_t game_data[256])
     sd->sonic_status  = emu_read8 (ADDR_SONIC_STATUS);
     sd->sonic_angle   = emu_read8 (ADDR_SONIC_ANGLE);
     sd->sonic_obj_id  = emu_read8 (ADDR_SONIC_OBJ_ID);
+    sd->internal_frame_ctr = emu_read32(ADDR_VINT_CTR);
 }
 
 /* ---------------------------------------------------------------- */

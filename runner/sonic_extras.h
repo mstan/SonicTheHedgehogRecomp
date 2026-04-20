@@ -9,24 +9,31 @@
 #pragma once
 #include <stdint.h>
 
-#define SONIC_GAME_DATA_VERSION 1
+#define SONIC_GAME_DATA_VERSION 2
 
 typedef struct {
-    uint32_t version;        /* SONIC_GAME_DATA_VERSION */
-    uint8_t  game_mode;      /* $FFF600 */
-    uint8_t  vblank_flag;    /* $FFF62A */
-    uint8_t  joy_held;       /* $FFF602 */
-    uint8_t  joy_press;      /* $FFF603 */
-    uint16_t scroll_x;       /* $FFF700 */
-    uint16_t sonic_x;        /* $FFD008 */
-    uint16_t sonic_y;        /* $FFD00C */
-    int16_t  sonic_xvel;     /* $FFD010 */
-    int16_t  sonic_yvel;     /* $FFD012 */
-    int16_t  sonic_inertia;  /* $FFD014 */
-    uint8_t  sonic_routine;  /* $FFD024 */
-    uint8_t  sonic_status;   /* $FFD022 */
-    uint8_t  sonic_angle;    /* $FFD026 */
-    uint8_t  sonic_obj_id;   /* $FFD000 */
+    uint32_t version;            /* SONIC_GAME_DATA_VERSION */
+    uint8_t  game_mode;          /* $FFF600 */
+    uint8_t  vblank_flag;        /* $FFF62A */
+    uint8_t  joy_held;           /* $FFF602 */
+    uint8_t  joy_press;          /* $FFF603 */
+    uint16_t scroll_x;           /* $FFF700 */
+    uint16_t sonic_x;            /* $FFD008 */
+    uint16_t sonic_y;            /* $FFD00C */
+    int16_t  sonic_xvel;         /* $FFD010 */
+    int16_t  sonic_yvel;         /* $FFD012 */
+    int16_t  sonic_inertia;      /* $FFD014 */
+    uint8_t  sonic_routine;      /* $FFD024 */
+    uint8_t  sonic_status;       /* $FFD022 */
+    uint8_t  sonic_angle;        /* $FFD026 */
+    uint8_t  sonic_obj_id;       /* $FFD000 */
+    uint8_t  _pad;
+    /* Internal frame counter — $FFFE04 longword. The Sonic 1 VBlank
+     * handler increments these bytes once per game frame; suitable as
+     * the primary state-marker sync key for compare_runs.py because it
+     * progresses at the same rate in both native and oracle regardless
+     * of wall-clock execution speed. */
+    uint32_t internal_frame_ctr;  /* $FFFE04 longword */
 } SonicGameData;
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L

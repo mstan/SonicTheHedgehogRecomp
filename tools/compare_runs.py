@@ -211,6 +211,86 @@ def common_frame_window(a, b):
     hi = min(af['current_frame'] - 1, bf['current_frame'] - 1)
     return lo, hi
 
+# ---------- state-marker sync (Option 1) -------------------------------
+#
+# Wall-frame index N differs in meaning between native and oracle
+# because the two binaries execute the same game code at different
+# wall-clock rates. This pairs records by an in-game state tuple
+# (game_mode + Sonic 1 VBlank counter at $FFFE04 by default), so a
+# match means "both sides reached the same logical game state",
+# regardless of when they reached it.
+#
+# Sync keys are field aliases recognised by frame_timeseries:
+#   game_mode, internal_frame, sonic.x, sonic.y, sonic.xvel, sonic.yvel,
+#   sonic.routine, scroll_x, m68k.SR, m68k.A7, z80.PC, z80.SP,
+#   vdp.access_addr, verify_pass.
+
+def fetch_sync_keys(client, lo, hi, keys):
+    """Returns a list of length (hi-lo+1) of key-tuples, one per
+    wall-frame in [lo, hi]. None if a frame's key is null."""
+    columns = []
+    for k in keys:
+        rsp = client.call('frame_timeseries', **{'from': lo, 'to': hi, 'field': k})
+        if not rsp.get('ok'):
+            raise RuntimeError(f"{client.name} frame_timeseries({k}): {rsp.get('error', rsp)}")
+        columns.append(rsp['values'])
+    rows = []
+    for i in range(hi - lo + 1):
+        tup = tuple(columns[c][i] for c in range(len(keys)))
+        rows.append(None if any(v is None for v in tup) else tup)
+    return rows
+
+def build_sync_map(rows, lo):
+    """{state_tuple: first wall-frame that reached it}."""
+    m = {}
+    for i, tup in enumerate(rows):
+        if tup is None: continue
+        m.setdefault(tup, lo + i)
+    return m
+
+def run_first_divergence_synced(args, native, oracle):
+    fields = parse_fields(args.field)
+    include_tokens = sorted({tok for f in fields if (tok := FIELD_INCLUDE[f])})
+    sync_keys = [k.strip() for k in args.sync.split(',') if k.strip()]
+
+    n_lo, n_hi = common_frame_window(native, oracle)
+    if args.start is not None: n_lo = max(n_lo, args.start)
+    if args.end   is not None: n_hi = min(n_hi, args.end)
+    if n_hi < n_lo:
+        sys.exit(f"no overlapping frames: lo={n_lo} hi={n_hi}")
+
+    print(f"# state-marker sync on {sync_keys}; wall-frame window {n_lo}..{n_hi}",
+          file=sys.stderr)
+    n_rows = fetch_sync_keys(native, n_lo, n_hi, sync_keys)
+    o_rows = fetch_sync_keys(oracle, n_lo, n_hi, sync_keys)
+    n_map  = build_sync_map(n_rows, n_lo)
+    o_map  = build_sync_map(o_rows, n_lo)
+
+    common = sorted(set(n_map) & set(o_map), key=lambda k: n_map[k])
+    print(f"# {len(common)} matched state tuples (native unique={len(n_map)} "
+          f"oracle unique={len(o_map)})", file=sys.stderr)
+    if not common:
+        sys.exit("no matching state tuples found — check sync keys advance "
+                 "in lockstep on both sides")
+
+    for tup in common:
+        nf, of = n_map[tup], o_map[tup]
+        af = fetch_frame(native, nf, include_tokens)
+        bf = fetch_frame(oracle, of, include_tokens)
+        for fld in fields:
+            d = field_diff(fld, af, bf)
+            if d:
+                print(f"FIRST DIVERGENCE @ state={dict(zip(sync_keys, tup))} "
+                      f"native_frame={nf} oracle_frame={of} field={fld}")
+                for loc, na, ob in d[:args.max_diffs]:
+                    if isinstance(loc, int):
+                        print(f"  byte/index 0x{loc:X}: native=0x{na:X} oracle=0x{ob:X}")
+                    else:
+                        print(f"  {loc}: native={na} oracle={ob}")
+                return 1
+    print("no divergence found across matched state tuples")
+    return 0
+
 def run_first_divergence(args, native, oracle):
     fields = parse_fields(args.field)
     include_tokens = sorted({tok for f in fields if (tok := FIELD_INCLUDE[f])})
@@ -273,8 +353,18 @@ def main():
                     help='max diff entries to print per field')
     ap.add_argument('--first-divergence', action='store_true',
                     help='stop at the first frame where any field diverges')
+    ap.add_argument('--sync', default=None,
+                    help='comma-separated sync-key aliases (e.g. '
+                         '"game_mode,internal_frame"). Pairs records by '
+                         'in-game state tuple instead of wall-frame index. '
+                         'Required when comparing native vs oracle since '
+                         'they execute at different wall-clock rates.')
     ap.add_argument('--range', help='for --csv mode: from:to inclusive')
     ap.add_argument('--csv',   help='write per-divergence CSV here')
+    ap.add_argument('--no-pause', action='store_true',
+                    help='do NOT pause both binaries during comparison '
+                         '(default: pause; needed because ring rotation '
+                         'can race fetches otherwise)')
     args = ap.parse_args()
 
     if args.csv and not args.range:
@@ -283,11 +373,28 @@ def main():
     native = Client(args.native, 'native')
     oracle = Client(args.oracle, 'oracle')
     native.connect(); oracle.connect()
+
+    # Hold both binaries still for the duration of the comparison so the
+    # ring buffer doesn't rotate past frames we have queued for fetch.
+    # The pause/continue commands are cheap and idempotent.
+    paused = False
+    if not args.no_pause:
+        try:
+            native.call('pause'); oracle.call('pause'); paused = True
+            print("# paused both binaries", file=sys.stderr)
+        except Exception as e:
+            print(f"# warn: pause failed ({e}); proceeding anyway", file=sys.stderr)
+
     try:
         if args.csv:
             return run_csv(args, native, oracle)
+        if args.sync:
+            return run_first_divergence_synced(args, native, oracle)
         return run_first_divergence(args, native, oracle)
     finally:
+        if paused:
+            try: native.call('continue'); oracle.call('continue')
+            except Exception: pass
         native.close(); oracle.close()
 
 if __name__ == '__main__':

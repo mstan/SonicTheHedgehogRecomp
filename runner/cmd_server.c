@@ -74,6 +74,12 @@ static int  s_recv_len = 0;
 /* Pending frame request */
 static int s_pending_frame_id = -1;
 
+/* Pause flag — set by "pause" cmd, cleared by "continue". When true,
+ * the runner main loop polls cmd_server but does not advance the game
+ * frame, so the ring buffer stays still for multi-fetch tools. */
+static int s_paused = 0;
+bool cmd_server_is_paused(void) { return s_paused != 0; }
+
 /* =========================================================================
  * FM write trace — captures every YM2612 register write with master-clock
  * cycle position.  Controllable via TCP "fm_trace" command.
@@ -982,12 +988,14 @@ static void json_game_data(JBuf *j, const uint8_t *gd)
         "\"game_data\":{\"sonic\":{\"version\":%u,\"game_mode\":%u,\"vblank_flag\":%u,"
         "\"joy_held\":%u,\"joy_press\":%u,\"scroll_x\":%u,"
         "\"x\":%u,\"y\":%u,\"xvel\":%d,\"yvel\":%d,\"inertia\":%d,"
-        "\"routine\":%u,\"status\":%u,\"angle\":%u,\"obj_id\":%u},"
+        "\"routine\":%u,\"status\":%u,\"angle\":%u,\"obj_id\":%u,"
+        "\"internal_frame\":%u},"
         "\"raw\":",
         sd->version, sd->game_mode, sd->vblank_flag,
         sd->joy_held, sd->joy_press, sd->scroll_x,
         sd->sonic_x, sd->sonic_y, (int)sd->sonic_xvel, (int)sd->sonic_yvel, (int)sd->sonic_inertia,
-        sd->sonic_routine, sd->sonic_status, sd->sonic_angle, sd->sonic_obj_id);
+        sd->sonic_routine, sd->sonic_status, sd->sonic_angle, sd->sonic_obj_id,
+        sd->internal_frame_ctr);
     jb_append_hex(j, gd, 64);
     jb_printf(j, "}");
 }
@@ -1060,6 +1068,7 @@ static void handle_frame_timeseries(int id, const char *json)
         else if (strcmp(field, "sonic.yvel")     == 0) jb_printf(&j, "%d",  sd->sonic_yvel);
         else if (strcmp(field, "sonic.routine")  == 0) jb_printf(&j, "%u",  sd->sonic_routine);
         else if (strcmp(field, "game_mode")      == 0) jb_printf(&j, "%u",  sd->game_mode);
+        else if (strcmp(field, "internal_frame") == 0) jb_printf(&j, "%u",  sd->internal_frame_ctr);
         else if (strcmp(field, "scroll_x")       == 0) jb_printf(&j, "%u",  sd->scroll_x);
         else if (strcmp(field, "m68k.SR")        == 0) jb_printf(&j, "%u",  r->m68k.SR);
         else if (strcmp(field, "m68k.A7")        == 0) jb_printf(&j, "%u",  r->m68k.A[7]);
@@ -1191,7 +1200,13 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         return cr;
     }
 
-    if (strcmp(cmd, "ping") == 0) {
+    if (strcmp(cmd, "pause") == 0) {
+        s_paused = 1;
+        send_ok(id);
+    } else if (strcmp(cmd, "continue") == 0) {
+        s_paused = 0;
+        send_ok(id);
+    } else if (strcmp(cmd, "ping") == 0) {
         handle_ping(id, frame_num);
     } else if (strcmp(cmd, "get_registers") == 0) {
         handle_get_registers(id);
