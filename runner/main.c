@@ -792,12 +792,11 @@ int main(int argc, char *argv[])
         SDL_RenderCopy(renderer, texture, &src, NULL);
         SDL_RenderPresent(renderer);
 
-        /* 60 fps frame cap with audio queue overflow protection.
-         *
-         * Use high-precision perf counter for frame timing (works for both
-         * native and interpreter builds).  If the audio queue grows too
-         * large (e.g. frame ran faster than real-time), the queue check
-         * adds extra delay to let it drain. */
+        /* NTSC frame cap.  ClownMDEmu's chip emulation runs cycles_per_frame
+         * computed for 59.94 Hz (matches real NTSC Genesis: 60/1.001).
+         * Pacing the runner at the same rate keeps audio sample generation
+         * in lockstep with SDL playback — no slow drift between game and
+         * audio. The hard cap in audio_flush handles per-frame spikes. */
         if (!turbo) {
             static Uint64 s_perf_freq = 0;
             static Uint64 s_next_frame = 0;
@@ -805,7 +804,8 @@ int main(int argc, char *argv[])
                 s_perf_freq = SDL_GetPerformanceFrequency();
                 s_next_frame = SDL_GetPerformanceCounter();
             }
-            s_next_frame += s_perf_freq / 60;
+            /* perf_freq * 1001 / 60000 == perf_freq / 59.94 in integer math. */
+            s_next_frame += (s_perf_freq * 1001) / 60000;
             Uint64 now = SDL_GetPerformanceCounter();
             if (now < s_next_frame) {
                 Sint64 remaining_ms = (Sint64)(s_next_frame - now) * 1000 / (Sint64)s_perf_freq;
@@ -815,15 +815,6 @@ int main(int argc, char *argv[])
                     ;  /* spin-wait for precision */
             } else {
                 s_next_frame = now;
-            }
-
-            /* If audio queue is growing (native runs slightly fast vs DAC),
-             * add a 1ms delay to let it drain. Prevents unbounded growth. */
-            {
-                Uint32 one_frame = (Uint32)(s_psg_count * 2 * sizeof(int16_t));
-                Uint32 limit = one_frame * 4;
-                if (audio_queued_bytes() > limit)
-                    SDL_Delay(1);
             }
         }
         frame_start = SDL_GetTicks();

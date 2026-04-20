@@ -78,16 +78,18 @@ void audio_flush(const int16_t *fm_buf,  size_t fm_frames,
         s_out[i * 2 + 1] = (int16_t)r;
     }
 
-    /* Always queue audio — never drop frames.  Dropping causes audible
-     * crackling that's worse than the slight latency from a longer queue.
-     * SDL_QueueAudio handles backpressure internally; the soft 60fps cap
-     * in the main loop prevents unbounded growth. */
-    Uint32 queued = SDL_GetQueuedAudioSize(s_dev);
+    /* Hard cap on queue depth to prevent unbounded drift accumulation.
+     * If the queue is already above ~3 frames worth, drop this frame's
+     * samples rather than queue them. Brief audible glitch beats the
+     * minutes-long lag that builds up without a hard cap. */
     Uint32 frame_bytes = (Uint32)(psg_frames * 2 * sizeof(int16_t));
-    Uint32 limit = frame_bytes * 5;  /* warn threshold: ~5 video frames */
-    SDL_QueueAudio(s_dev, s_out, frame_bytes);
-    if (queued > limit)
-        s_stats.dropped_flushes++;  /* not actually dropped, just counted as "over limit" */
+    Uint32 queued = SDL_GetQueuedAudioSize(s_dev);
+    Uint32 limit = frame_bytes * 3;
+    if (queued > limit) {
+        s_stats.dropped_flushes++;
+    } else {
+        SDL_QueueAudio(s_dev, s_out, frame_bytes);
+    }
 
     /* WAV capture */
     if (s_wav_file) {
