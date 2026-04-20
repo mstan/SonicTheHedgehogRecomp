@@ -113,51 +113,16 @@ void cmd_server_fm_trace_tick(void)
 }
 
 /* =========================================================================
- * Frame history ring buffer
+ * Frame history ring buffer — full per-frame Genesis hardware snapshot.
+ * Layout in frame_record.h; subsystem snapshot accessors in
+ * frame_snapshots.c; per-game tail filled via game_extras hook.
  * ========================================================================= */
 
-#define FRAME_HISTORY_CAP 36000  /* 10 minutes at 60fps */
-
-/* Sonic object RAM offsets (from $FF0000 base, so offset = addr & 0xFFFF) */
-#define SONIC_X_POS   0xD008
-#define SONIC_Y_POS   0xD00C
-#define SONIC_X_VEL   0xD010
-#define SONIC_Y_VEL   0xD012
-#define SONIC_INERTIA 0xD014
-#define SONIC_ROUTINE 0xD024
-#define SONIC_STATUS  0xD022
-#define SONIC_ANGLE   0xD026
-#define SONIC_OBJ_ID  0xD000
-
-#define GAME_MODE     0xF600
-#define VBLANK_FLAG   0xF62A
-#define FRAME_CTR     0xFE0C
-#define JOY1_HELD     0xF602
-#define JOY1_PRESS    0xF603
-#define SCROLL_X      0xF700
-
-typedef struct {
-    uint32_t frame;
-    /* Game state */
-    uint8_t  game_mode;
-    uint8_t  vblank_flag;
-    uint8_t  joy_held;
-    uint8_t  joy_press;
-    uint16_t scroll_x;
-    /* Sonic state */
-    uint16_t sonic_x;
-    uint16_t sonic_y;
-    int16_t  sonic_xvel;
-    int16_t  sonic_yvel;
-    int16_t  sonic_inertia;
-    uint8_t  sonic_routine;
-    uint8_t  sonic_status;
-    uint8_t  sonic_angle;
-    uint8_t  sonic_obj_id;
-} FrameRecord;
+#include "frame_record.h"
+#include "game_extras.h"
+#include "sonic_extras.h"
 
 static FrameRecord s_frame_history[FRAME_HISTORY_CAP];
-static uint32_t s_history_write = 0;  /* next write index */
 static uint32_t s_history_count = 0;  /* total frames recorded */
 
 /* Watchpoints */
@@ -263,6 +228,11 @@ static void send_err(int id, const char *msg)
     snprintf(buf, sizeof(buf), "{\"id\":%d,\"ok\":false,\"error\":\"%s\"}", id, msg);
     send_response(buf);
 }
+
+/* Public exports for game extension modules (sonic_extras.c).
+ * Same signatures as send_response/send_err but pulled out of file scope. */
+void cmd_send_response(const char *json)       { send_response(json); }
+void cmd_send_err(int id, const char *msg)     { send_err(id, msg); }
 
 /* =========================================================================
  * Command handlers
@@ -433,32 +403,10 @@ static void handle_read_ram(int id, const char *json)
     free(resp);
 }
 
-static void handle_sonic_state(int id)
-{
-    char buf[512];
-    snprintf(buf, sizeof(buf),
-        "{\"id\":%d,\"ok\":true,"
-        "\"x\":%u,\"y\":%u,\"xvel\":%d,\"yvel\":%d,"
-        "\"inertia\":%d,\"ground_speed\":%d,"
-        "\"routine\":%u,\"status\":%u,\"angle\":%u,"
-        "\"obj_id\":%u,\"game_mode\":%u,"
-        "\"joy_held\":%u,\"joy_press\":%u}",
-        id,
-        (uint32_t)emu_read16(SONIC_X_POS),
-        (uint32_t)emu_read16(SONIC_Y_POS),
-        (int)emu_read16s(SONIC_X_VEL),
-        (int)emu_read16s(SONIC_Y_VEL),
-        (int)emu_read16s(SONIC_INERTIA),
-        (int)emu_read16s(SONIC_INERTIA),  /* ground_speed = inertia in Sonic 1 */
-        (uint32_t)emu_read8(SONIC_ROUTINE),
-        (uint32_t)emu_read8(SONIC_STATUS),
-        (uint32_t)emu_read8(SONIC_ANGLE),
-        (uint32_t)emu_read8(SONIC_OBJ_ID),
-        (uint32_t)emu_read8(GAME_MODE),
-        (uint32_t)emu_read8(JOY1_HELD),
-        (uint32_t)emu_read8(JOY1_PRESS));
-    send_response(buf);
-}
+/* sonic_state and object_table moved to runner/sonic_extras.c — they
+ * are dispatched via game_handle_debug_cmd(). sonic_history stays here
+ * because it walks the framework ring buffer; it just casts game_data
+ * to SonicGameData (see sonic_extras.h) to decode each frame. */
 
 static void handle_sonic_history(int id, const char *json)
 {
@@ -495,16 +443,17 @@ static void handle_sonic_history(int id, const char *json)
                 uint32_t idx = (uint32_t)f % FRAME_HISTORY_CAP;
                 const FrameRecord *r = &s_frame_history[idx];
                 if (r->frame == (uint32_t)f) {
+                    const SonicGameData *sd = sonic_extras_view(r->game_data);
                     pos += snprintf(buf + pos, buf_size - pos,
                         "{\"frame\":%u,\"x\":%u,\"y\":%u,"
                         "\"xvel\":%d,\"yvel\":%d,\"inertia\":%d,"
                         "\"routine\":%u,\"status\":%u,\"angle\":%u,"
                         "\"game_mode\":%u,\"joy_held\":%u,\"joy_press\":%u}",
-                        r->frame, r->sonic_x, r->sonic_y,
-                        (int)r->sonic_xvel, (int)r->sonic_yvel,
-                        (int)r->sonic_inertia,
-                        r->sonic_routine, r->sonic_status, r->sonic_angle,
-                        r->game_mode, r->joy_held, r->joy_press);
+                        r->frame, sd->sonic_x, sd->sonic_y,
+                        (int)sd->sonic_xvel, (int)sd->sonic_yvel,
+                        (int)sd->sonic_inertia,
+                        sd->sonic_routine, sd->sonic_status, sd->sonic_angle,
+                        sd->game_mode, sd->joy_held, sd->joy_press);
                     found = true;
                 }
             }
@@ -597,11 +546,12 @@ static void handle_frame_range(int id, const char *json)
                 uint32_t idx = (uint32_t)f % FRAME_HISTORY_CAP;
                 const FrameRecord *r = &s_frame_history[idx];
                 if (r->frame == (uint32_t)f) {
+                    const SonicGameData *sd = sonic_extras_view(r->game_data);
                     pos += snprintf(buf + pos, buf_size - pos,
                         "{\"frame\":%u,\"game_mode\":%u,\"yvel\":%d,"
                         "\"routine\":%u,\"joy\":%u,\"scroll_x\":%u}",
-                        r->frame, r->game_mode, (int)r->sonic_yvel,
-                        r->sonic_routine, r->joy_held, r->scroll_x);
+                        r->frame, sd->game_mode, (int)sd->sonic_yvel,
+                        sd->sonic_routine, sd->joy_held, sd->scroll_x);
                     found = true;
                 }
             }
@@ -639,55 +589,7 @@ static void handle_vblank_info(int id)
 #endif
 }
 
-static void handle_object_table(int id, const char *json)
-{
-    /* Dump active objects from $D000-$DFFF (object status table).
-     * Each object slot is $40 bytes. There are 64 slots total.
-     * Byte 0 = object ID (0 = empty). */
-    int max_objs = json_get_int(json, "count", 64);
-    if (max_objs > 64) max_objs = 64;
-
-    size_t buf_size = (size_t)max_objs * 256 + 256;
-    char *buf = (char *)malloc(buf_size);
-    if (!buf) { send_err(id, "alloc failed"); return; }
-
-    int pos = 0;
-    pos += snprintf(buf + pos, buf_size - pos,
-                    "{\"id\":%d,\"ok\":true,\"objects\":[", id);
-
-    int first = 1;
-    for (int i = 0; i < max_objs; i++) {
-        uint32_t base = 0xD000 + (uint32_t)(i * 0x40);
-        uint8_t obj_id = emu_read8(base);
-        if (obj_id == 0) continue;
-
-        if (!first) buf[pos++] = ',';
-        first = 0;
-
-        pos += snprintf(buf + pos, buf_size - pos,
-            "{\"slot\":%d,\"id\":%u,"
-            "\"x\":%u,\"y\":%u,"
-            "\"xvel\":%d,\"yvel\":%d,"
-            "\"routine\":%u,\"status\":%u}",
-            i, obj_id,
-            (uint32_t)emu_read16(base + 0x08),
-            (uint32_t)emu_read16(base + 0x0C),
-            (int)emu_read16s(base + 0x10),
-            (int)emu_read16s(base + 0x12),
-            (uint32_t)emu_read8(base + 0x24),
-            (uint32_t)emu_read8(base + 0x22));
-
-        if ((size_t)pos > buf_size - 512) {
-            buf_size *= 2;
-            buf = (char *)realloc(buf, buf_size);
-            if (!buf) return;
-        }
-    }
-
-    pos += snprintf(buf + pos, buf_size - pos, "]}");
-    send_response(buf);
-    free(buf);
-}
+/* object_table moved to runner/sonic_extras.c. */
 
 static void handle_watch(int id, const char *json)
 {
@@ -919,6 +821,12 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         return cr;
     }
 
+    /* Game-specific commands first (sonic_extras.c). Falls through to
+     * the framework table below if the hook returns false. */
+    if (game_handle_debug_cmd(id, cmd, json)) {
+        return cr;
+    }
+
     if (strcmp(cmd, "ping") == 0) {
         handle_ping(id, frame_num);
     } else if (strcmp(cmd, "get_registers") == 0) {
@@ -929,12 +837,8 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         handle_write_memory(id, json);
     } else if (strcmp(cmd, "read_ram") == 0) {
         handle_read_ram(id, json);
-    } else if (strcmp(cmd, "sonic_state") == 0) {
-        handle_sonic_state(id);
     } else if (strcmp(cmd, "sonic_history") == 0) {
         handle_sonic_history(id, json);
-    } else if (strcmp(cmd, "object_table") == 0) {
-        handle_object_table(id, json);
     } else if (strcmp(cmd, "vblank_info") == 0) {
         handle_vblank_info(id);
     } else if (strcmp(cmd, "frame_info") == 0) {
@@ -1209,22 +1113,22 @@ void cmd_server_record_frame(uint32_t frame_num)
     uint32_t idx = frame_num % FRAME_HISTORY_CAP;
     FrameRecord *r = &s_frame_history[idx];
 
-    r->frame      = frame_num;
-    r->game_mode  = emu_read8(GAME_MODE);
-    r->vblank_flag = emu_read8(VBLANK_FLAG);
-    r->joy_held   = emu_read8(JOY1_HELD);
-    r->joy_press  = emu_read8(JOY1_PRESS);
-    r->scroll_x   = emu_read16(SCROLL_X);
+    /* Wipe previous occupant fully — verify-mode fields and game_data
+     * tail must not leak across reuse of a ring slot. */
+    memset(r, 0, sizeof(*r));
+    r->frame       = frame_num;
+    r->verify_pass = -1;  /* not run */
 
-    r->sonic_x       = emu_read16(SONIC_X_POS);
-    r->sonic_y       = emu_read16(SONIC_Y_POS);
-    r->sonic_xvel    = emu_read16s(SONIC_X_VEL);
-    r->sonic_yvel    = emu_read16s(SONIC_Y_VEL);
-    r->sonic_inertia = emu_read16s(SONIC_INERTIA);
-    r->sonic_routine = emu_read8(SONIC_ROUTINE);
-    r->sonic_status  = emu_read8(SONIC_STATUS);
-    r->sonic_angle   = emu_read8(SONIC_ANGLE);
-    r->sonic_obj_id  = emu_read8(SONIC_OBJ_ID);
+    /* Subsystem snapshots (see frame_snapshots.c). */
+    m68k_snapshot(&r->m68k);
+    z80_snapshot (&r->z80,  &g_clownmdemu);
+    vdp_snapshot (&r->vdp,  &g_clownmdemu);
+    fm_snapshot  (&r->fm,   &g_clownmdemu);
+    psg_snapshot (&r->psg,  &g_clownmdemu);
+    wram_snapshot(r->wram,  &g_clownmdemu);
+
+    /* Per-game tail. */
+    game_fill_frame_record(r->game_data);
 
     s_history_count = frame_num + 1;
 }
