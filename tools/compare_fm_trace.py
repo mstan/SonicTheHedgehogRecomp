@@ -36,7 +36,9 @@ def connect(port, label, retries=10, delay=0.5):
     raise RuntimeError(f"{label} port {port}: {last}")
 
 def read_trace(path):
-    """Returns a list of (frame, cycle, addr, value) tuples, skipping blank/comment."""
+    """Returns a list of (frame, cycle, addr, value, a7, [ret0..ret3]) tuples.
+    Older logs without the stack columns are padded with zeros for
+    backward compatibility. Skips blank/comment lines."""
     out = []
     with open(path) as f:
         for line in f:
@@ -44,65 +46,96 @@ def read_trace(path):
             if not line or line.startswith('#'): continue
             parts = line.split()
             if len(parts) < 4: continue
+            a7   = int(parts[4], 0) if len(parts) > 4 else 0
+            rets = [int(parts[5+i], 0) if len(parts) > 5+i else 0
+                    for i in range(4)]
             out.append((
                 int(parts[0]),
                 int(parts[1]),
                 int(parts[2], 0),
                 int(parts[3], 0),
+                a7,
+                rets,
             ))
     return out
 
 def fetch_internal_frame_map(sock, start_wall, length):
-    """Returns {wall_frame -> internal_frame} for [start_wall, start_wall+length-1].
-    Skips entries the ring no longer holds; consumer handles missing keys."""
-    rsp = rpc(sock, 'frame_timeseries',
-              **{'from': start_wall, 'to': start_wall + length - 1,
-                 'field': 'internal_frame'})
-    if not rsp.get('ok'):
-        raise RuntimeError(f"frame_timeseries(internal_frame) failed: {rsp}")
-    vals = rsp['values']
-    return {start_wall + i: v for i, v in enumerate(vals) if v is not None}
+    """Returns {wall_frame -> (game_mode, internal_frame)} tuple-keyed by
+    wall frame. Bucketing on internal_frame alone misaligns when native
+    and oracle are in different game_modes at the same internal_frame
+    (the side that runs faster reaches e.g. pre-demo while the slower
+    side is still on title). Including game_mode in the bucket key
+    enforces same-song comparison."""
+    rsp_if = rpc(sock, 'frame_timeseries',
+                 **{'from': start_wall, 'to': start_wall + length - 1,
+                    'field': 'internal_frame'})
+    rsp_gm = rpc(sock, 'frame_timeseries',
+                 **{'from': start_wall, 'to': start_wall + length - 1,
+                    'field': 'game_mode'})
+    if not (rsp_if.get('ok') and rsp_gm.get('ok')):
+        raise RuntimeError(f"frame_timeseries failed: if={rsp_if} gm={rsp_gm}")
+    ivals = rsp_if['values']; gvals = rsp_gm['values']
+    return {start_wall + i: (gvals[i], ivals[i])
+            for i in range(min(len(ivals), len(gvals)))
+            if ivals[i] is not None and gvals[i] is not None}
 
 def bucket_by_internal_frame(trace, start_wall, wall_to_int):
-    """Returns {internal_frame -> [(addr, value), ...]}. Trace.frame is
-    relative to capture start, so absolute_wall = trace.frame + start_wall."""
+    """Returns {(game_mode, internal_frame) -> [(addr, value, a7, rets), ...]}.
+    trace.frame is relative to capture start, so absolute_wall =
+    trace.frame + start_wall."""
     buckets = {}
-    for relf, _cyc, addr, val in trace:
+    for entry in trace:
+        relf, _cyc, addr, val, a7, rets = entry
         wall = relf + start_wall
-        ifr = wall_to_int.get(wall)
-        if ifr is None: continue   # ring lost this frame
-        buckets.setdefault(ifr, []).append((addr, val))
+        key = wall_to_int.get(wall)
+        if key is None: continue   # ring lost this frame
+        buckets.setdefault(key, []).append((addr, val, a7, tuple(rets)))
     return buckets
 
+def _entry_view(entry):
+    """Unpack a bucket entry into a diff-report dict."""
+    addr, val, a7, rets = entry
+    return {'addr': addr, 'val': val, 'a7': a7, 'rets': list(rets)}
+
 def diff_aligned(n_buckets, o_buckets, max_diffs):
-    """Walk shared internal_frames in order; return list of divergences."""
-    common = sorted(set(n_buckets) & set(o_buckets))
+    """Walk shared internal_frames in order; return list of divergences.
+    Writes are equal iff (addr, value) match — a7 and return chain differ
+    across runs even when semantics are identical, so they're reported but
+    not gated on."""
+    # Keys are (game_mode, internal_frame) tuples. Sort by internal_frame
+    # then by game_mode.
+    common = sorted(set(n_buckets) & set(o_buckets), key=lambda k: (k[1], k[0]))
     out = []
-    for ifr in common:
-        ns = n_buckets[ifr]
-        os_ = o_buckets[ifr]
-        if ns == os_:
+    for key in common:
+        gm, ifr = key
+        ns = n_buckets[key]
+        os_ = o_buckets[key]
+        # Key difference check: write semantics only.
+        ns_key = [(e[0], e[1]) for e in ns]
+        os_key = [(e[0], e[1]) for e in os_]
+        if ns_key == os_key:
             continue
         # Find first per-write difference in this bucket.
         for k in range(min(len(ns), len(os_))):
-            if ns[k] != os_[k]:
+            if ns_key[k] != os_key[k]:
                 out.append({
+                    'game_mode': gm,
                     'internal_frame': ifr,
                     'index_in_frame': k,
-                    'native':  {'addr': ns[k][0],  'val': ns[k][1]},
-                    'oracle':  {'addr': os_[k][0], 'val': os_[k][1]},
+                    'native':  _entry_view(ns[k]),
+                    'oracle':  _entry_view(os_[k]),
                     'native_count':  len(ns),
                     'oracle_count':  len(os_),
                 })
                 break
         else:
+            shorter = min(len(ns), len(os_))
             out.append({
+                'game_mode': gm,
                 'internal_frame': ifr,
-                'index_in_frame': min(len(ns), len(os_)),
-                'native':  None if len(ns) <= len(os_) else
-                           {'addr': ns[len(os_)][0], 'val': ns[len(os_)][1]},
-                'oracle':  None if len(os_) <= len(ns) else
-                           {'addr': os_[len(ns)][0], 'val': os_[len(ns)][1]},
+                'index_in_frame': shorter,
+                'native':  None if len(ns) <= len(os_) else _entry_view(ns[shorter]),
+                'oracle':  None if len(os_) <= len(ns) else _entry_view(os_[shorter]),
                 'native_count':  len(ns),
                 'oracle_count':  len(os_),
                 'note': 'one stream ran out (different write count)',
@@ -193,29 +226,31 @@ def main():
     if args.align == 'internal-frame':
         nb = bucket_by_internal_frame(nt, n_start, n_w2i)
         ob = bucket_by_internal_frame(ot, o_start, o_w2i)
-        print(f"# native covers internal_frames: "
-              f"[{min(nb,default='-')}..{max(nb,default='-')}]   "
-              f"({len(nb)} distinct)")
-        print(f"# oracle covers internal_frames: "
-              f"[{min(ob,default='-')}..{max(ob,default='-')}]   "
-              f"({len(ob)} distinct)")
+        def _kr(buckets):
+            if not buckets: return '-..-'
+            lo = min(k[1] for k in buckets)
+            hi = max(k[1] for k in buckets)
+            return f"{lo}..{hi}"
+        print(f"# native covers internal_frames: [{_kr(nb)}]   ({len(nb)} distinct (gm,if))")
+        print(f"# oracle covers internal_frames: [{_kr(ob)}]   ({len(ob)} distinct (gm,if))")
         diffs, n_common = diff_aligned(nb, ob, args.max_diffs)
-        print(f"# {n_common} internal_frames present on both sides")
+        print(f"# {n_common} (game_mode, internal_frame) tuples present on both sides")
         if not diffs:
-            print("identical FM register writes across all matched internal_frames "
+            print("identical FM register writes across all matched (gm, internal_frame) tuples "
                   "— no audio codegen divergence detected")
             return 0
         for i, d in enumerate(diffs):
-            print(f"\nDIVERGENCE #{i+1} @ internal_frame={d['internal_frame']} "
+            print(f"\nDIVERGENCE #{i+1} @ game_mode={d['game_mode']} internal_frame={d['internal_frame']} "
                   f"(write #{d['index_in_frame']} of "
                   f"native:{d['native_count']} / oracle:{d['oracle_count']})")
             if d.get('note'): print(f"  note: {d['note']}")
-            if d['native']:
-                print(f"  native: addr=0x{d['native']['addr']:04X} "
-                      f"val=0x{d['native']['val']:02X}")
-            if d['oracle']:
-                print(f"  oracle: addr=0x{d['oracle']['addr']:04X} "
-                      f"val=0x{d['oracle']['val']:02X}")
+            for side in ('native', 'oracle'):
+                if d[side]:
+                    e = d[side]
+                    stack = ' '.join(f"0x{r:06X}" for r in e['rets'])
+                    print(f"  {side}: addr=0x{e['addr']:04X} "
+                          f"val=0x{e['val']:02X}  a7=0x{e['a7']:06X}  "
+                          f"ret_chain=[{stack}]")
         return 1
 
     # stream-index legacy mode

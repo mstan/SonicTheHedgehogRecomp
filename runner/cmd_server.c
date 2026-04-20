@@ -103,13 +103,53 @@ static int    s_fm_trace_max_frames = 0;
 static int    s_fm_trace_frame_count = 0;
 static uint64_t s_fm_trace_start_frame = 0;
 
+/* Read the current 68K A7 (stack pointer). In native builds the recompiled
+ * code drives g_cpu directly; in oracle builds clown68000 keeps the active
+ * SP in address_registers[7] (the supervisor_stack_pointer / user_stack
+ * _pointer fields only hold the *inactive* alternate SP).  Also exposed as
+ * a helper because the FM-trace callback and any future stack-unwinding
+ * tool need a uniform accessor. */
+static uint32_t fm_trace_current_a7(void)
+{
+#if ENABLE_RECOMPILED_CODE && !defined(SONIC_ORACLE_BUILD)
+    return g_cpu.A[7];
+#else
+    return (uint32_t)g_clownmdemu.m68k.address_registers[7];
+#endif
+}
+
+/* Read 4 bytes big-endian from 68K work RAM ($FF0000-$FFFFFF).  Safe to
+ * call with any 24-bit address — high bits masked, low bits folded into
+ * the RAM array.  Used to walk the return-address chain on the 68K stack
+ * at the moment of an FM write. */
+static uint32_t fm_trace_stack_read32(uint32_t addr)
+{
+    uint16_t offset = (uint16_t)(addr & 0xFFFF);
+    uint16_t hi = g_clownmdemu.state.m68k.ram[offset / 2];
+    uint16_t lo = g_clownmdemu.state.m68k.ram[((offset + 2) & 0xFFFF) / 2];
+    return ((uint32_t)hi << 16) | (uint32_t)lo;
+}
+
 static void fm_trace_callback(uint32_t address, uint8_t value, uint32_t target_cycle)
 {
     if (!s_fm_trace_file) return;
+    /* Capture the 68K call chain at write time: A7 + 4 return addresses.
+     * The recompiler emits JSR as `m68k_write32(--A7, ret_pc)` so the
+     * stack holds the same return-address sequence in both native and
+     * oracle — letting us identify the 68K caller (e.g. WriteFMI caller,
+     * FMUpdateFreq caller) by matching against annotations. */
+    uint32_t a7  = fm_trace_current_a7();
+    uint32_t r0  = fm_trace_stack_read32(a7);
+    uint32_t r1  = fm_trace_stack_read32(a7 + 4);
+    uint32_t r2  = fm_trace_stack_read32(a7 + 8);
+    uint32_t r3  = fm_trace_stack_read32(a7 + 12);
     /* Use our own frame counter (incremented by tick) rather than
      * g_frame_count which only works in Step 2 mode. */
-    fprintf(s_fm_trace_file, "%d %u 0x%06X 0x%02X\n",
-            s_fm_trace_frame_count, (unsigned)target_cycle, address, value);
+    fprintf(s_fm_trace_file,
+            "%d %u 0x%06X 0x%02X 0x%06X 0x%06X 0x%06X 0x%06X 0x%06X\n",
+            s_fm_trace_frame_count, (unsigned)target_cycle, address, value,
+            a7 & 0xFFFFFFu, r0 & 0xFFFFFFu, r1 & 0xFFFFFFu,
+            r2 & 0xFFFFFFu, r3 & 0xFFFFFFu);
 }
 
 /* Called from main loop each frame to check if trace should stop */
@@ -1353,7 +1393,7 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
                 if (s_fm_trace_file) fclose(s_fm_trace_file);
                 s_fm_trace_file = fopen(path, "w");
                 if (s_fm_trace_file) {
-                    fprintf(s_fm_trace_file, "# frame master_cycle address value\n");
+                    fprintf(s_fm_trace_file, "# frame master_cycle address value a7 ret0 ret1 ret2 ret3\n");
                     s_fm_trace_active = 1;
                     s_fm_trace_max_frames = max_f;
                     s_fm_trace_frame_count = 0;
