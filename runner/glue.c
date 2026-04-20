@@ -793,15 +793,36 @@ static int is_interior_label(uint32_t addr)
     return 0;
 }
 
+/* Is the 68K instruction at `addr` a `bra.w` trampoline?  bra.w is encoded
+ * as 0x6000 <disp16>; it has zero prerequisite state and zero fall-through,
+ * so seeding its address as an extra_func always produces a correct
+ * single-tail-call function body.  This distinguishes real jmp-table
+ * trampolines (which MUST be callable) from true interior labels (loop
+ * tops, conditional-branch joins) that are never valid JSR targets. */
+static int is_bra_w_trampoline(uint32_t addr)
+{
+    /* m68k_read16 goes through the bus callback so this works for ROM
+     * (< $800000) as well as RAM. */
+    uint16_t opcode = m68k_read16(addr);
+    return opcode == 0x6000u;
+}
+
 void genesis_log_dispatch_miss(uint32_t addr)
 {
     g_miss_count_any++;
     g_miss_last_addr  = addr;
     g_miss_last_frame = g_frame_count;
 
-    /* Skip interior labels — these are valid JMP targets inside
-     * existing functions, NOT missing function entry points. */
-    if (is_interior_label(addr)) return;
+    /* Skip TRUE interior labels — these are valid JMP targets inside
+     * existing functions, NOT missing function entry points.  EXCEPT:
+     * if the bytes there are a bra.w trampoline, we almost certainly
+     * hit a jmp-table entry that silently failed dispatch (ISSUE-003
+     * class).  Fall through to log as a regular miss so the user can
+     * seed it via extra_func.  Non-bra.w interior labels remain silent
+     * — they would trigger the boundary-splitter and may need
+     * hand-blacklisting, so humans decide. */
+    if (is_interior_label(addr) && !is_bra_w_trampoline(addr))
+        return;
 
     /* Skip out-of-ROM addresses */
     if (addr > 0x80000) return;
@@ -949,6 +970,7 @@ static void log_true_miss(uint32_t target_pc)
 
 int glue_interp_seen_count(void) { return s_interp_seen_count; }
 int glue_interp_total_calls(void) { return g_interp_total_calls; }
+uint64_t glue_miss_count_any(void) { return (uint64_t)g_miss_count_any; }
 uint32_t glue_interp_seen_addr(int i) {
     return (i >= 0 && i < s_interp_seen_count) ? s_interp_seen[i] : 0;
 }
