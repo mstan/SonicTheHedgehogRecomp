@@ -28,12 +28,14 @@ typedef struct {
     uint8_t  sonic_angle;        /* $FFD026 */
     uint8_t  sonic_obj_id;       /* $FFD000 */
     uint8_t  _pad;
-    /* Internal frame counter — $FFFE04 longword. The Sonic 1 VBlank
-     * handler increments these bytes once per game frame; suitable as
-     * the primary state-marker sync key for compare_runs.py because it
-     * progresses at the same rate in both native and oracle regardless
-     * of wall-clock execution speed. */
-    uint32_t internal_frame_ctr;  /* $FFFE04 longword */
+    /* Internal frame counter — v_vblank_count at $FFFE0C longword. The
+     * Sonic 1 VBlank handler does addq.l #1,(v_vblank_count).w once per
+     * serviced VBlank (disasm: Vint at $0B64). Suitable as the primary
+     * state-marker sync key for compare_runs.py because it progresses
+     * at the same rate in both native and oracle regardless of
+     * wall-clock execution speed.  NOTE: $FFFE04 is v_framecount (word),
+     * only incremented inside the Levels-mode vblank path — do NOT use. */
+    uint32_t internal_frame_ctr;  /* $FFFE0C longword (v_vblank_count) */
 } SonicGameData;
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L

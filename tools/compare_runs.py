@@ -216,7 +216,7 @@ def common_frame_window(a, b):
 # Wall-frame index N differs in meaning between native and oracle
 # because the two binaries execute the same game code at different
 # wall-clock rates. This pairs records by an in-game state tuple
-# (game_mode + Sonic 1 VBlank counter at $FFFE04 by default), so a
+# (game_mode + Sonic 1 VBlank counter at $FFFE0C by default), so a
 # match means "both sides reached the same logical game state",
 # regardless of when they reached it.
 #
