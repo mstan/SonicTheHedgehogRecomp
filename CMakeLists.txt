@@ -38,6 +38,8 @@ set(SONIC_SHARED_SOURCES
     runner/main.c
     runner/audio.c
     runner/cmd_server.c
+    runner/frame_snapshots.c
+    runner/sonic_extras.c
     runner/hybrid_global.c
     runner/glue.c
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_full.c"
