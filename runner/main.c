@@ -929,6 +929,16 @@ int main(int argc, char *argv[])
     if (max_frames)
         fprintf(stderr, "[DONE] %u frames completed\n", frame_num);
 
+#if ENABLE_RECOMPILED_CODE
+    { extern int glue_interp_total_calls(void);
+      extern int glue_interp_seen_count(void);
+      extern uint64_t glue_miss_count_any(void);
+      fprintf(stderr, "[INTERP] hybrid_jmp/call_interpret: %d total calls, "
+                      "%d unique true-miss addrs, %llu raw miss events\n",
+              glue_interp_total_calls(), glue_interp_seen_count(),
+              (unsigned long long)glue_miss_count_any()); }
+#endif
+
     /* --- Cleanup --- */
     if (s_debug_enabled) cmd_server_shutdown();
     if (s_framelog_file) fclose(s_framelog_file);
