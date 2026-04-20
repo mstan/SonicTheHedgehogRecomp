@@ -457,6 +457,10 @@ int main(int argc, char *argv[])
      * to the state-marker sync compare_runs.py uses by default. */
     double target_fps_cli = 0.0;
 
+    /* --mem-write-log=ADDR1,ADDR2,...[@FRAMES]  — arm at boot so we catch
+     * gm=0 writes that TCP arming misses due to startup latency. */
+    const char *mem_write_log_spec = NULL;
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--max-frames") == 0 && i + 1 < argc) {
             max_frames = (uint32_t)atol(argv[++i]);
@@ -472,6 +476,8 @@ int main(int argc, char *argv[])
             s_script_start_frame = (uint32_t)atol(argv[++i]);
         } else if (strcmp(argv[i], "--script-right") == 0 && i + 1 < argc) {
             s_script_right_frame = (uint32_t)atol(argv[++i]);
+        } else if (strcmp(argv[i], "--mem-write-log") == 0 && i + 1 < argc) {
+            mem_write_log_spec = argv[++i];
         } else if (argv[i][0] != '-') {
             rom_path = argv[i];
         }
@@ -638,6 +644,33 @@ int main(int argc, char *argv[])
     if (s_debug_enabled)
         cmd_server_init(debug_port);
 
+    /* --mem-write-log: arm the memory-write logger BEFORE the first frame.
+     * Spec format: "0xFFF001,0xFFF002,0xFFF009[@FRAMES]".  Output file name
+     * mirrors the TCP convention so the comparator picks it up unchanged. */
+    if (mem_write_log_spec) {
+        uint32_t addrs[32];
+        int n_addrs = 0;
+        int frames = 0;
+        char buf[256];
+        strncpy(buf, mem_write_log_spec, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        char *at = strchr(buf, '@');
+        if (at) { *at = '\0'; frames = atoi(at + 1); }
+        char *tok = strtok(buf, ",");
+        while (tok && n_addrs < 32) {
+            addrs[n_addrs++] = (uint32_t)strtoul(tok, NULL, 0);
+            tok = strtok(NULL, ",");
+        }
+        const char *path =
+#if ENABLE_RECOMPILED_CODE
+            exe_relative("mem_write_log_native.log");
+#else
+            exe_relative("mem_write_log_oracle.log");
+#endif
+        if (!cmd_server_mem_write_log_start(addrs, n_addrs, frames, path))
+            fprintf(stderr, "[MEM-WRITE-LOG] failed to arm (spec=%s)\n", mem_write_log_spec);
+    }
+
     if (framelog_path)
         s_framelog_file = fopen(framelog_path, "w");
 
@@ -790,6 +823,10 @@ int main(int argc, char *argv[])
             cmd_server_record_frame(frame_num);
             cmd_server_fm_trace_tick();
         }
+        /* mem_write_log runs outside the debug gate so --mem-write-log works
+         * standalone (no debug.ini required).  Both ticks are no-ops when
+         * their respective trace is inactive. */
+        cmd_server_mem_write_log_tick();
 
         /* Handle run_extra_frames from debug server */
         if (cmd_cr.run_extra_frames > 0) {

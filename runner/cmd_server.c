@@ -167,6 +167,105 @@ void cmd_server_fm_trace_tick(void)
 }
 
 /* =========================================================================
+ * Memory write trace — watchlist-filtered 68K write logger.  Shares the
+ * bus-main-m68k.c hook infrastructure so works in both native and oracle.
+ * Output columns: wall_frame internal_frame game_mode address value a7
+ *                 ret0 ret1 ret2 ret3
+ *   internal_frame = v_vblank_count at $FFFE0C (longword)
+ *   game_mode      = byte at $FFF600
+ *   ret0..ret3     = 4 consecutive longs starting at A7 (68K stack)
+ * ========================================================================= */
+
+extern void (*g_mem_write_trace_fn)(uint32_t byte_address, uint8_t value, uint32_t target_cycle);
+
+#define MEM_WRITE_LOG_MAX_WATCH 32
+static FILE    *s_mem_write_log_file = NULL;
+static int      s_mem_write_log_active = 0;
+static int      s_mem_write_log_max_frames = 0;
+static int      s_mem_write_log_frame_count = 0;
+static uint32_t s_mem_write_log_watch[MEM_WRITE_LOG_MAX_WATCH];
+static int      s_mem_write_log_watch_count = 0;
+
+/* Forward decls — emu_read8/emu_read32 are defined later in this file but
+ * we need them in the callback above that definition site. */
+static uint8_t  emu_read8 (uint32_t addr);
+static uint32_t emu_read32(uint32_t addr);
+
+static void mem_write_log_callback(uint32_t byte_address, uint8_t value, uint32_t target_cycle)
+{
+    if (!s_mem_write_log_file) return;
+    /* Watchlist filter — small N, linear scan is fine. */
+    int hit = 0;
+    for (int i = 0; i < s_mem_write_log_watch_count; i++) {
+        if (s_mem_write_log_watch[i] == (byte_address & 0xFFFFFFu)) { hit = 1; break; }
+    }
+    if (!hit) return;
+
+    uint32_t a7 = fm_trace_current_a7();
+    uint32_t r0 = fm_trace_stack_read32(a7);
+    uint32_t r1 = fm_trace_stack_read32(a7 + 4);
+    uint32_t r2 = fm_trace_stack_read32(a7 + 8);
+    uint32_t r3 = fm_trace_stack_read32(a7 + 12);
+
+    uint32_t internal_frame = emu_read32(0xFE0C);  /* v_vblank_count */
+    uint8_t  game_mode      = emu_read8 (0xF600);  /* v_gamemode     */
+
+    fprintf(s_mem_write_log_file,
+            "%d %u %u 0x%06X 0x%02X 0x%06X 0x%06X 0x%06X 0x%06X 0x%06X %u\n",
+            s_mem_write_log_frame_count,
+            (unsigned)internal_frame,
+            (unsigned)game_mode,
+            byte_address & 0xFFFFFFu, value,
+            a7 & 0xFFFFFFu, r0 & 0xFFFFFFu, r1 & 0xFFFFFFu,
+            r2 & 0xFFFFFFu, r3 & 0xFFFFFFu,
+            (unsigned)target_cycle);
+}
+
+/* Arm the logger directly (no TCP needed).  Returns 1 on success, 0 on
+ * failure.  Safe to call before cmd_server_init.  Used by the --mem-write-log
+ * CLI flag so we can capture writes from frame 0 (TCP arming has ~tens of
+ * wall-frames of startup latency — too late to catch gm=0 boot music). */
+int cmd_server_mem_write_log_start(const uint32_t *addrs, int n_addrs, int frames, const char *path)
+{
+    if (n_addrs <= 0 || n_addrs > MEM_WRITE_LOG_MAX_WATCH) return 0;
+    if (s_mem_write_log_file) fclose(s_mem_write_log_file);
+    s_mem_write_log_file = fopen(path, "w");
+    if (!s_mem_write_log_file) return 0;
+
+    s_mem_write_log_watch_count = n_addrs;
+    for (int i = 0; i < n_addrs; i++)
+        s_mem_write_log_watch[i] = addrs[i] & 0xFFFFFFu;
+
+    fprintf(s_mem_write_log_file,
+        "# wall_frame internal_frame game_mode address value a7 ret0 ret1 ret2 ret3 target_cycle\n");
+    fprintf(s_mem_write_log_file, "# watching:");
+    for (int i = 0; i < n_addrs; i++)
+        fprintf(s_mem_write_log_file, " 0x%06X", s_mem_write_log_watch[i]);
+    fprintf(s_mem_write_log_file, "\n");
+
+    s_mem_write_log_active = 1;
+    s_mem_write_log_max_frames = frames > 0 ? frames : 0;
+    s_mem_write_log_frame_count = 0;
+    g_mem_write_trace_fn = mem_write_log_callback;
+    fprintf(stderr, "[MEM-WRITE-LOG] Started (CLI): %s (%d addrs, %d frames)\n",
+            path, n_addrs, frames);
+    return 1;
+}
+
+void cmd_server_mem_write_log_tick(void)
+{
+    if (!s_mem_write_log_active) return;
+    s_mem_write_log_frame_count++;
+    if (s_mem_write_log_max_frames > 0 && s_mem_write_log_frame_count >= s_mem_write_log_max_frames) {
+        fclose(s_mem_write_log_file);
+        s_mem_write_log_file = NULL;
+        s_mem_write_log_active = 0;
+        g_mem_write_trace_fn = NULL;
+        fprintf(stderr, "[MEM-WRITE-LOG] Captured %d frames\n", s_mem_write_log_frame_count);
+    }
+}
+
+/* =========================================================================
  * Frame history ring buffer — full per-frame Genesis hardware snapshot.
  * Layout in frame_record.h; subsystem snapshot accessors in
  * frame_snapshots.c; per-game tail filled via game_extras hook.
@@ -1428,6 +1527,75 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
             snprintf(buf, sizeof(buf),
                 "{\"id\":%d,\"active\":%s,\"frames\":%d}\n",
                 id, s_fm_trace_active ? "true" : "false", s_fm_trace_frame_count);
+            send_response(buf);
+        }
+    } else if (strcmp(cmd, "memory_write_log") == 0) {
+        /* {"cmd":"memory_write_log","action":"on","addrs":[0xFFF001,0xFFF002],"frames":600}
+         * {"cmd":"memory_write_log","action":"off"}
+         * {"cmd":"memory_write_log"}  — status */
+        char action[16];
+        if (json_get_str(json, "action", action, sizeof(action))) {
+            if (strcmp(action, "on") == 0) {
+                /* Parse "addrs":[h1,h2,...] — supports 0x-hex and decimal. */
+                const char *p = strstr(json, "\"addrs\"");
+                if (!p) { send_err(id, "missing addrs array"); return cr; }
+                p = strchr(p, '[');
+                if (!p) { send_err(id, "addrs must be an array"); return cr; }
+                p++;
+                s_mem_write_log_watch_count = 0;
+                while (*p && *p != ']' && s_mem_write_log_watch_count < MEM_WRITE_LOG_MAX_WATCH) {
+                    while (*p == ' ' || *p == ',' || *p == '\t' || *p == '\n') p++;
+                    if (*p == ']' || *p == '\0') break;
+                    uint32_t v = (uint32_t)strtoul(p, (char **)&p, 0);  /* 0 → accept 0x */
+                    s_mem_write_log_watch[s_mem_write_log_watch_count++] = v & 0xFFFFFFu;
+                }
+                if (s_mem_write_log_watch_count == 0) { send_err(id, "addrs empty"); return cr; }
+
+                int max_f = json_get_int(json, "frames", 600);
+                if (max_f <= 0) max_f = 600;
+                const char *path =
+#if ENABLE_RECOMPILED_CODE
+                    "mem_write_log_native.log";
+#else
+                    "mem_write_log_oracle.log";
+#endif
+                if (s_mem_write_log_file) fclose(s_mem_write_log_file);
+                s_mem_write_log_file = fopen(path, "w");
+                if (!s_mem_write_log_file) { send_err(id, "failed to open log file"); return cr; }
+                fprintf(s_mem_write_log_file,
+                    "# wall_frame internal_frame game_mode address value a7 ret0 ret1 ret2 ret3 target_cycle\n");
+                fprintf(s_mem_write_log_file, "# watching:");
+                for (int i = 0; i < s_mem_write_log_watch_count; i++)
+                    fprintf(s_mem_write_log_file, " 0x%06X", s_mem_write_log_watch[i]);
+                fprintf(s_mem_write_log_file, "\n");
+
+                s_mem_write_log_active = 1;
+                s_mem_write_log_max_frames = max_f;
+                s_mem_write_log_frame_count = 0;
+                g_mem_write_trace_fn = mem_write_log_callback;
+
+                char buf[256];
+                snprintf(buf, sizeof(buf),
+                    "{\"id\":%d,\"ok\":true,\"file\":\"%s\",\"max_frames\":%d,\"addrs\":%d}",
+                    id, path, max_f, s_mem_write_log_watch_count);
+                send_response(buf);
+                fprintf(stderr, "[MEM-WRITE-LOG] Started: %s (%d addrs, %d frames)\n",
+                        path, s_mem_write_log_watch_count, max_f);
+            } else if (strcmp(action, "off") == 0) {
+                if (s_mem_write_log_file) { fclose(s_mem_write_log_file); s_mem_write_log_file = NULL; }
+                s_mem_write_log_active = 0;
+                g_mem_write_trace_fn = NULL;
+                fprintf(stderr, "[MEM-WRITE-LOG] Stopped (%d frames)\n", s_mem_write_log_frame_count);
+                send_ok(id);
+            } else {
+                send_err(id, "action must be on or off");
+            }
+        } else {
+            char buf[128];
+            snprintf(buf, sizeof(buf),
+                "{\"id\":%d,\"active\":%s,\"frames\":%d,\"addrs\":%d}",
+                id, s_mem_write_log_active ? "true" : "false",
+                s_mem_write_log_frame_count, s_mem_write_log_watch_count);
             send_response(buf);
         }
     } else if (strcmp(cmd, "quit") == 0) {

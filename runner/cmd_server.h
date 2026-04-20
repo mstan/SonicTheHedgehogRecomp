@@ -31,6 +31,15 @@ void cmd_server_record_frame(uint32_t frame_num);
 /* Tick FM trace (check frame limit). Call once per frame. */
 void cmd_server_fm_trace_tick(void);
 
+/* Tick memory-write log (check frame limit). Call once per frame. */
+void cmd_server_mem_write_log_tick(void);
+
+/* Arm the memory-write log directly (bypasses TCP).  Used by the
+ * --mem-write-log CLI flag to capture writes from frame 0.  Returns 1 on
+ * success.  `frames` is the wall-frame cap (0 = unlimited). */
+int cmd_server_mem_write_log_start(const uint32_t *addrs, int n_addrs,
+                                   int frames, const char *path);
+
 /* True while a TCP client has issued "pause". Main loop should poll
  * cmd_server but skip game-frame advancement until cleared by
  * "continue". Used by tools/compare_runs.py to hold the ring buffer
