@@ -213,6 +213,13 @@ static void CALLBACK game_fiber_func(LPVOID param)
 /* Scanline interleave state */
 static int32_t s_cycle_budget = 0;
 static int     s_game_yielded_vblank = 0;
+#if SONIC_REVERSE_DEBUG
+/* Tier-2 reverse debugger: set by glue_yield_for_break when the game
+ * fiber parks at a block-entry hook. Main loop reads via
+ * glue_game_yielded_for_break() after each SwitchToFiber return and
+ * drains cmd_server until a resume command clears it. */
+static int     s_game_yielded_break = 0;
+#endif
 static int     s_interleave_active = 0;
 
 /* Called from DoCycles (inside Iterate). Runs game code for a chunk. */
@@ -224,6 +231,15 @@ void glue_run_game_chunk(cc_u32f cycles)
         return;
     if (s_game_yielded_vblank)
         return;
+#if SONIC_REVERSE_DEBUG
+    /* Tier 2: game fiber has parked at a breakpoint. Keep DoCycles
+     * no-opping until Iterate returns to main.c, where rdb_park_drain
+     * polls cmd_server until a resume command arrives. Without this
+     * gate the yield is effectively a no-op — DoCycles would switch
+     * right back into the game fiber on the next chunk. */
+    if (s_game_yielded_break)
+        return;
+#endif
 
     s_chunk_cycles = cycles;
     s_cycle_budget = (int32_t)cycles;
@@ -421,11 +437,46 @@ void glue_service_vblank(void)
     g_frame_count++;
 }
 
+#if SONIC_REVERSE_DEBUG
+void glue_yield_for_break(void)
+{
+    /* Block-entry hook in the game fiber decided to park. We're at a
+     * label boundary, so g_cpu and g_ram are consistent. Yield to main
+     * fiber — main loop will drain cmd_server until a resume command
+     * arrives, then SwitchToFiber(s_game_fiber) re-enters here and we
+     * continue the interrupted function. Clear the flag on return so
+     * the next yield can be detected. */
+    s_game_yielded_break = 1;
+    SwitchToFiber(s_main_fiber);
+    s_game_yielded_break = 0;
+}
+
+int glue_game_yielded_for_break(void)
+{
+    return s_game_yielded_break;
+}
+
+void glue_resume_from_break(void)
+{
+    if (!s_game_running || !s_game_fiber) return;
+    SwitchToFiber(s_game_fiber);
+    /* Returns here when the game fiber yields again (any reason). */
+}
+#endif
+
 #endif /* ENABLE_RECOMPILED_CODE */
 
 /* In hybrid mode, VBlank is handled by the interpreter — yield is a no-op. */
 #if !ENABLE_RECOMPILED_CODE
 void glue_yield_for_vblank(void) { /* stub */ }
+#if SONIC_REVERSE_DEBUG
+/* Tier 2 is native-only. Oracle never enters recompiled C so block-entry
+ * hooks don't fire, but the symbols must exist for reverse_debug.c to
+ * link into both builds. */
+void glue_yield_for_break(void) { /* native-only; unreachable from oracle */ }
+int  glue_game_yielded_for_break(void) { return 0; }
+void glue_resume_from_break(void) { /* native-only */ }
+#endif
 #endif
 
 /* Hybrid dispatch is now handled via the pre-instruction hook in

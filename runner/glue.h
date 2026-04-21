@@ -27,4 +27,29 @@ void glue_wait_vblank_done(void);
 /* Shutdown: signal game thread to stop (if running). */
 void glue_shutdown(void);
 
+#if SONIC_REVERSE_DEBUG
+/* Tier-2 reverse debugger: yield the game fiber for a breakpoint /
+ * step. Called from rdb_on_block_slow when a block-entry hook decides
+ * to park. Mechanism mirrors glue_yield_for_vblank — we SwitchToFiber
+ * back to the main fiber, the main loop drains cmd_server until a
+ * resume command arrives, then switches back and execution continues
+ * from the same block-entry point. Single-threaded cooperative; no
+ * locking, no deadlock risk. Native-only; not defined in oracle /
+ * hybrid-only builds. */
+void glue_yield_for_break(void);
+
+/* True if the most recent SwitchToFiber-return was triggered by a
+ * block-entry break (not by a VBlank yield). Checked by main.c after
+ * ClownMDEmu_Iterate so it knows to run the park-drain loop instead
+ * of servicing VBlank. Cleared when the game fiber resumes. */
+int  glue_game_yielded_for_break(void);
+
+/* Called from main.c's park-drain loop when a rdb_step/rdb_continue
+ * TCP command arrives. Switches to the game fiber so it can continue
+ * executing from the yield point in rdb_on_block_slow. Returns when
+ * the fiber yields again (break, vblank, or cycle budget) or exits.
+ * Native-only; oracle build has a stub. */
+void glue_resume_from_break(void);
+#endif
+
 #endif /* GLUE_H */

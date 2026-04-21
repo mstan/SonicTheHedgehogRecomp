@@ -23,6 +23,12 @@ set(CMAKE_C_STANDARD 11)
 
 set(RECOMP_ROOT "${CMAKE_SOURCE_DIR}/segagenesisrecomp")
 
+option(SONIC_REVERSE_DEBUG
+    "Enable Tier-1 reverse-debugger hooks (sgrdb_write*, ring buffer, rdb_* TCP cmds). \
+Requires a regen with GenesisRecomp --reverse-debug; mixing flagged/unflagged \
+generated C against the other runner variant is a link error by design."
+    OFF)
+
 include("${RECOMP_ROOT}/runner/clownmdemu_patches.cmake")
 add_subdirectory("${RECOMP_ROOT}/clownmdemu-core" clownmdemu-core)
 
@@ -46,6 +52,11 @@ set(SONIC_SHARED_SOURCES
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_dispatch.c"
     "${RECOMP_ROOT}/sonicthehedgehog/extras.c"
 )
+
+if(SONIC_REVERSE_DEBUG)
+    list(APPEND SONIC_SHARED_SOURCES runner/reverse_debug.c)
+    message(STATUS "SONIC_REVERSE_DEBUG=ON — regen with GenesisRecomp --reverse-debug")
+endif()
 
 set(SONIC_SHARED_INCLUDES
     runner/
@@ -89,6 +100,7 @@ target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
     INCLUDE_GENERATED_CODE=1
     ENABLE_RECOMPILED_CODE=1
     DEFAULT_DEBUG_PORT=4378
+    $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
 )
 _sonic_finalize_target(SonicTheHedgehogRecomp)
 
@@ -96,17 +108,28 @@ _sonic_finalize_target(SonicTheHedgehogRecomp)
 # Oracle target — clown68000 interpreter executes everything
 # ---------------------------------------------------------------------------
 
-add_executable(SonicTheHedgehogRecomp_oracle
-    ${SONIC_SHARED_SOURCES}
+set(SONIC_ORACLE_EXTRA_SOURCES
     runner/hybrid.c
     runner/hybrid_table.c
     runner/hybrid_jmp.c
+)
+if(SONIC_REVERSE_DEBUG)
+    # Tier 3: per-instruction capture on the oracle side. Oracle-only
+    # because native uses stub_clown68000.c and never runs the
+    # interpreter.
+    list(APPEND SONIC_ORACLE_EXTRA_SOURCES runner/oracle_trace.c)
+endif()
+
+add_executable(SonicTheHedgehogRecomp_oracle
+    ${SONIC_SHARED_SOURCES}
+    ${SONIC_ORACLE_EXTRA_SOURCES}
 )
 target_compile_definitions(SonicTheHedgehogRecomp_oracle PRIVATE
     INCLUDE_GENERATED_CODE=1
     HYBRID_RECOMPILED_CODE=1
     SONIC_ORACLE_BUILD=1
     DEFAULT_DEBUG_PORT=4379
+    $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
 )
 _sonic_finalize_target(SonicTheHedgehogRecomp_oracle)
 
