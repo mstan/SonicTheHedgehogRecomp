@@ -1624,6 +1624,53 @@ static void handle_rdb_get_state(int id, const char *json)
 #endif
 }
 /* =========================================================================
+ * Stage-A instrumentation: VBla-fire histogram + Iterate count.
+ *
+ * Native records each VBla-handler fire (from glue_check_vblank's while-
+ * loop) into a separate ring; TCP exposes the ring contents and an
+ * Iterate-count sanity check that proves oracle is 1-Iterate-per-wall-frame.
+ * ========================================================================= */
+
+static void handle_rdb_vbla_dump(int id, const char *json)
+{
+    int start = json_get_int(json, "start", 0);
+    int count = json_get_int(json, "count", 5000);
+    if (start < 0 || count <= 0) { send_err(id, "bad start/count"); return; }
+    if (count > 65536) count = 65536;
+
+    rdb_vbla_snapshot_begin();
+    uint32_t total = rdb_vbla_snapshot_count();
+
+    /* ~80 bytes per entry. */
+    size_t cap = (size_t)count * 96 + 4096;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { rdb_vbla_snapshot_end(); send_err(id, "alloc failed"); return; }
+
+    int pos = snprintf(buf, cap,
+        "{\"id\":%d,\"ok\":true,\"total\":%u,\"start\":%d,"
+         "\"iterate_count\":%llu,\"log\":[",
+        id, (unsigned)total, start,
+        (unsigned long long)rdb_iterate_count());
+    int emitted = 0;
+    for (int i = 0; i < count; i++) {
+        uint32_t idx = (uint32_t)(start + i);
+        if (idx >= total) break;
+        if (emitted) buf[pos++] = ',';
+        int n = rdb_vbla_format_entry(idx, buf + pos, cap - pos);
+        if (n < 0) break;
+        pos += n;
+        emitted++;
+    }
+    pos += snprintf(buf + pos, cap - pos,
+        "],\"returned\":%d,\"done\":%s}",
+        emitted, (start + emitted >= (int)total) ? "true" : "false");
+
+    rdb_vbla_snapshot_end();
+    send_response(buf);
+    free(buf);
+}
+
+/* =========================================================================
  * Tier 3: per-instruction capture on the oracle side.
  *
  * Only the oracle build records. On native the handlers reply
@@ -1846,6 +1893,8 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         handle_rdb_continue(id);
     } else if (strcmp(cmd, "rdb_get_state") == 0) {
         handle_rdb_get_state(id, json);
+    } else if (strcmp(cmd, "rdb_vbla_dump") == 0) {
+        handle_rdb_vbla_dump(id, json);
     } else if (strcmp(cmd, "t3_range") == 0) {
         handle_t3_range(id, json);
     } else if (strcmp(cmd, "t3_reset") == 0) {

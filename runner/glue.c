@@ -576,6 +576,13 @@ void glue_check_vblank(void)
                   (unsigned long long)g_cvblank_fires_total); } }
 
         int imask = (g_cpu.SR >> 8) & 7;
+#if SONIC_REVERSE_DEBUG
+        {
+            extern void rdb_record_vbla_fire(uint32_t, uint64_t, int);
+            rdb_record_vbla_fire(g_cycle_accumulator, g_frame_count,
+                imask >= 6 ? 1 /*SUPPRESSED*/ : 0 /*THRESHOLD*/);
+        }
+#endif
         if (imask >= 6)
             continue;  /* interrupts masked — cycles consumed, handler suppressed */
 
