@@ -147,4 +147,11 @@ uint64_t rdb_iterate_count(void);
  * is the native build's g_frame_count (both 0 on oracle). */
 int  rdb_vbla_format_entry(uint32_t i, char *buf, size_t buflen);
 
+/* Stage-C instruction-count accessors. Each returns the counter that
+ * lives on its build: native returns g_native_insn_count (ticked from
+ * generated C), oracle returns g_oracle_insn_count (ticked from
+ * t3_pre_insn). The other counter is 0 on each build. */
+uint64_t rdb_native_insn_count(void);
+uint64_t rdb_oracle_insn_count(void);
+
 #endif /* SONIC_REVERSE_DEBUG */

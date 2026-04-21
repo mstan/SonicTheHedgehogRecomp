@@ -1671,6 +1671,28 @@ static void handle_rdb_vbla_dump(int id, const char *json)
 }
 
 /* =========================================================================
+ * Stage-C instruction-count telemetry.
+ *
+ * rdb_insn_counts returns { native, oracle, wall_frame }. On native the
+ * "native" field is non-zero (ticked from generated C) and "oracle" is 0.
+ * On oracle it's the mirror. The paired rdb_insn_diff.py tool queries
+ * one target per count and compares per-wall-frame throughput.
+ * ========================================================================= */
+
+static void handle_rdb_insn_counts(int id)
+{
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"native\":%llu,\"oracle\":%llu,"
+         "\"wall_frame\":%u}",
+        id,
+        (unsigned long long)rdb_native_insn_count(),
+        (unsigned long long)rdb_oracle_insn_count(),
+        (unsigned)cmd_server_current_frame());
+    send_response(buf);
+}
+
+/* =========================================================================
  * Tier 3: per-instruction capture on the oracle side.
  *
  * Only the oracle build records. On native the handlers reply
@@ -1895,6 +1917,8 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         handle_rdb_get_state(id, json);
     } else if (strcmp(cmd, "rdb_vbla_dump") == 0) {
         handle_rdb_vbla_dump(id, json);
+    } else if (strcmp(cmd, "rdb_insn_counts") == 0) {
+        handle_rdb_insn_counts(id);
     } else if (strcmp(cmd, "t3_range") == 0) {
         handle_t3_range(id, json);
     } else if (strcmp(cmd, "t3_reset") == 0) {

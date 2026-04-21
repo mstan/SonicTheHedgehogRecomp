@@ -56,6 +56,13 @@ uint32_t  g_vblank_threshold   = 109312;  /* scanline 224 × 488 cycles */
 #define NTSC_CYCLES_PER_WALL_FRAME 127856u
 static int s_vblank_fired_this_frame = 0;
 
+/* Instruction-count telemetry (Stage C). Incremented by generated C
+ * once per decoded 68K instruction via the generator's cycle-bump
+ * emission. Used by rdb_insn_counts TCP command + rdb_insn_diff.py to
+ * compare native per-wall-frame instruction throughput against oracle.
+ * Stays 0 on oracle builds (generated func_* bodies never run there). */
+uint64_t g_native_insn_count = 0;
+
 /* Pacing mode (see glue.h). Default stays FIBER_FULL because
  * CYCLE_ACCURATE measurement (Stage B, this branch) shows the cap
  * eliminates multi-fire (1.074 → 1.000 fires/wall) but also halves
