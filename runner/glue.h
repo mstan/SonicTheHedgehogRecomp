@@ -27,6 +27,32 @@ void glue_wait_vblank_done(void);
 /* Shutdown: signal game thread to stop (if running). */
 void glue_shutdown(void);
 
+/* Pacing mode selector.
+ *   FIBER_FULL      — game fiber runs to WaitForVBlank per wall frame at
+ *                     full host speed. Heavy game frames get multi-fire
+ *                     VBla.
+ *   CYCLE_ACCURATE  — game fiber capped at NTSC wall-frame cycle budget
+ *                     (127,856 cycles). Exactly 1 VBla handler per wall
+ *                     frame. Default since the cycle-tables fix made
+ *                     per-instruction estimates exact.
+ *
+ * Override at startup via --pacing=fiber|accurate (CLI) or
+ * pacing=fiber|accurate (debug.ini). */
+typedef enum {
+    GLUE_PACING_FIBER_FULL     = 0,
+    GLUE_PACING_CYCLE_ACCURATE = 1,
+} GluePacingMode;
+
+extern GluePacingMode g_pacing_mode;
+
+/* Per-wall-frame fire guarantee (CYCLE_ACCURATE mode only). Called from
+ * main.c AFTER glue_service_vblank each wall frame. If the game fiber
+ * didn't cross the VBla threshold and didn't call WaitForVBlank this
+ * wall frame (e.g., boot ROM copy), force a fire so hardware's
+ * 1-VBla-per-wall-frame invariant holds. Also resets the per-wall-frame
+ * fired latch either way. */
+void glue_end_of_wall_frame(void);
+
 #if SONIC_REVERSE_DEBUG
 /* Tier-2 reverse debugger: yield the game fiber for a breakpoint /
  * step. Called from rdb_on_block_slow when a block-entry hook decides

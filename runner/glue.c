@@ -51,7 +51,19 @@ uint8_t   g_controller2_buttons = 0;
 /* Contextual recompiler cycle tracking */
 uint32_t  g_cycle_accumulator  = 0;
 uint32_t  g_vblank_threshold   = 109312;  /* scanline 224 × 488 cycles */
+/* NTSC wall-frame cycle budget — used in CYCLE_ACCURATE mode to cap
+ * game-fiber work at hardware rate. 262 scanlines × 488 cycles each. */
+#define NTSC_CYCLES_PER_WALL_FRAME 127856u
 static int s_vblank_fired_this_frame = 0;
+
+/* Pacing mode (see glue.h). Default stays FIBER_FULL because
+ * CYCLE_ACCURATE measurement (Stage B, this branch) shows the cap
+ * eliminates multi-fire (1.074 → 1.000 fires/wall) but also halves
+ * native's FM-write count (~50% tempo slowdown). The cap mechanism
+ * itself is correct; the slowdown means the cycle-cost signal still
+ * has a bias somewhere. CYCLE_ACCURATE remains opt-in via
+ * --pacing=accurate while we hunt the bias. */
+GluePacingMode g_pacing_mode = GLUE_PACING_FIBER_FULL;
 
 uint32_t  g_miss_count_any    = 0;
 int       g_step2_active      = 0;  /* set to 1 in Step 2 mode */
@@ -390,9 +402,14 @@ void glue_yield_for_vblank(void)
         s_vblank_fired_this_frame = 1;  /* ensure it's marked */
     }
 
-    /* Reset for next game frame's VBlank cycle check */
-    g_cycle_accumulator = 0;
-    s_vblank_fired_this_frame = 0;
+    /* In FIBER_FULL: reset accumulator + fired flag per game-frame boundary.
+     * In CYCLE_ACCURATE: accumulator tracks wall-frame budget (not game-
+     * frame budget) — don't reset. s_vblank_fired_this_frame is a
+     * per-wall-frame latch reset by glue_end_of_wall_frame. */
+    if (g_pacing_mode == GLUE_PACING_FIBER_FULL) {
+        g_cycle_accumulator = 0;
+        s_vblank_fired_this_frame = 0;
+    }
 
     /* PLC tile processing */
     {
@@ -561,61 +578,107 @@ void glue_signal_hblank(void)
  * prevents recursion from handler-internal accumulator crosses. */
 uint64_t g_cvblank_fires_total = 0;
 
+/* Fire the VBla handler once. Caller manages g_cycle_accumulator per
+ * mode (FIBER_FULL subtracts threshold per fire; CYCLE_ACCURATE leaves
+ * the accumulator running until the wall-frame cap is hit). The
+ * Stage-A instrumentation hook records the fire for telemetry. */
+static void fire_vblank_handler_once(void)
+{
+    s_vblank_fired_this_frame = 1;
+    g_cvblank_fires_total++;
+    { static int s_cv = 0; if (s_cv < 50) { s_cv++;
+      fprintf(stderr, "[CVBLANK] fired at cycle %u (frame %"PRIu64") [#%llu]\n",
+              g_cycle_accumulator, g_frame_count,
+              (unsigned long long)g_cvblank_fires_total); } }
+
+    int imask = (g_cpu.SR >> 8) & 7;
+#if SONIC_REVERSE_DEBUG
+    {
+        extern void rdb_record_vbla_fire(uint32_t, uint64_t, int);
+        rdb_record_vbla_fire(g_cycle_accumulator, g_frame_count,
+            imask >= 6 ? 1 /*SUPPRESSED*/ : 0 /*THRESHOLD*/);
+    }
+#endif
+    if (imask >= 6)
+        return;  /* interrupts masked — cycles consumed, handler suppressed */
+
+    M68KState saved = g_cpu;
+
+    #define VBLK_STACK 0x00FFD000u
+    #define VBLK_SAVE  128
+    cc_u16l vblk_ram[VBLK_SAVE];
+    uint32_t vbase = ((VBLK_STACK - VBLK_SAVE * 2) & 0xFFFF) / 2;
+    for (int i = 0; i < VBLK_SAVE; i++)
+        vblk_ram[i] = s_emu->state.m68k.ram[vbase + i];
+
+    g_cpu.A[7] = VBLK_STACK;
+    s_in_vblank_service = 1;
+    g_rte_pending = 0;
+    g_rte_pending_ptr = &s_rte_dummy;
+    uint32_t acc_saved = g_cycle_accumulator;
+    func_000B10();
+    g_cycle_accumulator = acc_saved;
+    g_rte_pending_ptr = &s_rte_real;
+    g_rte_pending = 0;
+    s_in_vblank_service = 0;
+
+    for (int i = 0; i < VBLK_SAVE; i++)
+        s_emu->state.m68k.ram[vbase + i] = vblk_ram[i];
+
+    g_cpu = saved;
+}
+
 void glue_check_vblank(void)
 {
     if (s_in_vblank_service)
         return;  /* already servicing — don't re-enter from handler's own accumulator */
 
+    if (g_pacing_mode == GLUE_PACING_CYCLE_ACCURATE) {
+        /* Accurate mode: fire once per wall frame at threshold crossing,
+         * then cap game-fiber execution at NTSC_CYCLES_PER_WALL_FRAME —
+         * yield to main at that point, matching hardware's wall-clock-
+         * paced 68K execution. */
+        if (!s_vblank_fired_this_frame &&
+            g_cycle_accumulator >= g_vblank_threshold) {
+            fire_vblank_handler_once();
+        }
+        if (g_cycle_accumulator >= NTSC_CYCLES_PER_WALL_FRAME) {
+#if ENABLE_RECOMPILED_CODE
+            /* Game has consumed a full NTSC frame's worth of cycles —
+             * yield the fiber. Carry the excess over to next wall frame.
+             * Native-only: oracle doesn't have a game fiber. */
+            g_cycle_accumulator -= NTSC_CYCLES_PER_WALL_FRAME;
+            s_game_yielded_vblank = 1;
+            SwitchToFiber(s_main_fiber);
+#endif
+        }
+        return;
+    }
+
+    /* FIBER_FULL mode: multi-fire while accumulator still over threshold. */
     while (g_cycle_accumulator >= g_vblank_threshold) {
         g_cycle_accumulator -= g_vblank_threshold;
-        s_vblank_fired_this_frame = 1;
-        g_cvblank_fires_total++;
-        { static int s_cv = 0; if (s_cv < 50) { s_cv++;
-          fprintf(stderr, "[CVBLANK] fired at cycle %u (frame %"PRIu64") [#%llu]\n",
-                  g_cycle_accumulator, g_frame_count,
-                  (unsigned long long)g_cvblank_fires_total); } }
-
-        int imask = (g_cpu.SR >> 8) & 7;
-#if SONIC_REVERSE_DEBUG
-        {
-            extern void rdb_record_vbla_fire(uint32_t, uint64_t, int);
-            rdb_record_vbla_fire(g_cycle_accumulator, g_frame_count,
-                imask >= 6 ? 1 /*SUPPRESSED*/ : 0 /*THRESHOLD*/);
-        }
-#endif
-        if (imask >= 6)
-            continue;  /* interrupts masked — cycles consumed, handler suppressed */
-
-        /* Run VBlank handler with register save/restore */
-        M68KState saved = g_cpu;
-
-        #define VBLK_STACK 0x00FFD000u
-        #define VBLK_SAVE  128
-        cc_u16l vblk_ram[VBLK_SAVE];
-        uint32_t vbase = ((VBLK_STACK - VBLK_SAVE * 2) & 0xFFFF) / 2;
-        for (int i = 0; i < VBLK_SAVE; i++)
-            vblk_ram[i] = s_emu->state.m68k.ram[vbase + i];
-
-        g_cpu.A[7] = VBLK_STACK;
-        s_in_vblank_service = 1;
-        g_rte_pending = 0;
-        g_rte_pending_ptr = &s_rte_dummy;
-        /* Save/restore cycle_accumulator around handler so handler's own
-         * cycle cost doesn't bill against the next VBla threshold — matches
-         * hardware where the VBla handler runs during the vblank interval
-         * and doesn't consume main-line frame budget. */
-        uint32_t acc_saved = g_cycle_accumulator;
-        func_000B10();
-        g_cycle_accumulator = acc_saved;
-        g_rte_pending_ptr = &s_rte_real;
-        g_rte_pending = 0;
-        s_in_vblank_service = 0;
-
-        for (int i = 0; i < VBLK_SAVE; i++)
-            s_emu->state.m68k.ram[vbase + i] = vblk_ram[i];
-
-        g_cpu = saved;
+        fire_vblank_handler_once();
     }
+}
+
+void glue_end_of_wall_frame(void)
+{
+    if (g_pacing_mode == GLUE_PACING_CYCLE_ACCURATE) {
+        /* If nothing fired this wall frame (game didn't cross threshold
+         * AND didn't call WaitForVBlank — e.g., boot ROM copy), force
+         * one fire. Hardware fires VBla every wall frame regardless of
+         * what the 68K is doing. */
+        if (!s_vblank_fired_this_frame) {
+            if (g_cycle_accumulator < g_vblank_threshold)
+                g_cycle_accumulator = g_vblank_threshold;
+            glue_check_vblank();
+        }
+    }
+    /* Reset per-wall-frame latch. In FIBER_FULL this is also reset by
+     * glue_yield_for_vblank; resetting here is idempotent and covers
+     * non-yielding wall frames. */
+    s_vblank_fired_this_frame = 0;
 }
 
 void glue_set_callbacks(const void *callbacks)
