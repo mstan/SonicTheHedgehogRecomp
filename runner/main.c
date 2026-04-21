@@ -66,6 +66,9 @@ const char *exe_relative(const char *filename)
 #endif
 
 #include "cmd_server.h"
+#if SONIC_REVERSE_DEBUG
+#include "reverse_debug.h"
+#endif
 
 /* =========================================================================
  * Framebuffer and palette
@@ -426,6 +429,38 @@ static void write_framelog(uint32_t frame)
     #undef EMU_WORD
     #undef EMU_LONG
 }
+
+#if SONIC_REVERSE_DEBUG && ENABLE_RECOMPILED_CODE
+/* Tier-2 park drain. Called after each ClownMDEmu_Iterate that may
+ * have parked the game fiber at a block-entry breakpoint. When the
+ * game fiber is parked we own the main thread and must keep
+ * cmd_server polling alive until a TCP command (rdb_step/continue/
+ * step_over) sets g_rdb_resume_now — at which point we SwitchToFiber
+ * back. If the resumed fiber parks again, we loop. Exits when the
+ * fiber yielded for any other reason (vblank / cycle budget / done).
+ *
+ * Safe to call unconditionally after Iterate — if the fiber didn't
+ * park for a break, glue_game_yielded_for_break() is 0 and we return
+ * immediately.
+ */
+static int s_quit_via_park_drain = 0;
+static void rdb_park_drain(void)
+{
+    while (glue_game_yielded_for_break()) {
+        SDL_Event pev;
+        while (SDL_PollEvent(&pev)) {
+            if (pev.type == SDL_QUIT) { s_quit_via_park_drain = 1; return; }
+        }
+        (void)cmd_server_poll();
+        if (g_rdb_resume_now) {
+            g_rdb_resume_now = 0;
+            glue_resume_from_break();
+        } else {
+            SDL_Delay(2);
+        }
+    }
+}
+#endif
 
 /* =========================================================================
  * main
@@ -822,6 +857,10 @@ int main(int argc, char *argv[])
           glue_reset_frame_sync();
           glue_run_game_frame();   /* prepares game fiber state */
           ClownMDEmu_Iterate(&g_clownmdemu);  /* DoCycles interleaves game */
+#if SONIC_REVERSE_DEBUG
+          rdb_park_drain();
+          if (s_quit_via_park_drain) { running = 0; break; }
+#endif
           glue_service_vblank(); }
 #else
         s_current_frame_for_input = frame_num;
@@ -863,6 +902,10 @@ int main(int argc, char *argv[])
                   glue_reset_frame_sync();
                   glue_run_game_frame();
                   ClownMDEmu_Iterate(&g_clownmdemu);
+#if SONIC_REVERSE_DEBUG
+                  rdb_park_drain();
+                  if (s_quit_via_park_drain) { running = 0; break; }
+#endif
                   glue_service_vblank(); }
 #else
                 ClownMDEmu_Iterate(&g_clownmdemu);

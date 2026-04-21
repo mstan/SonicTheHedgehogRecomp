@@ -17,6 +17,7 @@
 
 #include "reverse_debug.h"
 #include "cmd_server.h"
+#include "glue.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -181,5 +182,154 @@ int rdb_format_entry(uint32_t i, char *buf, size_t buflen)
         (unsigned)(e->caller & 0xFFFFFFu));
     return (n < 0 || (size_t)n >= buflen) ? -1 : n;
 }
+
+/* =========================================================================
+ * Tier 2: breakpoints + stepping
+ *
+ * Execution model: the game fiber runs on the same OS thread as the
+ * main loop (Windows Fibers, cooperative). rdb_on_block_slow yields
+ * to the main fiber via glue_yield_for_break(); the main loop drains
+ * cmd_server until a TCP resume command sets g_rdb_resume_now and
+ * SwitchToFiber(s_game_fiber)s back. We return from the yield on the
+ * exact same C expression in the exact same function — block-level
+ * resume with no state reconstruction needed.
+ * ========================================================================= */
+
+#define RDB_MAX_BREAKS 64
+
+enum { STEP_NONE = 0, STEP_ONE_BLOCK, STEP_OVER };
+
+int g_rdb_break_pending = 0;
+int g_rdb_resume_now    = 0;
+
+/* Diagnostic counters for smoke-testing the hook path. Visible via
+ * rdb_break_list. If slow_count stays 0 while a break is armed, the
+ * inline is either not inlined or the compiler elided it. */
+uint64_t g_rdb_slow_count = 0;
+uint64_t g_rdb_park_count = 0;
+
+static struct {
+    int      step_mode;
+    /* For STEP_OVER: snapshot of the 68K call-stack depth at the moment
+     * the user issued the command. We park again when depth <= snapshot
+     * (caller re-entered). Depth is approximated as (initial_ssp - A7)/4
+     * — works because 68K code stores 4-byte return addresses. */
+    int32_t  step_over_depth;
+
+    uint32_t breaks[RDB_MAX_BREAKS];
+    int      break_count;
+
+    int      parked;
+    uint32_t parked_block;
+    uint32_t last_block;
+} s_tier2 = {0};
+
+/* Approximate 68K call-stack depth for step-over. Sonic 1's initial SSP
+ * is $FFFE00 (from ROM vectors); depth = (initial_ssp - A7) / 4, where
+ * 4 is the size of each pushed return address. An off-by-one level in
+ * interrupt context is acceptable — step-over's job is just to run
+ * until we return to the calling frame, and spurious early-unpark is
+ * user-recoverable via another step-over. */
+static int32_t rdb_call_depth(void)
+{
+    const int32_t initial_ssp = 0xFFFE00;
+    int32_t a7 = (int32_t)cmd_server_current_a7();
+    return (initial_ssp - a7) / 4;
+}
+
+static void rdb_refresh_pending(void)
+{
+    g_rdb_break_pending = (s_tier2.break_count > 0
+                        || s_tier2.step_mode != STEP_NONE);
+}
+
+void rdb_on_block_slow(uint32_t block_id)
+{
+    g_rdb_slow_count++;
+    s_tier2.last_block = block_id;
+
+    int park = 0;
+    switch (s_tier2.step_mode) {
+    case STEP_NONE:
+        for (int i = 0; i < s_tier2.break_count; i++) {
+            if (s_tier2.breaks[i] == block_id) { park = 1; break; }
+        }
+        break;
+    case STEP_ONE_BLOCK:
+        park = 1;
+        s_tier2.step_mode = STEP_NONE;
+        break;
+    case STEP_OVER: {
+        int32_t d = rdb_call_depth();
+        if (d <= s_tier2.step_over_depth) {
+            park = 1;
+            s_tier2.step_mode = STEP_NONE;
+        }
+        break;
+    }
+    }
+    rdb_refresh_pending();
+    if (!park) return;
+
+    g_rdb_park_count++;
+    s_tier2.parked       = 1;
+    s_tier2.parked_block = block_id;
+
+    /* Yield to main fiber. Returns when main loop SwitchToFiber's back
+     * — meaning a resume command came in. */
+    glue_yield_for_break();
+
+    s_tier2.parked = 0;
+}
+
+int  rdb_break_add(uint32_t block_id)
+{
+    if (s_tier2.break_count >= RDB_MAX_BREAKS) return 0;
+    /* Dedupe — adding the same block twice is idempotent. */
+    for (int i = 0; i < s_tier2.break_count; i++)
+        if (s_tier2.breaks[i] == block_id) return 1;
+    s_tier2.breaks[s_tier2.break_count++] = block_id & 0xFFFFFFu;
+    rdb_refresh_pending();
+    return 1;
+}
+
+void rdb_break_clear_all(void)
+{
+    s_tier2.break_count = 0;
+    rdb_refresh_pending();
+}
+
+int rdb_break_count(void)            { return s_tier2.break_count; }
+uint32_t rdb_break_get(int i)
+{
+    if (i < 0 || i >= s_tier2.break_count) return 0;
+    return s_tier2.breaks[i];
+}
+
+void rdb_cmd_step_one(void)
+{
+    s_tier2.step_mode = STEP_ONE_BLOCK;
+    rdb_refresh_pending();
+    g_rdb_resume_now = 1;
+}
+
+void rdb_cmd_step_over(void)
+{
+    s_tier2.step_mode = STEP_OVER;
+    /* Park when we return to a shallower (or equal) depth than *now*. */
+    s_tier2.step_over_depth = rdb_call_depth();
+    rdb_refresh_pending();
+    g_rdb_resume_now = 1;
+}
+
+void rdb_cmd_continue(void)
+{
+    s_tier2.step_mode = STEP_NONE;
+    rdb_refresh_pending();
+    g_rdb_resume_now = 1;
+}
+
+int      rdb_is_parked   (void) { return s_tier2.parked; }
+uint32_t rdb_parked_block(void) { return s_tier2.parked_block; }
 
 #endif /* SONIC_REVERSE_DEBUG */

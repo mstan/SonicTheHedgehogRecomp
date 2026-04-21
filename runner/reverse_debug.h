@@ -64,4 +64,55 @@ int rdb_range_get(int i, uint32_t *lo_out, uint32_t *hi_out);
  * Returns bytes written or -1 on bad index / buffer overflow. */
 int rdb_format_entry(uint32_t i, char *buf, size_t buflen);
 
+/* =========================================================================
+ * Tier 2: block-level stepper (native only).
+ *
+ * Generator emits `rdb_on_block(0x72A5Cu);` after each label_%06X:; and
+ * at the top of every function. The fast path is one global load +
+ * branch when no break is armed — cost-dominated by the load. Only the
+ * slow path (rdb_on_block_slow) decides whether to park the game fiber.
+ *
+ * When the game fiber parks, it yields via glue_yield_for_break(); the
+ * main loop drains cmd_server until a resume command clears the pending
+ * flag, then SwitchToFiber(s_game_fiber) re-enters rdb_on_block_slow
+ * and execution continues.
+ *
+ * Oracle build: these symbols compile but `rdb_on_block` is never
+ * reached (clown68000 interpreter never enters recompiled function
+ * bodies). All Tier 2 TCP commands reply with "native only".
+ * ========================================================================= */
+
+/* Non-zero iff the slow path should consider parking. Set when any
+ * breakpoint is armed OR a step command is pending. Read on every
+ * block entry; the branch is almost always not-taken in a normal run. */
+extern int g_rdb_break_pending;
+
+void rdb_on_block_slow(uint32_t block_id);
+
+static inline void rdb_on_block(uint32_t block_id)
+{
+    if (g_rdb_break_pending) rdb_on_block_slow(block_id);
+}
+
+/* Control API — called from cmd_server.c dispatcher. */
+int  rdb_break_add(uint32_t block_id);   /* returns 0 if table full */
+void rdb_break_clear_all(void);
+int  rdb_break_count(void);
+uint32_t rdb_break_get(int i);           /* 0 on bad index */
+
+/* Step commands. Each arms the corresponding mode and sets the resume
+ * flag that tells the main park-drain loop to SwitchToFiber back. */
+void rdb_cmd_step_one  (void);
+void rdb_cmd_step_over (void);
+void rdb_cmd_continue  (void);
+
+/* True while the game fiber is parked at a block. Cleared by the
+ * yield's flag reset when the fiber resumes. */
+int  rdb_is_parked(void);
+uint32_t rdb_parked_block(void);
+
+/* Main-loop side: set to 1 by a resume command; main park-drain loop
+ * reads it, clears it, and switches back to the game fiber. */
+extern int g_rdb_resume_now;
+
 #endif /* SONIC_REVERSE_DEBUG */
