@@ -108,11 +108,21 @@ _sonic_finalize_target(SonicTheHedgehogRecomp)
 # Oracle target — clown68000 interpreter executes everything
 # ---------------------------------------------------------------------------
 
-add_executable(SonicTheHedgehogRecomp_oracle
-    ${SONIC_SHARED_SOURCES}
+set(SONIC_ORACLE_EXTRA_SOURCES
     runner/hybrid.c
     runner/hybrid_table.c
     runner/hybrid_jmp.c
+)
+if(SONIC_REVERSE_DEBUG)
+    # Tier 3: per-instruction capture on the oracle side. Oracle-only
+    # because native uses stub_clown68000.c and never runs the
+    # interpreter.
+    list(APPEND SONIC_ORACLE_EXTRA_SOURCES runner/oracle_trace.c)
+endif()
+
+add_executable(SonicTheHedgehogRecomp_oracle
+    ${SONIC_SHARED_SOURCES}
+    ${SONIC_ORACLE_EXTRA_SOURCES}
 )
 target_compile_definitions(SonicTheHedgehogRecomp_oracle PRIVATE
     INCLUDE_GENERATED_CODE=1

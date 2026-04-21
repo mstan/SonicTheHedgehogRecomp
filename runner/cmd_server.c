@@ -40,6 +40,9 @@ typedef int sock_t;
 #include "audio.h"
 #if SONIC_REVERSE_DEBUG
 #include "reverse_debug.h"
+#if defined(SONIC_ORACLE_BUILD)
+#include "oracle_trace.h"
+#endif
 #endif
 
 #if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
@@ -1620,6 +1623,100 @@ static void handle_rdb_get_state(int id, const char *json)
     (void)json; send_err(id, "rdb_get_state is native only");
 #endif
 }
+/* =========================================================================
+ * Tier 3: per-instruction capture on the oracle side.
+ *
+ * Only the oracle build records. On native the handlers reply
+ * "oracle only" for a symmetric TCP surface (mirrors Tier 2's
+ * "native only" reply pattern).
+ * ========================================================================= */
+
+#if defined(SONIC_ORACLE_BUILD)
+#define T3_ORACLE 1
+#else
+#define T3_ORACLE 0
+#endif
+
+static void handle_t3_range(int id, const char *json)
+{
+#if T3_ORACLE
+    uint32_t lo = rdb_parse_hex(json, "lo", UINT32_MAX);
+    uint32_t hi = rdb_parse_hex(json, "hi", UINT32_MAX);
+    if (lo == UINT32_MAX || hi == UINT32_MAX) {
+        send_err(id, "need lo + hi (hex strings)"); return;
+    }
+    if (!t3_add_range(lo, hi)) {
+        send_err(id, "range table full (max 8) — call t3_reset first"); return;
+    }
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"lo\":\"0x%06X\",\"hi\":\"0x%06X\","
+        "\"nranges\":%d}",
+        id, (unsigned)lo, (unsigned)hi, t3_range_count());
+    send_response(buf);
+#else
+    (void)json; send_err(id, "t3_range is oracle only (port 4379)");
+#endif
+}
+
+static void handle_t3_reset(int id)
+{
+#if T3_ORACLE
+    t3_reset();
+    send_ok(id);
+#else
+    send_err(id, "t3_reset is oracle only");
+#endif
+}
+
+static void handle_t3_dump(int id, const char *json)
+{
+#if T3_ORACLE
+    int start = json_get_int(json, "start", 0);
+    int count = json_get_int(json, "count", 20000);
+    if (start < 0 || count <= 0) { send_err(id, "bad start/count"); return; }
+    if (count > 100000) count = 100000;
+
+    t3_snapshot_begin();
+    uint32_t total = t3_snapshot_count();
+
+    /* Per entry ~260 bytes of JSON. Budget +headroom. */
+    size_t cap = (size_t)count * 280 + 4096;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { t3_snapshot_end(); send_err(id, "alloc failed"); return; }
+
+    int pos = snprintf(buf, cap,
+        "{\"id\":%d,\"ok\":true,\"total\":%u,\"start\":%d,\"ranges\":[",
+        id, (unsigned)total, start);
+    for (int i = 0, n = t3_range_count(); i < n; i++) {
+        uint32_t lo = 0, hi = 0; t3_range_get(i, &lo, &hi);
+        pos += snprintf(buf + pos, cap - pos,
+            "%s[\"0x%06X\",\"0x%06X\"]", i ? "," : "",
+            (unsigned)lo, (unsigned)hi);
+    }
+    pos += snprintf(buf + pos, cap - pos, "],\"log\":[");
+
+    int emitted = 0;
+    for (int i = 0; i < count; i++) {
+        uint32_t idx = (uint32_t)(start + i);
+        if (idx >= total) break;
+        if (emitted) buf[pos++] = ',';
+        int n = t3_format_entry(idx, buf + pos, cap - pos);
+        if (n < 0) break;
+        pos += n;
+        emitted++;
+    }
+    pos += snprintf(buf + pos, cap - pos,
+        "],\"returned\":%d,\"done\":%s}",
+        emitted, (start + emitted >= (int)total) ? "true" : "false");
+
+    t3_snapshot_end();
+    send_response(buf);
+    free(buf);
+#else
+    (void)json; send_err(id, "t3_dump is oracle only");
+#endif
+}
 #endif /* SONIC_REVERSE_DEBUG */
 
 /* =========================================================================
@@ -1749,6 +1846,12 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         handle_rdb_continue(id);
     } else if (strcmp(cmd, "rdb_get_state") == 0) {
         handle_rdb_get_state(id, json);
+    } else if (strcmp(cmd, "t3_range") == 0) {
+        handle_t3_range(id, json);
+    } else if (strcmp(cmd, "t3_reset") == 0) {
+        handle_t3_reset(id);
+    } else if (strcmp(cmd, "t3_dump") == 0) {
+        handle_t3_dump(id, json);
 #endif
     } else if (strcmp(cmd, "coverage_dump") == 0) {
 #if !ENABLE_RECOMPILED_CODE
