@@ -1451,6 +1451,175 @@ static void handle_rdb_dump(int id, const char *json)
     send_response(buf);
     free(buf);
 }
+
+/* =========================================================================
+ * Tier 2: breakpoints + stepping (native only)
+ *
+ * Oracle never enters recompiled function bodies, so rdb_on_block hooks
+ * are inert there. We still accept the commands but return a
+ * "native only" error so tooling fails loudly rather than silently.
+ * ========================================================================= */
+
+#if ENABLE_RECOMPILED_CODE
+#define RDB_TIER2_NATIVE 1
+#else
+#define RDB_TIER2_NATIVE 0
+#endif
+
+static void handle_rdb_break(int id, const char *json)
+{
+#if RDB_TIER2_NATIVE
+    uint32_t block = rdb_parse_hex(json, "block", UINT32_MAX);
+    if (block == UINT32_MAX) { send_err(id, "need block (hex string)"); return; }
+    if (!rdb_break_add(block)) { send_err(id, "break table full (max 64)"); return; }
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"block\":\"0x%06X\",\"count\":%d}",
+        id, (unsigned)block, rdb_break_count());
+    send_response(buf);
+#else
+    (void)json; send_err(id, "rdb_break is native only (port 4378)");
+#endif
+}
+
+static void handle_rdb_break_clear(int id)
+{
+#if RDB_TIER2_NATIVE
+    rdb_break_clear_all();
+    send_ok(id);
+#else
+    send_err(id, "rdb_break_clear is native only");
+#endif
+}
+
+static void handle_rdb_break_list(int id)
+{
+#if RDB_TIER2_NATIVE
+    extern uint64_t g_rdb_slow_count, g_rdb_park_count;
+    extern int      g_rdb_break_pending;
+    char buf[4096];
+    int pos = snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"pending\":%d,"
+         "\"slow_count\":%llu,\"park_count\":%llu,\"breaks\":[",
+        id, g_rdb_break_pending,
+        (unsigned long long)g_rdb_slow_count,
+        (unsigned long long)g_rdb_park_count);
+    for (int i = 0, n = rdb_break_count(); i < n; i++) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+            "%s\"0x%06X\"", i ? "," : "", (unsigned)rdb_break_get(i));
+    }
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "]}");
+    send_response(buf);
+#else
+    send_err(id, "rdb_break_list is native only");
+#endif
+}
+
+static void handle_rdb_step(int id)
+{
+#if RDB_TIER2_NATIVE
+    if (!rdb_is_parked()) { send_err(id, "not parked"); return; }
+    rdb_cmd_step_one();
+    send_ok(id);
+#else
+    send_err(id, "rdb_step is native only");
+#endif
+}
+
+static void handle_rdb_step_over(int id)
+{
+#if RDB_TIER2_NATIVE
+    if (!rdb_is_parked()) { send_err(id, "not parked"); return; }
+    rdb_cmd_step_over();
+    send_ok(id);
+#else
+    send_err(id, "rdb_step_over is native only");
+#endif
+}
+
+static void handle_rdb_continue(int id)
+{
+#if RDB_TIER2_NATIVE
+    /* continue is legal from paused OR running state; if not parked, it's
+     * a no-op that just ensures STEP_NONE. */
+    rdb_cmd_continue();
+    send_ok(id);
+#else
+    send_err(id, "rdb_continue is native only");
+#endif
+}
+
+static void handle_rdb_get_state(int id, const char *json)
+{
+#if RDB_TIER2_NATIVE
+    /* Optional RAM window: {"ram":[lo,hi]} */
+    int have_ram = 0;
+    uint32_t ram_lo = 0, ram_hi = 0;
+    char tmp[48];
+    if (json_get_str(json, "ram_lo", tmp, sizeof(tmp))) {
+        ram_lo = hex_to_u32(tmp);
+        if (json_get_str(json, "ram_hi", tmp, sizeof(tmp))) {
+            ram_hi = hex_to_u32(tmp);
+            have_ram = 1;
+        }
+    }
+    if (have_ram && (ram_hi < ram_lo || ram_hi - ram_lo > 2048)) {
+        send_err(id, "ram window must be <=2048 bytes, lo<=hi"); return;
+    }
+
+    uint32_t a7  = cmd_server_current_a7();
+    uint32_t r0  = cmd_server_stack_read32(a7);
+    uint32_t r1  = cmd_server_stack_read32(a7 + 4);
+    uint32_t r2  = cmd_server_stack_read32(a7 + 8);
+    uint32_t r3  = cmd_server_stack_read32(a7 + 12);
+
+    size_t cap = 2048 + (have_ram ? (size_t)(ram_hi - ram_lo + 1) * 3 : 0);
+    char *buf = (char *)malloc(cap);
+    if (!buf) { send_err(id, "alloc failed"); return; }
+
+    int pos = snprintf(buf, cap,
+        "{\"id\":%d,\"ok\":true,\"parked\":%s,\"block\":\"0x%06X\","
+         "\"func\":\"0x%06X\",\"frame\":%u,"
+         "\"D\":[%u,%u,%u,%u,%u,%u,%u,%u],"
+         "\"A\":[%u,%u,%u,%u,%u,%u,%u,%u],"
+         "\"SR\":\"0x%04X\",\"PC\":\"0x%06X\","
+         "\"stack\":[\"0x%06X\",\"0x%06X\",\"0x%06X\",\"0x%06X\"]",
+        id,
+        rdb_is_parked() ? "true" : "false",
+        (unsigned)rdb_parked_block(),
+        (unsigned)(g_rdb_current_func & 0xFFFFFFu),
+        (unsigned)cmd_server_current_frame(),
+        (unsigned)g_cpu.D[0], (unsigned)g_cpu.D[1],
+        (unsigned)g_cpu.D[2], (unsigned)g_cpu.D[3],
+        (unsigned)g_cpu.D[4], (unsigned)g_cpu.D[5],
+        (unsigned)g_cpu.D[6], (unsigned)g_cpu.D[7],
+        (unsigned)g_cpu.A[0], (unsigned)g_cpu.A[1],
+        (unsigned)g_cpu.A[2], (unsigned)g_cpu.A[3],
+        (unsigned)g_cpu.A[4], (unsigned)g_cpu.A[5],
+        (unsigned)g_cpu.A[6], (unsigned)g_cpu.A[7],
+        (unsigned)g_cpu.SR, (unsigned)(g_cpu.PC & 0xFFFFFFu),
+        (unsigned)(r0 & 0xFFFFFFu), (unsigned)(r1 & 0xFFFFFFu),
+        (unsigned)(r2 & 0xFFFFFFu), (unsigned)(r3 & 0xFFFFFFu));
+
+    if (have_ram) {
+        pos += snprintf(buf + pos, cap - pos, ",\"ram\":\"");
+        for (uint32_t a = ram_lo; a <= ram_hi; a++) {
+            uint8_t byte = g_ram[a & 0xFFFFu];
+            pos += snprintf(buf + pos, cap - pos, "%02X", byte);
+        }
+        pos += snprintf(buf + pos, cap - pos, "\",\"ram_lo\":\"0x%06X\","
+                        "\"ram_hi\":\"0x%06X\"",
+                        (unsigned)(0xFF0000u + ram_lo),
+                        (unsigned)(0xFF0000u + ram_hi));
+    }
+    snprintf(buf + pos, cap - pos, "}");
+
+    send_response(buf);
+    free(buf);
+#else
+    (void)json; send_err(id, "rdb_get_state is native only");
+#endif
+}
 #endif /* SONIC_REVERSE_DEBUG */
 
 /* =========================================================================
@@ -1566,6 +1735,20 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         handle_rdb_reset(id);
     } else if (strcmp(cmd, "rdb_dump") == 0) {
         handle_rdb_dump(id, json);
+    } else if (strcmp(cmd, "rdb_break") == 0) {
+        handle_rdb_break(id, json);
+    } else if (strcmp(cmd, "rdb_break_clear") == 0) {
+        handle_rdb_break_clear(id);
+    } else if (strcmp(cmd, "rdb_break_list") == 0) {
+        handle_rdb_break_list(id);
+    } else if (strcmp(cmd, "rdb_step") == 0) {
+        handle_rdb_step(id);
+    } else if (strcmp(cmd, "rdb_step_over") == 0) {
+        handle_rdb_step_over(id);
+    } else if (strcmp(cmd, "rdb_continue") == 0) {
+        handle_rdb_continue(id);
+    } else if (strcmp(cmd, "rdb_get_state") == 0) {
+        handle_rdb_get_state(id, json);
 #endif
     } else if (strcmp(cmd, "coverage_dump") == 0) {
 #if !ENABLE_RECOMPILED_CODE
