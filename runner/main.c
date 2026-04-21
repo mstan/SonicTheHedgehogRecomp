@@ -462,6 +462,10 @@ int main(int argc, char *argv[])
     const char *mem_write_log_spec = NULL;
     const char *wav_path = NULL;
 
+    /* --pacing=fiber|accurate  — cycle pacing mode (see glue.h).  NULL = not
+     * set via CLI; debug.ini may still override; otherwise FIBER_FULL. */
+    const char *pacing_cli = NULL;
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--max-frames") == 0 && i + 1 < argc) {
             max_frames = (uint32_t)atol(argv[++i]);
@@ -481,6 +485,10 @@ int main(int argc, char *argv[])
             mem_write_log_spec = argv[++i];
         } else if (strcmp(argv[i], "--wav") == 0 && i + 1 < argc) {
             wav_path = argv[++i];
+        } else if (strcmp(argv[i], "--pacing") == 0 && i + 1 < argc) {
+            pacing_cli = argv[++i];
+        } else if (strncmp(argv[i], "--pacing=", 9) == 0) {
+            pacing_cli = argv[i] + 9;
         } else if (argv[i][0] != '-') {
             rom_path = argv[i];
         }
@@ -614,6 +622,7 @@ int main(int argc, char *argv[])
     static int s_debug_enabled    = 0;
     int    debug_port_from_ini    = 0;
     double target_fps_from_ini    = 0.0;
+    char   pacing_from_ini[32]    = {0};
     {
         FILE *df = fopen(exe_relative("debug.ini"), "r");
         if (df) {
@@ -630,11 +639,37 @@ int main(int argc, char *argv[])
                 while (ke > k && (ke[-1] == ' ' || ke[-1] == '\t')) ke--;
                 *ke = '\0';
                 while (*v == ' ' || *v == '\t') v++;
+                /* strip trailing whitespace/newlines from value */
+                char *ve = v + strlen(v);
+                while (ve > v && (ve[-1] == '\n' || ve[-1] == '\r' ||
+                                  ve[-1] == ' '  || ve[-1] == '\t')) ve--;
+                *ve = '\0';
                 if      (strcmp(k, "port")       == 0) debug_port_from_ini = atoi(v);
                 else if (strcmp(k, "target_fps") == 0) target_fps_from_ini = atof(v);
+                else if (strcmp(k, "pacing")     == 0) {
+                    strncpy(pacing_from_ini, v, sizeof(pacing_from_ini) - 1);
+                }
             }
             fclose(df);
         }
+    }
+    /* Pacing resolution: --pacing wins over debug.ini, which wins over
+     * the compiled default (FIBER_FULL). */
+    {
+        const char *chosen = pacing_cli ? pacing_cli :
+                             (pacing_from_ini[0] ? pacing_from_ini : NULL);
+        if (chosen) {
+            if (strcmp(chosen, "accurate") == 0)
+                g_pacing_mode = GLUE_PACING_CYCLE_ACCURATE;
+            else if (strcmp(chosen, "fiber") == 0)
+                g_pacing_mode = GLUE_PACING_FIBER_FULL;
+            else
+                fprintf(stderr, "[pacing] unknown mode '%s' — using fiber\n", chosen);
+        }
+        fprintf(stderr, "[pacing] mode=%s%s\n",
+                g_pacing_mode == GLUE_PACING_CYCLE_ACCURATE ? "accurate" : "fiber",
+                g_pacing_mode == GLUE_PACING_CYCLE_ACCURATE ?
+                    " (EXPERIMENTAL — noticeable tempo slowdown)" : "");
     }
     /* --target-fps wins over debug.ini, which wins over default 59.94. */
     double target_fps = (target_fps_cli > 0.0)     ? target_fps_cli :
@@ -822,7 +857,8 @@ int main(int argc, char *argv[])
           glue_reset_frame_sync();
           glue_run_game_frame();   /* prepares game fiber state */
           ClownMDEmu_Iterate(&g_clownmdemu);  /* DoCycles interleaves game */
-          glue_service_vblank(); }
+          glue_service_vblank();
+          glue_end_of_wall_frame(); }
 #else
         s_current_frame_for_input = frame_num;
         ClownMDEmu_Iterate(&g_clownmdemu);
