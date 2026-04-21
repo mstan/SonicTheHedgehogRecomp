@@ -398,6 +398,21 @@ uint32_t rdb_vbla_snapshot_count(void)
 
 uint64_t rdb_iterate_count(void) { return s_iterate_count; }
 
+/* Stage C accessors. g_native_insn_count lives in runner/glue.c (always
+ * defined — incremented by generated C). g_oracle_insn_count lives in
+ * runner/oracle_trace.c (oracle-only build). On native, oracle_trace.c
+ * is not linked; provide a weak fallback so the accessor still returns
+ * 0 there. */
+extern uint64_t g_native_insn_count;
+#if defined(SONIC_ORACLE_BUILD)
+extern uint64_t g_oracle_insn_count;
+#else
+static uint64_t g_oracle_insn_count = 0;
+#endif
+
+uint64_t rdb_native_insn_count(void) { return g_native_insn_count; }
+uint64_t rdb_oracle_insn_count(void) { return g_oracle_insn_count; }
+
 int rdb_vbla_format_entry(uint32_t i, char *buf, size_t buflen)
 {
     if (!s_fires.snap_active || i >= s_fires.snap_count) return -1;

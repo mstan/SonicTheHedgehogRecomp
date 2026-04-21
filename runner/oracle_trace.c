@@ -65,8 +65,17 @@ static int t3_range_hit(uint32_t pc)
     return 0;
 }
 
+/* Stage C: unconditional per-instruction counter on oracle. Ticked
+ * from t3_pre_insn which fires once per 68K instruction in the
+ * clown68000 interpreter's main loop. Compared against native's
+ * g_native_insn_count (ticked from generated C) to measure whether
+ * the cap-mode tempo slowdown is from per-instruction cost inflation
+ * or from extra instructions per game-frame. */
+uint64_t g_oracle_insn_count = 0;
+
 static void t3_pre_insn(cc_u32l pc)
 {
+    g_oracle_insn_count++;
     if (s_t3.active && t3_range_hit((uint32_t)pc)) {
         const Clown68000_State *st = &g_clownmdemu.m68k;
         uint32_t idx = s_t3.write_idx % T3_LOG_SIZE;
