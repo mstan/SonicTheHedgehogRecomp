@@ -38,6 +38,12 @@ typedef int sock_t;
 #include "cmd_server.h"
 #include "clownmdemu.h"
 #include "audio.h"
+#if SONIC_REVERSE_DEBUG
+#include "reverse_debug.h"
+#if defined(SONIC_ORACLE_BUILD)
+#include "oracle_trace.h"
+#endif
+#endif
 
 #if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
 #include "genesis_runtime.h"
@@ -386,6 +392,13 @@ static void send_err(int id, const char *msg)
  * Same signatures as send_response/send_err but pulled out of file scope. */
 void cmd_send_response(const char *json)       { send_response(json); }
 void cmd_send_err(int id, const char *msg)     { send_err(id, msg); }
+
+/* Shared accessors for in-tree tracers (reverse_debug.c today).
+ * Wrap the static helpers above; we don't change their internal linkage
+ * so existing call sites keep working unchanged. */
+uint32_t cmd_server_current_frame(void) { return s_current_frame; }
+uint32_t cmd_server_current_a7(void)    { return fm_trace_current_a7(); }
+uint32_t cmd_server_stack_read32(uint32_t a) { return fm_trace_stack_read32(a); }
 
 /* =========================================================================
  * Command handlers
@@ -1353,6 +1366,359 @@ static void handle_dispatch_miss_info(int id)
 }
 #endif
 
+#if SONIC_REVERSE_DEBUG
+/* =========================================================================
+ * Tier-1 reverse-debugger commands. Data + record path lives in
+ * reverse_debug.c; these handlers are the TCP surface.
+ *
+ *   rdb_range {"lo":"0xA04000","hi":"0xA04003"}   — add a range filter
+ *   rdb_reset                                     — clear ring + filters
+ *   rdb_dump  {"start":0,"count":50000}            — page JSON entries
+ * ========================================================================= */
+
+static uint32_t rdb_parse_hex(const char *json, const char *key, uint32_t def)
+{
+    char tmp[32];
+    if (json_get_str(json, key, tmp, sizeof(tmp))) return hex_to_u32(tmp);
+    int i = json_get_int(json, key, -1);
+    if (i < 0) return def;
+    return (uint32_t)i;
+}
+
+static void handle_rdb_range(int id, const char *json)
+{
+    uint32_t lo = rdb_parse_hex(json, "lo", UINT32_MAX);
+    uint32_t hi = rdb_parse_hex(json, "hi", UINT32_MAX);
+    if (lo == UINT32_MAX || hi == UINT32_MAX) {
+        send_err(id, "need lo + hi (hex strings like \"0xA04000\")");
+        return;
+    }
+    if (!rdb_add_range(lo, hi)) {
+        send_err(id, "range table full (max 8) — call rdb_reset first");
+        return;
+    }
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"lo\":\"0x%06X\",\"hi\":\"0x%06X\",\"nranges\":%d}",
+        id, (unsigned)lo, (unsigned)hi, rdb_range_count());
+    send_response(buf);
+}
+
+static void handle_rdb_reset(int id)
+{
+    rdb_reset();
+    send_ok(id);
+}
+
+static void handle_rdb_dump(int id, const char *json)
+{
+    int start = json_get_int(json, "start", 0);
+    int count = json_get_int(json, "count", 50000);
+    if (start < 0 || count <= 0) { send_err(id, "bad start/count"); return; }
+    if (count > 200000) count = 200000;   /* safety cap per call */
+
+    rdb_snapshot_begin();
+    uint32_t total = rdb_snapshot_count();
+
+    /* Upper bound on a single entry is ~140 bytes; allocate +headroom. */
+    size_t cap = (size_t)count * 160 + 4096;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { rdb_snapshot_end(); send_err(id, "alloc failed"); return; }
+
+    int pos = snprintf(buf, cap,
+        "{\"id\":%d,\"ok\":true,\"total\":%u,\"start\":%d,\"ranges\":[",
+        id, (unsigned)total, start);
+    for (int i = 0, n = rdb_range_count(); i < n; i++) {
+        uint32_t lo = 0, hi = 0; rdb_range_get(i, &lo, &hi);
+        pos += snprintf(buf + pos, cap - pos,
+            "%s[\"0x%06X\",\"0x%06X\"]", i ? "," : "",
+            (unsigned)lo, (unsigned)hi);
+    }
+    pos += snprintf(buf + pos, cap - pos, "],\"log\":[");
+
+    int emitted = 0;
+    for (int i = 0; i < count; i++) {
+        uint32_t idx = (uint32_t)(start + i);
+        if (idx >= total) break;
+        if (emitted) buf[pos++] = ',';
+        int n = rdb_format_entry(idx, buf + pos, cap - pos);
+        if (n < 0) break;
+        pos += n;
+        emitted++;
+    }
+    pos += snprintf(buf + pos, cap - pos,
+        "],\"returned\":%d,\"done\":%s}",
+        emitted, (start + emitted >= (int)total) ? "true" : "false");
+
+    rdb_snapshot_end();
+    send_response(buf);
+    free(buf);
+}
+
+/* =========================================================================
+ * Tier 2: breakpoints + stepping (native only)
+ *
+ * Oracle never enters recompiled function bodies, so rdb_on_block hooks
+ * are inert there. We still accept the commands but return a
+ * "native only" error so tooling fails loudly rather than silently.
+ * ========================================================================= */
+
+#if ENABLE_RECOMPILED_CODE
+#define RDB_TIER2_NATIVE 1
+#else
+#define RDB_TIER2_NATIVE 0
+#endif
+
+static void handle_rdb_break(int id, const char *json)
+{
+#if RDB_TIER2_NATIVE
+    uint32_t block = rdb_parse_hex(json, "block", UINT32_MAX);
+    if (block == UINT32_MAX) { send_err(id, "need block (hex string)"); return; }
+    if (!rdb_break_add(block)) { send_err(id, "break table full (max 64)"); return; }
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"block\":\"0x%06X\",\"count\":%d}",
+        id, (unsigned)block, rdb_break_count());
+    send_response(buf);
+#else
+    (void)json; send_err(id, "rdb_break is native only (port 4378)");
+#endif
+}
+
+static void handle_rdb_break_clear(int id)
+{
+#if RDB_TIER2_NATIVE
+    rdb_break_clear_all();
+    send_ok(id);
+#else
+    send_err(id, "rdb_break_clear is native only");
+#endif
+}
+
+static void handle_rdb_break_list(int id)
+{
+#if RDB_TIER2_NATIVE
+    extern uint64_t g_rdb_slow_count, g_rdb_park_count;
+    extern int      g_rdb_break_pending;
+    char buf[4096];
+    int pos = snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"pending\":%d,"
+         "\"slow_count\":%llu,\"park_count\":%llu,\"breaks\":[",
+        id, g_rdb_break_pending,
+        (unsigned long long)g_rdb_slow_count,
+        (unsigned long long)g_rdb_park_count);
+    for (int i = 0, n = rdb_break_count(); i < n; i++) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+            "%s\"0x%06X\"", i ? "," : "", (unsigned)rdb_break_get(i));
+    }
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "]}");
+    send_response(buf);
+#else
+    send_err(id, "rdb_break_list is native only");
+#endif
+}
+
+static void handle_rdb_step(int id)
+{
+#if RDB_TIER2_NATIVE
+    if (!rdb_is_parked()) { send_err(id, "not parked"); return; }
+    rdb_cmd_step_one();
+    send_ok(id);
+#else
+    send_err(id, "rdb_step is native only");
+#endif
+}
+
+static void handle_rdb_step_over(int id)
+{
+#if RDB_TIER2_NATIVE
+    if (!rdb_is_parked()) { send_err(id, "not parked"); return; }
+    rdb_cmd_step_over();
+    send_ok(id);
+#else
+    send_err(id, "rdb_step_over is native only");
+#endif
+}
+
+static void handle_rdb_continue(int id)
+{
+#if RDB_TIER2_NATIVE
+    /* continue is legal from paused OR running state; if not parked, it's
+     * a no-op that just ensures STEP_NONE. */
+    rdb_cmd_continue();
+    send_ok(id);
+#else
+    send_err(id, "rdb_continue is native only");
+#endif
+}
+
+static void handle_rdb_get_state(int id, const char *json)
+{
+#if RDB_TIER2_NATIVE
+    /* Optional RAM window: {"ram":[lo,hi]} */
+    int have_ram = 0;
+    uint32_t ram_lo = 0, ram_hi = 0;
+    char tmp[48];
+    if (json_get_str(json, "ram_lo", tmp, sizeof(tmp))) {
+        ram_lo = hex_to_u32(tmp);
+        if (json_get_str(json, "ram_hi", tmp, sizeof(tmp))) {
+            ram_hi = hex_to_u32(tmp);
+            have_ram = 1;
+        }
+    }
+    if (have_ram && (ram_hi < ram_lo || ram_hi - ram_lo > 2048)) {
+        send_err(id, "ram window must be <=2048 bytes, lo<=hi"); return;
+    }
+
+    uint32_t a7  = cmd_server_current_a7();
+    uint32_t r0  = cmd_server_stack_read32(a7);
+    uint32_t r1  = cmd_server_stack_read32(a7 + 4);
+    uint32_t r2  = cmd_server_stack_read32(a7 + 8);
+    uint32_t r3  = cmd_server_stack_read32(a7 + 12);
+
+    size_t cap = 2048 + (have_ram ? (size_t)(ram_hi - ram_lo + 1) * 3 : 0);
+    char *buf = (char *)malloc(cap);
+    if (!buf) { send_err(id, "alloc failed"); return; }
+
+    int pos = snprintf(buf, cap,
+        "{\"id\":%d,\"ok\":true,\"parked\":%s,\"block\":\"0x%06X\","
+         "\"func\":\"0x%06X\",\"frame\":%u,"
+         "\"D\":[%u,%u,%u,%u,%u,%u,%u,%u],"
+         "\"A\":[%u,%u,%u,%u,%u,%u,%u,%u],"
+         "\"SR\":\"0x%04X\",\"PC\":\"0x%06X\","
+         "\"stack\":[\"0x%06X\",\"0x%06X\",\"0x%06X\",\"0x%06X\"]",
+        id,
+        rdb_is_parked() ? "true" : "false",
+        (unsigned)rdb_parked_block(),
+        (unsigned)(g_rdb_current_func & 0xFFFFFFu),
+        (unsigned)cmd_server_current_frame(),
+        (unsigned)g_cpu.D[0], (unsigned)g_cpu.D[1],
+        (unsigned)g_cpu.D[2], (unsigned)g_cpu.D[3],
+        (unsigned)g_cpu.D[4], (unsigned)g_cpu.D[5],
+        (unsigned)g_cpu.D[6], (unsigned)g_cpu.D[7],
+        (unsigned)g_cpu.A[0], (unsigned)g_cpu.A[1],
+        (unsigned)g_cpu.A[2], (unsigned)g_cpu.A[3],
+        (unsigned)g_cpu.A[4], (unsigned)g_cpu.A[5],
+        (unsigned)g_cpu.A[6], (unsigned)g_cpu.A[7],
+        (unsigned)g_cpu.SR, (unsigned)(g_cpu.PC & 0xFFFFFFu),
+        (unsigned)(r0 & 0xFFFFFFu), (unsigned)(r1 & 0xFFFFFFu),
+        (unsigned)(r2 & 0xFFFFFFu), (unsigned)(r3 & 0xFFFFFFu));
+
+    if (have_ram) {
+        pos += snprintf(buf + pos, cap - pos, ",\"ram\":\"");
+        for (uint32_t a = ram_lo; a <= ram_hi; a++) {
+            uint8_t byte = g_ram[a & 0xFFFFu];
+            pos += snprintf(buf + pos, cap - pos, "%02X", byte);
+        }
+        pos += snprintf(buf + pos, cap - pos, "\",\"ram_lo\":\"0x%06X\","
+                        "\"ram_hi\":\"0x%06X\"",
+                        (unsigned)(0xFF0000u + ram_lo),
+                        (unsigned)(0xFF0000u + ram_hi));
+    }
+    snprintf(buf + pos, cap - pos, "}");
+
+    send_response(buf);
+    free(buf);
+#else
+    (void)json; send_err(id, "rdb_get_state is native only");
+#endif
+}
+/* =========================================================================
+ * Tier 3: per-instruction capture on the oracle side.
+ *
+ * Only the oracle build records. On native the handlers reply
+ * "oracle only" for a symmetric TCP surface (mirrors Tier 2's
+ * "native only" reply pattern).
+ * ========================================================================= */
+
+#if defined(SONIC_ORACLE_BUILD)
+#define T3_ORACLE 1
+#else
+#define T3_ORACLE 0
+#endif
+
+static void handle_t3_range(int id, const char *json)
+{
+#if T3_ORACLE
+    uint32_t lo = rdb_parse_hex(json, "lo", UINT32_MAX);
+    uint32_t hi = rdb_parse_hex(json, "hi", UINT32_MAX);
+    if (lo == UINT32_MAX || hi == UINT32_MAX) {
+        send_err(id, "need lo + hi (hex strings)"); return;
+    }
+    if (!t3_add_range(lo, hi)) {
+        send_err(id, "range table full (max 8) — call t3_reset first"); return;
+    }
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"lo\":\"0x%06X\",\"hi\":\"0x%06X\","
+        "\"nranges\":%d}",
+        id, (unsigned)lo, (unsigned)hi, t3_range_count());
+    send_response(buf);
+#else
+    (void)json; send_err(id, "t3_range is oracle only (port 4379)");
+#endif
+}
+
+static void handle_t3_reset(int id)
+{
+#if T3_ORACLE
+    t3_reset();
+    send_ok(id);
+#else
+    send_err(id, "t3_reset is oracle only");
+#endif
+}
+
+static void handle_t3_dump(int id, const char *json)
+{
+#if T3_ORACLE
+    int start = json_get_int(json, "start", 0);
+    int count = json_get_int(json, "count", 20000);
+    if (start < 0 || count <= 0) { send_err(id, "bad start/count"); return; }
+    if (count > 100000) count = 100000;
+
+    t3_snapshot_begin();
+    uint32_t total = t3_snapshot_count();
+
+    /* Per entry ~260 bytes of JSON. Budget +headroom. */
+    size_t cap = (size_t)count * 280 + 4096;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { t3_snapshot_end(); send_err(id, "alloc failed"); return; }
+
+    int pos = snprintf(buf, cap,
+        "{\"id\":%d,\"ok\":true,\"total\":%u,\"start\":%d,\"ranges\":[",
+        id, (unsigned)total, start);
+    for (int i = 0, n = t3_range_count(); i < n; i++) {
+        uint32_t lo = 0, hi = 0; t3_range_get(i, &lo, &hi);
+        pos += snprintf(buf + pos, cap - pos,
+            "%s[\"0x%06X\",\"0x%06X\"]", i ? "," : "",
+            (unsigned)lo, (unsigned)hi);
+    }
+    pos += snprintf(buf + pos, cap - pos, "],\"log\":[");
+
+    int emitted = 0;
+    for (int i = 0; i < count; i++) {
+        uint32_t idx = (uint32_t)(start + i);
+        if (idx >= total) break;
+        if (emitted) buf[pos++] = ',';
+        int n = t3_format_entry(idx, buf + pos, cap - pos);
+        if (n < 0) break;
+        pos += n;
+        emitted++;
+    }
+    pos += snprintf(buf + pos, cap - pos,
+        "],\"returned\":%d,\"done\":%s}",
+        emitted, (start + emitted >= (int)total) ? "true" : "false");
+
+    t3_snapshot_end();
+    send_response(buf);
+    free(buf);
+#else
+    (void)json; send_err(id, "t3_dump is oracle only");
+#endif
+}
+#endif /* SONIC_REVERSE_DEBUG */
+
 /* =========================================================================
  * Command dispatch
  * ========================================================================= */
@@ -1458,6 +1824,34 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
 #if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
     } else if (strcmp(cmd, "dispatch_miss_info") == 0) {
         handle_dispatch_miss_info(id);
+#endif
+#if SONIC_REVERSE_DEBUG
+    } else if (strcmp(cmd, "rdb_range") == 0) {
+        handle_rdb_range(id, json);
+    } else if (strcmp(cmd, "rdb_reset") == 0) {
+        handle_rdb_reset(id);
+    } else if (strcmp(cmd, "rdb_dump") == 0) {
+        handle_rdb_dump(id, json);
+    } else if (strcmp(cmd, "rdb_break") == 0) {
+        handle_rdb_break(id, json);
+    } else if (strcmp(cmd, "rdb_break_clear") == 0) {
+        handle_rdb_break_clear(id);
+    } else if (strcmp(cmd, "rdb_break_list") == 0) {
+        handle_rdb_break_list(id);
+    } else if (strcmp(cmd, "rdb_step") == 0) {
+        handle_rdb_step(id);
+    } else if (strcmp(cmd, "rdb_step_over") == 0) {
+        handle_rdb_step_over(id);
+    } else if (strcmp(cmd, "rdb_continue") == 0) {
+        handle_rdb_continue(id);
+    } else if (strcmp(cmd, "rdb_get_state") == 0) {
+        handle_rdb_get_state(id, json);
+    } else if (strcmp(cmd, "t3_range") == 0) {
+        handle_t3_range(id, json);
+    } else if (strcmp(cmd, "t3_reset") == 0) {
+        handle_t3_reset(id);
+    } else if (strcmp(cmd, "t3_dump") == 0) {
+        handle_t3_dump(id, json);
 #endif
     } else if (strcmp(cmd, "coverage_dump") == 0) {
 #if !ENABLE_RECOMPILED_CODE

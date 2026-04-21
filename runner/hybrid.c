@@ -344,6 +344,10 @@ static void hybrid_pre_insn(cc_u32l pc)
 
 extern void (*g_hybrid_pre_insn_fn)(cc_u32l pc);
 
+#if SONIC_REVERSE_DEBUG && defined(SONIC_ORACLE_BUILD)
+#include "oracle_trace.h"
+#endif
+
 void HybridInit(ClownMDEmu *emu)
 {
     s_emu = emu;
@@ -351,6 +355,14 @@ void HybridInit(ClownMDEmu *emu)
     s_total_tests = 0;
     s_total_divergences = 0;
     g_hybrid_pre_insn_fn = hybrid_pre_insn;
+#if SONIC_REVERSE_DEBUG && defined(SONIC_ORACLE_BUILD)
+    /* Tier 3: chain a per-instruction capture in front of hybrid_pre_insn.
+     * t3_pre_insn records (pc, D, A, SR) into its ring when a range
+     * filter matches, then forwards to hybrid_pre_insn. Must install
+     * AFTER the line above so we capture the right prev_fn. */
+    t3_install_hook();
+    fprintf(stderr, "[TIER3] oracle per-instruction trace armed (t3_range to record)\n");
+#endif
     fprintf(stderr, "[SANDBOX] Verification active: interpreter oracle + native comparison\n");
 }
 
