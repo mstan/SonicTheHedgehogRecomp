@@ -88,6 +88,9 @@ def main():
                     help='Top of oracle PC range')
     ap.add_argument('--steps', type=int, default=30,
                     help='Max native block-steps per hit before giving up')
+    ap.add_argument('--pair-by', default='D5_low',
+                    choices=['D5_low', 'A5', 'none'],
+                    help='Register to use for entry pairing across targets')
     args = ap.parse_args()
 
     build_dir = os.path.abspath(args.build_dir)
@@ -166,30 +169,68 @@ def main():
         # the next oracle entry at that same PC. This gives like-for-like
         # comparison for a single CoordFlag call chain.
         entry_block = nat_snaps[0]['block']
-        entry_d5_low = nat_snaps[0]['D'][5] & 0xFF
+        def entry_key(snap):
+            if args.pair_by == 'D5_low':
+                return snap['D'][5] & 0xFF
+            if args.pair_by == 'A5':
+                return snap['A'][5]
+            return None
+        nat_key = entry_key(nat_snaps[0])
         oracle_start = None
         for i, ora in enumerate(ora_log):
-            if ora['pc'] == entry_block and (ora['D'][5] & 0xFF) == entry_d5_low:
+            if ora['pc'] != entry_block: continue
+            if args.pair_by == 'none' or entry_key(ora) == nat_key:
                 oracle_start = i; break
         if oracle_start is None:
-            print(f"\n[fail] no oracle entry at {entry_block} with D5={entry_d5_low:#x}")
+            print(f"\n[fail] no oracle entry at {entry_block} with "
+                  f"{args.pair_by}={nat_key!r}")
             return 1
-        print(f"\n[pair] native entry D5={entry_d5_low:#x} matches oracle "
-              f"entry at log index {oracle_start} (frame {ora_log[oracle_start]['f']})")
+        print(f"\n[pair] native entry {args.pair_by}={nat_key!r} matches "
+              f"oracle at log index {oracle_start} "
+              f"(frame {ora_log[oracle_start]['f']})")
+
+        # Also keep track of the entry A5. When following oracle's
+        # instruction stream forward, we stop if A5 diverges because
+        # that means we've drifted onto a different track's invocation
+        # (SMPS updates 6 FM tracks per vblank, all through the same
+        # code range). Within one call, A5 is invariant — it's the
+        # track-struct pointer loaded before entry.
+        entry_a5 = nat_snaps[0]['A'][5]
 
         print("\n=== paired comparison (CCR bits of SR; I/S ignored) ===")
         matched_oracle = []
         cursor = oracle_start
+        drifted = False
         for nat in nat_snaps:
-            # Advance oracle cursor until its pc matches this native block.
             found = None
             while cursor < len(ora_log):
-                if ora_log[cursor]['pc'] == nat['block']:
-                    found = ora_log[cursor]
+                ora = ora_log[cursor]
+                # If A5 changed, the cursor has drifted to another call.
+                # Stop — further pairing is meaningless.
+                if ora['A'][5] != entry_a5:
+                    drifted = True
+                    print(f"[debug] drift at cursor={cursor} pc={ora['pc']} "
+                          f"A5={ora['A'][5]:#x} (entry_a5={entry_a5:#x})")
+                    # Print the few entries right before drift to show
+                    # what oracle just did.
+                    for i in range(max(oracle_start, cursor-5), cursor+1):
+                        e = ora_log[i]
+                        print(f"    [{i}] pc={e['pc']} A5={e['A'][5]:#x} "
+                              f"D5={e['D'][5]:#010x} D6={e['D'][6]:#010x}")
+                    break
+                if ora['pc'] == nat['block']:
+                    found = ora
                     cursor += 1
                     break
                 cursor += 1
+            if drifted: break
             matched_oracle.append(found)
+        # Pad with None so the zip below doesn't silently truncate.
+        while len(matched_oracle) < len(nat_snaps):
+            matched_oracle.append(None)
+        if drifted:
+            print(f"[note] oracle cursor left the A5={entry_a5:#x} invocation "
+                  f"before all native blocks were matched")
 
         # Diff each pair — show all, not just first.
         # Classify: "entry-context" diffs are registers that differ AT the
