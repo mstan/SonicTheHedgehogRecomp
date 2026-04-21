@@ -48,3 +48,11 @@ bool cmd_server_is_paused(void);
 
 /* Cleanup sockets. */
 void cmd_server_shutdown(void);
+
+/* ---- Shared accessors for in-tree tracers ---- */
+/* Wall-frame counter (incremented by cmd_server_record_frame). */
+uint32_t cmd_server_current_frame(void);
+/* Current 68K stack pointer (A7) — works in both native + oracle builds. */
+uint32_t cmd_server_current_a7(void);
+/* Read 4 big-endian bytes from 68K work RAM. Address masked to $FFFF. */
+uint32_t cmd_server_stack_read32(uint32_t addr);
