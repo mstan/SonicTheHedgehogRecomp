@@ -460,6 +460,7 @@ int main(int argc, char *argv[])
     /* --mem-write-log=ADDR1,ADDR2,...[@FRAMES]  — arm at boot so we catch
      * gm=0 writes that TCP arming misses due to startup latency. */
     const char *mem_write_log_spec = NULL;
+    const char *wav_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--max-frames") == 0 && i + 1 < argc) {
@@ -478,6 +479,8 @@ int main(int argc, char *argv[])
             s_script_right_frame = (uint32_t)atol(argv[++i]);
         } else if (strcmp(argv[i], "--mem-write-log") == 0 && i + 1 < argc) {
             mem_write_log_spec = argv[++i];
+        } else if (strcmp(argv[i], "--wav") == 0 && i + 1 < argc) {
+            wav_path = argv[++i];
         } else if (argv[i][0] != '-') {
             rom_path = argv[i];
         }
@@ -669,6 +672,12 @@ int main(int argc, char *argv[])
 #endif
         if (!cmd_server_mem_write_log_start(addrs, n_addrs, frames, path))
             fprintf(stderr, "[MEM-WRITE-LOG] failed to arm (spec=%s)\n", mem_write_log_spec);
+    }
+
+    if (wav_path) {
+        extern int audio_wav_start(const char *);
+        if (audio_wav_start(wav_path) != 0)
+            fprintf(stderr, "[WAV] failed to open %s\n", wav_path);
     }
 
     if (framelog_path)
@@ -863,9 +872,14 @@ int main(int argc, char *argv[])
             if (s_debug_enabled) cmd_server_send_frame_result(cmd_cr.run_extra_frames);
         }
 
-        if (!turbo)
+        /* audio_flush is normally gated off in turbo (no SDL playback), but
+         * WAV capture lives inside audio_flush — keep flushing while a WAV
+         * is being recorded so --wav works with --turbo for headless
+         * paired captures. */
+        { extern int audio_wav_active(void);
+          if (!turbo || audio_wav_active())
             audio_flush((const int16_t *)s_fm_accum, s_fm_count,
-                        (const int16_t *)s_psg_accum, s_psg_count);
+                        (const int16_t *)s_psg_accum, s_psg_count); }
 
         /* Audio queue drift monitor — log every 300 frames (~5 seconds) */
         if (s_debug_enabled && !turbo && (frame_num % 300) == 0 && frame_num > 0) {
@@ -960,6 +974,8 @@ int main(int argc, char *argv[])
     /* --- Cleanup --- */
     if (s_debug_enabled) cmd_server_shutdown();
     if (s_framelog_file) fclose(s_framelog_file);
+    { extern int audio_wav_active(void); extern void audio_wav_stop(void);
+      if (audio_wav_active()) audio_wav_stop(); }
 #if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
     glue_shutdown();
 #endif
