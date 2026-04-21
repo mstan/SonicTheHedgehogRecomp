@@ -858,6 +858,7 @@ int main(int argc, char *argv[])
           glue_run_game_frame();   /* prepares game fiber state */
           ClownMDEmu_Iterate(&g_clownmdemu);  /* DoCycles interleaves game */
 #if SONIC_REVERSE_DEBUG
+          rdb_record_iterate();
           rdb_park_drain();
           if (s_quit_via_park_drain) { running = 0; break; }
 #endif
@@ -865,6 +866,9 @@ int main(int argc, char *argv[])
 #else
         s_current_frame_for_input = frame_num;
         ClownMDEmu_Iterate(&g_clownmdemu);
+#if SONIC_REVERSE_DEBUG
+        rdb_record_iterate();
+#endif
 #endif
         check_ramdump();
 
@@ -903,12 +907,16 @@ int main(int argc, char *argv[])
                   glue_run_game_frame();
                   ClownMDEmu_Iterate(&g_clownmdemu);
 #if SONIC_REVERSE_DEBUG
+                  rdb_record_iterate();
                   rdb_park_drain();
                   if (s_quit_via_park_drain) { running = 0; break; }
 #endif
                   glue_service_vblank(); }
 #else
                 ClownMDEmu_Iterate(&g_clownmdemu);
+#if SONIC_REVERSE_DEBUG
+                rdb_record_iterate();
+#endif
 #endif
                 if (s_debug_enabled) cmd_server_record_frame(frame_num);
             }

@@ -115,4 +115,36 @@ uint32_t rdb_parked_block(void);
  * reads it, clears it, and switches back to the game fiber. */
 extern int g_rdb_resume_now;
 
+/* =========================================================================
+ * Stage-A instrumentation: VBla-fire event ring.
+ *
+ * Records each call to the native VBla-fire site in glue_check_vblank.
+ * Distribution over wall frames tells us whether native multi-fires per
+ * wall frame — the specific measurement we need before considering the
+ * cycle-pacing cap.
+ *
+ * Oracle is 1:1 by architecture (core calls RaiseVerticalInterruptIfNeeded
+ * once per ClownMDEmu_Iterate). An Iterate counter exposed below lets us
+ * sanity-check that invariant rather than assume it.
+ * ========================================================================= */
+
+#define RDB_FIRE_REASON_THRESHOLD  0   /* glue_check_vblank while-loop */
+#define RDB_FIRE_REASON_SUPPRESSED 1   /* IRQ mask blocked handler */
+#define RDB_FIRE_REASON_FORCED     2   /* reserved: end-of-wall-frame force */
+
+void     rdb_record_vbla_fire(uint32_t cycle_acc, uint64_t game_frame,
+                              int reason);
+void     rdb_record_iterate(void);
+
+void     rdb_vbla_snapshot_begin(void);
+void     rdb_vbla_snapshot_end  (void);
+uint32_t rdb_vbla_snapshot_count(void);
+uint64_t rdb_iterate_count(void);
+
+/* JSON-format the snapshot entry at index `i`:
+ *   {"wall":W,"acc":A,"game":G,"reason":R}
+ * where `wall` is cmd_server's wall-frame counter AT fire, and `game`
+ * is the native build's g_frame_count (both 0 on oracle). */
+int  rdb_vbla_format_entry(uint32_t i, char *buf, size_t buflen);
+
 #endif /* SONIC_REVERSE_DEBUG */

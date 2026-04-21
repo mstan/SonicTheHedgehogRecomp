@@ -332,4 +332,82 @@ void rdb_cmd_continue(void)
 int      rdb_is_parked   (void) { return s_tier2.parked; }
 uint32_t rdb_parked_block(void) { return s_tier2.parked_block; }
 
+/* =========================================================================
+ * Stage-A: VBla-fire event ring + Iterate counter.
+ *
+ * Records each native-side VBla handler fire with the cycle accumulator
+ * value at fire time, the native game-frame counter, and the wall-frame
+ * counter from cmd_server. Distribution tells us whether native multi-
+ * fires per wall frame.
+ *
+ * Oracle is 1:1 by architecture but we also expose an Iterate counter for
+ * sanity. On oracle the fire-ring stays empty (glue.c's native-only code
+ * path doesn't execute).
+ * ========================================================================= */
+
+#define RDB_FIRE_RING_SIZE  (1u << 16)   /* 65536 entries, ~1MB */
+
+typedef struct {
+    uint32_t wall;
+    uint32_t acc;
+    uint64_t game;
+    uint8_t  reason;
+} FireEntry;
+
+static struct {
+    uint32_t   write_idx;
+    uint32_t   count;
+    uint32_t   snap_start;
+    uint32_t   snap_count;
+    int        snap_active;
+    FireEntry  log[RDB_FIRE_RING_SIZE];
+} s_fires = {0};
+
+static uint64_t s_iterate_count = 0;
+
+void rdb_record_vbla_fire(uint32_t cycle_acc, uint64_t game_frame, int reason)
+{
+    uint32_t idx = s_fires.write_idx % RDB_FIRE_RING_SIZE;
+    FireEntry *e = &s_fires.log[idx];
+    e->wall   = cmd_server_current_frame();
+    e->acc    = cycle_acc;
+    e->game   = game_frame;
+    e->reason = (uint8_t)reason;
+    s_fires.write_idx++;
+    if (s_fires.count < RDB_FIRE_RING_SIZE) s_fires.count++;
+}
+
+void rdb_record_iterate(void) { s_iterate_count++; }
+
+void rdb_vbla_snapshot_begin(void)
+{
+    if (s_fires.count < RDB_FIRE_RING_SIZE)
+        s_fires.snap_start = 0;
+    else
+        s_fires.snap_start = s_fires.write_idx % RDB_FIRE_RING_SIZE;
+    s_fires.snap_count  = s_fires.count;
+    s_fires.snap_active = 1;
+}
+
+void rdb_vbla_snapshot_end(void) { s_fires.snap_active = 0; }
+
+uint32_t rdb_vbla_snapshot_count(void)
+{
+    return s_fires.snap_active ? s_fires.snap_count : 0;
+}
+
+uint64_t rdb_iterate_count(void) { return s_iterate_count; }
+
+int rdb_vbla_format_entry(uint32_t i, char *buf, size_t buflen)
+{
+    if (!s_fires.snap_active || i >= s_fires.snap_count) return -1;
+    uint32_t idx = (s_fires.snap_start + i) % RDB_FIRE_RING_SIZE;
+    const FireEntry *e = &s_fires.log[idx];
+    int n = snprintf(buf, buflen,
+        "{\"wall\":%u,\"acc\":%u,\"game\":%llu,\"reason\":%u}",
+        (unsigned)e->wall, (unsigned)e->acc,
+        (unsigned long long)e->game, (unsigned)e->reason);
+    return (n < 0 || (size_t)n >= buflen) ? -1 : n;
+}
+
 #endif /* SONIC_REVERSE_DEBUG */
