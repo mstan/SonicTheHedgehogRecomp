@@ -1777,6 +1777,84 @@ static void handle_t3_reset(int id)
 #endif
 }
 
+/* ---- Phase 3: oracle-side break + step + state ---- */
+
+static void handle_rdb_oracle_break(int id, const char *json)
+{
+#if T3_ORACLE
+    uint32_t pc = rdb_parse_hex(json, "pc", UINT32_MAX);
+    if (pc == UINT32_MAX) { send_err(id, "need pc (hex string)"); return; }
+    if (!oracle_break_add(pc)) { send_err(id, "break table full"); return; }
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"pc\":\"0x%06X\",\"count\":%d}",
+        id, (unsigned)pc, oracle_break_count());
+    send_response(buf);
+#else
+    (void)json; send_err(id, "rdb_oracle_break is oracle only");
+#endif
+}
+
+static void handle_rdb_oracle_break_clear(int id)
+{
+#if T3_ORACLE
+    oracle_break_clear_all();
+    send_ok(id);
+#else
+    send_err(id, "rdb_oracle_break_clear is oracle only");
+#endif
+}
+
+static void handle_rdb_oracle_step_insn(int id)
+{
+#if T3_ORACLE
+    oracle_cmd_step_insn();
+    send_ok(id);
+#else
+    send_err(id, "rdb_oracle_step_insn is oracle only");
+#endif
+}
+
+static void handle_rdb_oracle_continue(int id)
+{
+#if T3_ORACLE
+    oracle_cmd_continue();
+    send_ok(id);
+#else
+    send_err(id, "rdb_oracle_continue is oracle only");
+#endif
+}
+
+static void handle_rdb_oracle_state(int id)
+{
+#if T3_ORACLE
+    const Clown68000_State *st = &g_clownmdemu.m68k;
+    char buf[1024];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"parked\":%s,\"pc\":\"0x%06X\","
+         "\"frame\":%u,"
+         "\"D\":[%u,%u,%u,%u,%u,%u,%u,%u],"
+         "\"A\":[%u,%u,%u,%u,%u,%u,%u,%u],"
+         "\"SR\":\"0x%04X\"}",
+        id,
+        oracle_is_parked() ? "true" : "false",
+        (unsigned)(oracle_parked_pc() & 0xFFFFFFu),
+        (unsigned)cmd_server_current_frame(),
+        (unsigned)st->data_registers[0], (unsigned)st->data_registers[1],
+        (unsigned)st->data_registers[2], (unsigned)st->data_registers[3],
+        (unsigned)st->data_registers[4], (unsigned)st->data_registers[5],
+        (unsigned)st->data_registers[6], (unsigned)st->data_registers[7],
+        (unsigned)st->address_registers[0], (unsigned)st->address_registers[1],
+        (unsigned)st->address_registers[2], (unsigned)st->address_registers[3],
+        (unsigned)st->address_registers[4], (unsigned)st->address_registers[5],
+        (unsigned)st->address_registers[6], (unsigned)st->address_registers[7],
+        (unsigned)st->status_register);
+    send_response(buf);
+#else
+    send_err(id, "rdb_oracle_state is oracle only");
+#endif
+}
+
 static void handle_t3_dump(int id, const char *json)
 {
 #if T3_ORACLE
@@ -1970,6 +2048,16 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         handle_t3_reset(id);
     } else if (strcmp(cmd, "t3_dump") == 0) {
         handle_t3_dump(id, json);
+    } else if (strcmp(cmd, "rdb_oracle_break") == 0) {
+        handle_rdb_oracle_break(id, json);
+    } else if (strcmp(cmd, "rdb_oracle_break_clear") == 0) {
+        handle_rdb_oracle_break_clear(id);
+    } else if (strcmp(cmd, "rdb_oracle_step_insn") == 0) {
+        handle_rdb_oracle_step_insn(id);
+    } else if (strcmp(cmd, "rdb_oracle_continue") == 0) {
+        handle_rdb_oracle_continue(id);
+    } else if (strcmp(cmd, "rdb_oracle_state") == 0) {
+        handle_rdb_oracle_state(id);
 #endif
     } else if (strcmp(cmd, "coverage_dump") == 0) {
 #if !ENABLE_RECOMPILED_CODE
