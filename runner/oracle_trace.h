@@ -53,4 +53,23 @@ uint32_t t3_snapshot_count(void);
  * All register values are 32-bit unsigned, SR is 16-bit. */
 int t3_format_entry(uint32_t i, char *buf, size_t buflen);
 
+/* ---- Oracle break/step (Phase 3 of the Tier-4 vision) ----
+ *
+ * Set PC-breakpoints that fire when the interpreter reaches a given PC.
+ * On hit, t3_pre_insn sets g_oracle_parked and enters a cmd_server_poll
+ * spin loop. cmd_server is safe to call from here because it's
+ * non-blocking and runs on the same (main) thread. User sends
+ * rdb_oracle_step_insn or rdb_oracle_continue to advance/resume.
+ *
+ * step_insn is one-shot: the next instruction parks, then clears. */
+int  oracle_break_add(uint32_t pc);
+void oracle_break_clear_all(void);
+int  oracle_break_count(void);
+uint32_t oracle_break_get(int i);
+void oracle_cmd_step_insn(void);
+void oracle_cmd_continue(void);
+
+int      oracle_is_parked(void);
+uint32_t oracle_parked_pc(void);
+
 #endif /* SONIC_REVERSE_DEBUG && SONIC_ORACLE_BUILD */

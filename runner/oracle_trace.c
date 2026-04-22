@@ -67,15 +67,74 @@ static int t3_range_hit(uint32_t pc)
 
 /* Stage C: unconditional per-instruction counter on oracle. Ticked
  * from t3_pre_insn which fires once per 68K instruction in the
- * clown68000 interpreter's main loop. Compared against native's
- * g_native_insn_count (ticked from generated C) to measure whether
- * the cap-mode tempo slowdown is from per-instruction cost inflation
- * or from extra instructions per game-frame. */
+ * clown68000 interpreter's main loop. */
 uint64_t g_oracle_insn_count = 0;
+
+/* Phase 3: oracle break/step state. */
+#define ORACLE_BREAK_MAX 128
+static struct {
+    uint32_t breaks[ORACLE_BREAK_MAX];
+    int      break_count;
+    int      step_insn;       /* one-shot: next insn parks */
+    int      parked;
+    uint32_t parked_pc;
+    int      resume_flag;     /* set by rdb_oracle_continue/step */
+} s_ob = {0};
+
+int  oracle_break_add(uint32_t pc)
+{
+    if (s_ob.break_count >= ORACLE_BREAK_MAX) return 0;
+    for (int i = 0; i < s_ob.break_count; i++)
+        if (s_ob.breaks[i] == pc) return 1;
+    s_ob.breaks[s_ob.break_count++] = pc & 0xFFFFFFu;
+    return 1;
+}
+void oracle_break_clear_all(void) { s_ob.break_count = 0; }
+int  oracle_break_count(void) { return s_ob.break_count; }
+uint32_t oracle_break_get(int i)
+{
+    if (i < 0 || i >= s_ob.break_count) return 0;
+    return s_ob.breaks[i];
+}
+void oracle_cmd_step_insn(void) { s_ob.step_insn = 1; s_ob.resume_flag = 1; }
+void oracle_cmd_continue (void) { s_ob.step_insn = 0; s_ob.resume_flag = 1; }
+int      oracle_is_parked (void) { return s_ob.parked; }
+uint32_t oracle_parked_pc (void) { return s_ob.parked_pc; }
+
+/* Break check — called from t3_pre_insn. Parks by spin-polling
+ * cmd_server (safe: cmd_server_poll is non-blocking and runs on the
+ * same thread as the interpreter). */
+static void oracle_check_break(uint32_t pc)
+{
+    int hit = 0;
+    if (s_ob.step_insn) { hit = 1; s_ob.step_insn = 0; }
+    else {
+        for (int i = 0; i < s_ob.break_count; i++) {
+            if (s_ob.breaks[i] == pc) { hit = 1; break; }
+        }
+    }
+    if (!hit) return;
+
+    s_ob.parked_pc = pc;
+    s_ob.parked = 1;
+    s_ob.resume_flag = 0;
+    /* Spin polling cmd_server until the user releases us. */
+    extern CmdResult cmd_server_poll(void);
+    while (!s_ob.resume_flag) {
+        (void)cmd_server_poll();
+        /* Small yield so we don't 100% a CPU core while parked. */
+#if defined(_WIN32)
+        extern __declspec(dllimport) void __stdcall Sleep(unsigned long);
+        Sleep(1);
+#endif
+    }
+    s_ob.parked = 0;
+}
 
 static void t3_pre_insn(cc_u32l pc)
 {
     g_oracle_insn_count++;
+    oracle_check_break((uint32_t)pc);
     if (s_t3.active && t3_range_hit((uint32_t)pc)) {
         const Clown68000_State *st = &g_clownmdemu.m68k;
         uint32_t idx = s_t3.write_idx % T3_LOG_SIZE;
