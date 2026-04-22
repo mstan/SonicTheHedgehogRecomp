@@ -409,13 +409,13 @@ void glue_yield_for_vblank(void)
         s_vblank_fired_this_frame = 1;  /* ensure it's marked */
     }
 
-    /* In FIBER_FULL: reset accumulator + fired flag per game-frame boundary.
-     * In CYCLE_ACCURATE: accumulator tracks wall-frame budget (not game-
-     * frame budget) — don't reset. s_vblank_fired_this_frame is a
-     * per-wall-frame latch reset by glue_end_of_wall_frame. */
+    /* In FIBER_FULL: reset accumulator at game-frame boundary so the next
+     * game frame starts with a fresh cycle budget. Do NOT reset the
+     * s_vblank_fired_this_frame latch here — it's a per-WALL-frame latch
+     * (wall frame != game frame; a game can yield multiple times per wall
+     * frame under heavy compute). Only glue_end_of_wall_frame resets it. */
     if (g_pacing_mode == GLUE_PACING_FIBER_FULL) {
         g_cycle_accumulator = 0;
-        s_vblank_fired_this_frame = 0;
     }
 
     /* PLC tile processing */
@@ -662,29 +662,34 @@ void glue_check_vblank(void)
         return;
     }
 
-    /* FIBER_FULL mode: multi-fire while accumulator still over threshold. */
+    /* FIBER_FULL mode: cap at ONE handler fire per wall frame. Latch
+     * prevents multi-fire when heavy-compute frames accumulate past
+     * 2x threshold before the game next yields. Excess cycles are
+     * still subtracted from the accumulator (budget is spent), but
+     * the handler only runs once — matching hardware's 1-VBla-per-
+     * wall-frame invariant. Latch is cleared by glue_end_of_wall_frame. */
     while (g_cycle_accumulator >= g_vblank_threshold) {
         g_cycle_accumulator -= g_vblank_threshold;
-        fire_vblank_handler_once();
+        if (!s_vblank_fired_this_frame)
+            fire_vblank_handler_once();
     }
 }
 
 void glue_end_of_wall_frame(void)
 {
-    if (g_pacing_mode == GLUE_PACING_CYCLE_ACCURATE) {
-        /* If nothing fired this wall frame (game didn't cross threshold
-         * AND didn't call WaitForVBlank — e.g., boot ROM copy), force
-         * one fire. Hardware fires VBla every wall frame regardless of
-         * what the 68K is doing. */
-        if (!s_vblank_fired_this_frame) {
-            if (g_cycle_accumulator < g_vblank_threshold)
-                g_cycle_accumulator = g_vblank_threshold;
-            glue_check_vblank();
-        }
+    /* Hardware fires VBla every wall frame regardless of what 68K code
+     * is doing. If nothing has fired the handler this wall frame (game
+     * accumulator didn't reach threshold AND the yield path didn't
+     * trigger — e.g., boot ROM copy or a pathological non-yielding
+     * loop), force one fire now. Works in both pacing modes; ensures
+     * v_vblank_count and any other VBla-handler side effects advance
+     * every wall frame. */
+    if (!s_vblank_fired_this_frame) {
+        if (g_cycle_accumulator < g_vblank_threshold)
+            g_cycle_accumulator = g_vblank_threshold;
+        glue_check_vblank();
     }
-    /* Reset per-wall-frame latch. In FIBER_FULL this is also reset by
-     * glue_yield_for_vblank; resetting here is idempotent and covers
-     * non-yielding wall frames. */
+    /* Reset the per-wall-frame latch for the next wall frame. */
     s_vblank_fired_this_frame = 0;
 }
 
