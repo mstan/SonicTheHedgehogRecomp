@@ -216,15 +216,17 @@ static void mem_write_log_callback(uint32_t byte_address, uint8_t value, uint32_
     uint32_t internal_frame = emu_read32(0xFE0C);  /* v_vblank_count */
     uint8_t  game_mode      = emu_read8 (0xF600);  /* v_gamemode     */
 
+    extern uint64_t g_chunk_yield_count;
     fprintf(s_mem_write_log_file,
-            "%d %u %u 0x%06X 0x%02X 0x%06X 0x%06X 0x%06X 0x%06X 0x%06X %u\n",
+            "%d %u %u 0x%06X 0x%02X 0x%06X 0x%06X 0x%06X 0x%06X 0x%06X %u %llu\n",
             s_mem_write_log_frame_count,
             (unsigned)internal_frame,
             (unsigned)game_mode,
             byte_address & 0xFFFFFFu, value,
             a7 & 0xFFFFFFu, r0 & 0xFFFFFFu, r1 & 0xFFFFFFu,
             r2 & 0xFFFFFFu, r3 & 0xFFFFFFu,
-            (unsigned)target_cycle);
+            (unsigned)target_cycle,
+            (unsigned long long)g_chunk_yield_count);
 }
 
 /* Arm the logger directly (no TCP needed).  Returns 1 on success, 0 on
