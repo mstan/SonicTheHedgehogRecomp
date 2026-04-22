@@ -1552,6 +1552,45 @@ static void handle_rdb_continue(int id)
 #endif
 }
 
+static void handle_rdb_insn_break(int id, const char *json)
+{
+#if RDB_TIER2_NATIVE
+    uint32_t pc = rdb_parse_hex(json, "pc", UINT32_MAX);
+    if (pc == UINT32_MAX) { send_err(id, "need pc (hex string)"); return; }
+    if (!rdb_insn_break_add(pc)) {
+        send_err(id, "insn-break table full (max 128)"); return;
+    }
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"pc\":\"0x%06X\",\"count\":%d}",
+        id, (unsigned)pc, rdb_insn_break_count());
+    send_response(buf);
+#else
+    (void)json; send_err(id, "rdb_insn_break is native only");
+#endif
+}
+
+static void handle_rdb_insn_break_clear(int id)
+{
+#if RDB_TIER2_NATIVE
+    rdb_insn_break_clear_all();
+    send_ok(id);
+#else
+    send_err(id, "rdb_insn_break_clear is native only");
+#endif
+}
+
+static void handle_rdb_step_insn(int id)
+{
+#if RDB_TIER2_NATIVE
+    if (!rdb_is_parked()) { send_err(id, "not parked"); return; }
+    rdb_cmd_step_insn();
+    send_ok(id);
+#else
+    send_err(id, "rdb_step_insn is native only");
+#endif
+}
+
 static void handle_rdb_get_state(int id, const char *json)
 {
 #if RDB_TIER2_NATIVE
@@ -1913,6 +1952,12 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         handle_rdb_step_over(id);
     } else if (strcmp(cmd, "rdb_continue") == 0) {
         handle_rdb_continue(id);
+    } else if (strcmp(cmd, "rdb_insn_break") == 0) {
+        handle_rdb_insn_break(id, json);
+    } else if (strcmp(cmd, "rdb_insn_break_clear") == 0) {
+        handle_rdb_insn_break_clear(id);
+    } else if (strcmp(cmd, "rdb_step_insn") == 0) {
+        handle_rdb_step_insn(id);
     } else if (strcmp(cmd, "rdb_get_state") == 0) {
         handle_rdb_get_state(id, json);
     } else if (strcmp(cmd, "rdb_vbla_dump") == 0) {

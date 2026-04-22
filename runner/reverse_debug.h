@@ -116,6 +116,40 @@ uint32_t rdb_parked_block(void);
 extern int g_rdb_resume_now;
 
 /* =========================================================================
+ * Tier 4: per-instruction stepping (native, opt-in in generated C).
+ *
+ * Generator emits `rdb_on_insn(0xXXXXXXu);` alongside the cycle-bump
+ * emission, so the hook fires once per 68K instruction (not per label
+ * like Tier 2). The fast path is an inline that checks
+ * g_rdb_insn_pending — almost always not taken when no per-insn break
+ * or step is armed. When set, the slow path decides whether to park.
+ *
+ * Reuses Tier 2's fiber-yield + park-drain machinery. Breaks can be
+ * armed at ANY 68K instruction PC, not just block entries.
+ * ========================================================================= */
+
+extern int g_rdb_insn_pending;
+
+void rdb_on_insn_slow(uint32_t pc);
+
+static inline void rdb_on_insn(uint32_t pc)
+{
+    if (g_rdb_insn_pending) rdb_on_insn_slow(pc);
+}
+
+/* Per-instruction breakpoint table (separate from block breaks). */
+int  rdb_insn_break_add(uint32_t pc);
+void rdb_insn_break_clear_all(void);
+int  rdb_insn_break_count(void);
+uint32_t rdb_insn_break_get(int i);
+
+/* Single-instruction step — park on the next rdb_on_insn. */
+void rdb_cmd_step_insn(void);
+
+/* Where we parked (only valid while rdb_is_parked()). */
+uint32_t rdb_parked_pc(void);
+
+/* =========================================================================
  * Stage-A instrumentation: VBla-fire event ring.
  *
  * Records each call to the native VBla-fire site in glue_check_vblank.

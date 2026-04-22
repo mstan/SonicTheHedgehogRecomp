@@ -326,11 +326,90 @@ void rdb_cmd_continue(void)
 {
     s_tier2.step_mode = STEP_NONE;
     rdb_refresh_pending();
+    /* Tier-4 step_insn is one-shot, cleared in rdb_on_insn_slow when a
+     * park fires. By the time continue is legal (we must be parked),
+     * step_insn is already 0, so no extra clear needed here. */
     g_rdb_resume_now = 1;
 }
 
 int      rdb_is_parked   (void) { return s_tier2.parked; }
 uint32_t rdb_parked_block(void) { return s_tier2.parked_block; }
+
+/* =========================================================================
+ * Tier 4: per-instruction step / break.
+ * Reuses Tier 2's park (glue_yield_for_break + main-loop drain). The
+ * only new mechanisms are (1) an insn-level break list keyed by PC,
+ * (2) a step-one-insn flag, and (3) a fast-path gate g_rdb_insn_pending.
+ * ========================================================================= */
+
+#define RDB_INSN_MAX_BREAKS 128
+
+int g_rdb_insn_pending = 0;
+
+static struct {
+    int      step_insn;      /* one-shot: next rdb_on_insn parks */
+    uint32_t breaks[RDB_INSN_MAX_BREAKS];
+    int      break_count;
+    uint32_t parked_pc;
+} s_tier4 = {0};
+
+static void rdb_insn_refresh_pending(void)
+{
+    g_rdb_insn_pending = s_tier4.step_insn || s_tier4.break_count > 0;
+}
+
+void rdb_on_insn_slow(uint32_t pc)
+{
+    int park = 0;
+    if (s_tier4.step_insn) {
+        park = 1;
+        s_tier4.step_insn = 0;
+    } else {
+        for (int i = 0; i < s_tier4.break_count; i++) {
+            if (s_tier4.breaks[i] == pc) { park = 1; break; }
+        }
+    }
+    rdb_insn_refresh_pending();
+    if (!park) return;
+
+    s_tier4.parked_pc = pc;
+    s_tier2.parked       = 1;   /* reuse Tier 2's parked flag for main.c */
+    s_tier2.parked_block = pc;  /* for rdb_get_state */
+    glue_yield_for_break();
+    s_tier2.parked       = 0;
+}
+
+int rdb_insn_break_add(uint32_t pc)
+{
+    if (s_tier4.break_count >= RDB_INSN_MAX_BREAKS) return 0;
+    for (int i = 0; i < s_tier4.break_count; i++)
+        if (s_tier4.breaks[i] == pc) return 1;  /* dedupe */
+    s_tier4.breaks[s_tier4.break_count++] = pc & 0xFFFFFFu;
+    rdb_insn_refresh_pending();
+    return 1;
+}
+
+void rdb_insn_break_clear_all(void)
+{
+    s_tier4.break_count = 0;
+    rdb_insn_refresh_pending();
+}
+
+int rdb_insn_break_count(void) { return s_tier4.break_count; }
+uint32_t rdb_insn_break_get(int i)
+{
+    if (i < 0 || i >= s_tier4.break_count) return 0;
+    return s_tier4.breaks[i];
+}
+
+void rdb_cmd_step_insn(void)
+{
+    s_tier4.step_insn = 1;
+    rdb_insn_refresh_pending();
+    g_rdb_resume_now = 1;
+}
+
+uint32_t rdb_parked_pc(void) { return s_tier4.parked_pc; }
 
 /* =========================================================================
  * Stage-A: VBla-fire event ring + Iterate counter.
