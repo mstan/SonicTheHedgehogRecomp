@@ -131,9 +131,80 @@ static void oracle_check_break(uint32_t pc)
     s_ob.parked = 0;
 }
 
+/* ---- Phase 4: snapshot ring ---- */
+#define ORACLE_SNAP_INTERVAL 1000u
+#define ORACLE_SNAP_RING       64
+
+typedef struct {
+    uint64_t   insn_count;
+    ClownMDEmu state;
+    int        valid;
+} OracleSnap;
+
+static OracleSnap s_snaps[ORACLE_SNAP_RING];
+static int        s_snaps_write_idx = 0;
+
+/* Capture the full emulator state. Restore-time we'll preserve the
+ * callbacks/cartridge pointers that live outside the struct's saved
+ * byte-range (they're heap/static pointers the sandbox version of this
+ * same pattern in runner/hybrid.c uses). */
+static void oracle_take_snapshot(void)
+{
+    OracleSnap *s = &s_snaps[s_snaps_write_idx % ORACLE_SNAP_RING];
+    s->insn_count = g_oracle_insn_count;
+    memcpy(&s->state, &g_clownmdemu, sizeof(g_clownmdemu));
+    s->valid = 1;
+    s_snaps_write_idx++;
+}
+
+int oracle_step_back(uint64_t *restored_insn_count_out)
+{
+    int best = -1;
+    uint64_t best_ic = 0;
+    uint64_t current = g_oracle_insn_count;
+    for (int i = 0; i < ORACLE_SNAP_RING; i++) {
+        if (!s_snaps[i].valid) continue;
+        if (s_snaps[i].insn_count < current &&
+            s_snaps[i].insn_count >= best_ic) {
+            best = i;
+            best_ic = s_snaps[i].insn_count;
+        }
+    }
+    if (best < 0) return 0;
+
+    /* Preserve pointers that are stored by-value inside the struct but
+     * reference external heap/static memory — same pattern as
+     * runner/hybrid.c's snapshot/restore pair (lines 97-120). */
+    const ClownMDEmu_Callbacks *cb = g_clownmdemu.callbacks;
+    const cc_u16l *cart = g_clownmdemu.cartridge_buffer;
+    cc_u32l cart_len = g_clownmdemu.cartridge_buffer_length;
+    memcpy(&g_clownmdemu, &s_snaps[best].state, sizeof(g_clownmdemu));
+    g_clownmdemu.callbacks = cb;
+    g_clownmdemu.cartridge_buffer = cart;
+    g_clownmdemu.cartridge_buffer_length = cart_len;
+    g_oracle_insn_count = s_snaps[best].insn_count;
+    if (restored_insn_count_out) *restored_insn_count_out = best_ic;
+    return 1;
+}
+
+int oracle_snap_count(void)
+{
+    int n = 0;
+    for (int i = 0; i < ORACLE_SNAP_RING; i++) if (s_snaps[i].valid) n++;
+    return n;
+}
+
+uint64_t oracle_snap_insn_at(int i)
+{
+    if (i < 0 || i >= ORACLE_SNAP_RING) return 0;
+    return s_snaps[i].valid ? s_snaps[i].insn_count : 0;
+}
+
 static void t3_pre_insn(cc_u32l pc)
 {
     g_oracle_insn_count++;
+    if ((g_oracle_insn_count % ORACLE_SNAP_INTERVAL) == 0)
+        oracle_take_snapshot();
     oracle_check_break((uint32_t)pc);
     if (s_t3.active && t3_range_hit((uint32_t)pc)) {
         const Clown68000_State *st = &g_clownmdemu.m68k;
