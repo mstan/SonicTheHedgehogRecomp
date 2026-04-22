@@ -65,8 +65,147 @@ static int t3_range_hit(uint32_t pc)
     return 0;
 }
 
+/* Stage C: unconditional per-instruction counter on oracle. Ticked
+ * from t3_pre_insn which fires once per 68K instruction in the
+ * clown68000 interpreter's main loop. */
+uint64_t g_oracle_insn_count = 0;
+
+/* Phase 3: oracle break/step state. */
+#define ORACLE_BREAK_MAX 128
+static struct {
+    uint32_t breaks[ORACLE_BREAK_MAX];
+    int      break_count;
+    int      step_insn;       /* one-shot: next insn parks */
+    int      parked;
+    uint32_t parked_pc;
+    int      resume_flag;     /* set by rdb_oracle_continue/step */
+} s_ob = {0};
+
+int  oracle_break_add(uint32_t pc)
+{
+    if (s_ob.break_count >= ORACLE_BREAK_MAX) return 0;
+    for (int i = 0; i < s_ob.break_count; i++)
+        if (s_ob.breaks[i] == pc) return 1;
+    s_ob.breaks[s_ob.break_count++] = pc & 0xFFFFFFu;
+    return 1;
+}
+void oracle_break_clear_all(void) { s_ob.break_count = 0; }
+int  oracle_break_count(void) { return s_ob.break_count; }
+uint32_t oracle_break_get(int i)
+{
+    if (i < 0 || i >= s_ob.break_count) return 0;
+    return s_ob.breaks[i];
+}
+void oracle_cmd_step_insn(void) { s_ob.step_insn = 1; s_ob.resume_flag = 1; }
+void oracle_cmd_continue (void) { s_ob.step_insn = 0; s_ob.resume_flag = 1; }
+int      oracle_is_parked (void) { return s_ob.parked; }
+uint32_t oracle_parked_pc (void) { return s_ob.parked_pc; }
+
+/* Break check — called from t3_pre_insn. Parks by spin-polling
+ * cmd_server (safe: cmd_server_poll is non-blocking and runs on the
+ * same thread as the interpreter). */
+static void oracle_check_break(uint32_t pc)
+{
+    int hit = 0;
+    if (s_ob.step_insn) { hit = 1; s_ob.step_insn = 0; }
+    else {
+        for (int i = 0; i < s_ob.break_count; i++) {
+            if (s_ob.breaks[i] == pc) { hit = 1; break; }
+        }
+    }
+    if (!hit) return;
+
+    s_ob.parked_pc = pc;
+    s_ob.parked = 1;
+    s_ob.resume_flag = 0;
+    /* Spin polling cmd_server until the user releases us. */
+    extern CmdResult cmd_server_poll(void);
+    while (!s_ob.resume_flag) {
+        (void)cmd_server_poll();
+        /* Small yield so we don't 100% a CPU core while parked. */
+#if defined(_WIN32)
+        extern __declspec(dllimport) void __stdcall Sleep(unsigned long);
+        Sleep(1);
+#endif
+    }
+    s_ob.parked = 0;
+}
+
+/* ---- Phase 4: snapshot ring ---- */
+#define ORACLE_SNAP_INTERVAL 1000u
+#define ORACLE_SNAP_RING       64
+
+typedef struct {
+    uint64_t   insn_count;
+    ClownMDEmu state;
+    int        valid;
+} OracleSnap;
+
+static OracleSnap s_snaps[ORACLE_SNAP_RING];
+static int        s_snaps_write_idx = 0;
+
+/* Capture the full emulator state. Restore-time we'll preserve the
+ * callbacks/cartridge pointers that live outside the struct's saved
+ * byte-range (they're heap/static pointers the sandbox version of this
+ * same pattern in runner/hybrid.c uses). */
+static void oracle_take_snapshot(void)
+{
+    OracleSnap *s = &s_snaps[s_snaps_write_idx % ORACLE_SNAP_RING];
+    s->insn_count = g_oracle_insn_count;
+    memcpy(&s->state, &g_clownmdemu, sizeof(g_clownmdemu));
+    s->valid = 1;
+    s_snaps_write_idx++;
+}
+
+int oracle_step_back(uint64_t *restored_insn_count_out)
+{
+    int best = -1;
+    uint64_t best_ic = 0;
+    uint64_t current = g_oracle_insn_count;
+    for (int i = 0; i < ORACLE_SNAP_RING; i++) {
+        if (!s_snaps[i].valid) continue;
+        if (s_snaps[i].insn_count < current &&
+            s_snaps[i].insn_count >= best_ic) {
+            best = i;
+            best_ic = s_snaps[i].insn_count;
+        }
+    }
+    if (best < 0) return 0;
+
+    /* Preserve pointers that are stored by-value inside the struct but
+     * reference external heap/static memory — same pattern as
+     * runner/hybrid.c's snapshot/restore pair (lines 97-120). */
+    const ClownMDEmu_Callbacks *cb = g_clownmdemu.callbacks;
+    const cc_u16l *cart = g_clownmdemu.cartridge_buffer;
+    cc_u32l cart_len = g_clownmdemu.cartridge_buffer_length;
+    memcpy(&g_clownmdemu, &s_snaps[best].state, sizeof(g_clownmdemu));
+    g_clownmdemu.callbacks = cb;
+    g_clownmdemu.cartridge_buffer = cart;
+    g_clownmdemu.cartridge_buffer_length = cart_len;
+    g_oracle_insn_count = s_snaps[best].insn_count;
+    if (restored_insn_count_out) *restored_insn_count_out = best_ic;
+    return 1;
+}
+
+int oracle_snap_count(void)
+{
+    int n = 0;
+    for (int i = 0; i < ORACLE_SNAP_RING; i++) if (s_snaps[i].valid) n++;
+    return n;
+}
+
+uint64_t oracle_snap_insn_at(int i)
+{
+    if (i < 0 || i >= ORACLE_SNAP_RING) return 0;
+    return s_snaps[i].valid ? s_snaps[i].insn_count : 0;
+}
+
 static void t3_pre_insn(cc_u32l pc)
 {
+    g_oracle_insn_count++;
+    if ((g_oracle_insn_count % ORACLE_SNAP_INTERVAL) == 0)
+        oracle_take_snapshot();
+    oracle_check_break((uint32_t)pc);
     if (s_t3.active && t3_range_hit((uint32_t)pc)) {
         const Clown68000_State *st = &g_clownmdemu.m68k;
         uint32_t idx = s_t3.write_idx % T3_LOG_SIZE;

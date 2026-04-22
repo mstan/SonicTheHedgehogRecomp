@@ -326,10 +326,182 @@ void rdb_cmd_continue(void)
 {
     s_tier2.step_mode = STEP_NONE;
     rdb_refresh_pending();
+    /* Tier-4 step_insn is one-shot, cleared in rdb_on_insn_slow when a
+     * park fires. By the time continue is legal (we must be parked),
+     * step_insn is already 0, so no extra clear needed here. */
     g_rdb_resume_now = 1;
 }
 
 int      rdb_is_parked   (void) { return s_tier2.parked; }
 uint32_t rdb_parked_block(void) { return s_tier2.parked_block; }
+
+/* =========================================================================
+ * Tier 4: per-instruction step / break.
+ * Reuses Tier 2's park (glue_yield_for_break + main-loop drain). The
+ * only new mechanisms are (1) an insn-level break list keyed by PC,
+ * (2) a step-one-insn flag, and (3) a fast-path gate g_rdb_insn_pending.
+ * ========================================================================= */
+
+#define RDB_INSN_MAX_BREAKS 128
+
+int g_rdb_insn_pending = 0;
+
+static struct {
+    int      step_insn;      /* one-shot: next rdb_on_insn parks */
+    uint32_t breaks[RDB_INSN_MAX_BREAKS];
+    int      break_count;
+    uint32_t parked_pc;
+} s_tier4 = {0};
+
+static void rdb_insn_refresh_pending(void)
+{
+    g_rdb_insn_pending = s_tier4.step_insn || s_tier4.break_count > 0;
+}
+
+void rdb_on_insn_slow(uint32_t pc)
+{
+    int park = 0;
+    if (s_tier4.step_insn) {
+        park = 1;
+        s_tier4.step_insn = 0;
+    } else {
+        for (int i = 0; i < s_tier4.break_count; i++) {
+            if (s_tier4.breaks[i] == pc) { park = 1; break; }
+        }
+    }
+    rdb_insn_refresh_pending();
+    if (!park) return;
+
+    s_tier4.parked_pc = pc;
+    s_tier2.parked       = 1;   /* reuse Tier 2's parked flag for main.c */
+    s_tier2.parked_block = pc;  /* for rdb_get_state */
+    glue_yield_for_break();
+    s_tier2.parked       = 0;
+}
+
+int rdb_insn_break_add(uint32_t pc)
+{
+    if (s_tier4.break_count >= RDB_INSN_MAX_BREAKS) return 0;
+    for (int i = 0; i < s_tier4.break_count; i++)
+        if (s_tier4.breaks[i] == pc) return 1;  /* dedupe */
+    s_tier4.breaks[s_tier4.break_count++] = pc & 0xFFFFFFu;
+    rdb_insn_refresh_pending();
+    return 1;
+}
+
+void rdb_insn_break_clear_all(void)
+{
+    s_tier4.break_count = 0;
+    rdb_insn_refresh_pending();
+}
+
+int rdb_insn_break_count(void) { return s_tier4.break_count; }
+uint32_t rdb_insn_break_get(int i)
+{
+    if (i < 0 || i >= s_tier4.break_count) return 0;
+    return s_tier4.breaks[i];
+}
+
+void rdb_cmd_step_insn(void)
+{
+    s_tier4.step_insn = 1;
+    rdb_insn_refresh_pending();
+    g_rdb_resume_now = 1;
+}
+
+uint32_t rdb_parked_pc(void) { return s_tier4.parked_pc; }
+
+/* =========================================================================
+ * Stage-A: VBla-fire event ring + Iterate counter.
+ *
+ * Records each native-side VBla handler fire with the cycle accumulator
+ * value at fire time, the native game-frame counter, and the wall-frame
+ * counter from cmd_server. Distribution tells us whether native multi-
+ * fires per wall frame.
+ *
+ * Oracle is 1:1 by architecture but we also expose an Iterate counter for
+ * sanity. On oracle the fire-ring stays empty (glue.c's native-only code
+ * path doesn't execute).
+ * ========================================================================= */
+
+#define RDB_FIRE_RING_SIZE  (1u << 16)   /* 65536 entries, ~1MB */
+
+typedef struct {
+    uint32_t wall;
+    uint32_t acc;
+    uint64_t game;
+    uint8_t  reason;
+} FireEntry;
+
+static struct {
+    uint32_t   write_idx;
+    uint32_t   count;
+    uint32_t   snap_start;
+    uint32_t   snap_count;
+    int        snap_active;
+    FireEntry  log[RDB_FIRE_RING_SIZE];
+} s_fires = {0};
+
+static uint64_t s_iterate_count = 0;
+
+void rdb_record_vbla_fire(uint32_t cycle_acc, uint64_t game_frame, int reason)
+{
+    uint32_t idx = s_fires.write_idx % RDB_FIRE_RING_SIZE;
+    FireEntry *e = &s_fires.log[idx];
+    e->wall   = cmd_server_current_frame();
+    e->acc    = cycle_acc;
+    e->game   = game_frame;
+    e->reason = (uint8_t)reason;
+    s_fires.write_idx++;
+    if (s_fires.count < RDB_FIRE_RING_SIZE) s_fires.count++;
+}
+
+void rdb_record_iterate(void) { s_iterate_count++; }
+
+void rdb_vbla_snapshot_begin(void)
+{
+    if (s_fires.count < RDB_FIRE_RING_SIZE)
+        s_fires.snap_start = 0;
+    else
+        s_fires.snap_start = s_fires.write_idx % RDB_FIRE_RING_SIZE;
+    s_fires.snap_count  = s_fires.count;
+    s_fires.snap_active = 1;
+}
+
+void rdb_vbla_snapshot_end(void) { s_fires.snap_active = 0; }
+
+uint32_t rdb_vbla_snapshot_count(void)
+{
+    return s_fires.snap_active ? s_fires.snap_count : 0;
+}
+
+uint64_t rdb_iterate_count(void) { return s_iterate_count; }
+
+/* Stage C accessors. g_native_insn_count lives in runner/glue.c (always
+ * defined — incremented by generated C). g_oracle_insn_count lives in
+ * runner/oracle_trace.c (oracle-only build). On native, oracle_trace.c
+ * is not linked; provide a weak fallback so the accessor still returns
+ * 0 there. */
+extern uint64_t g_native_insn_count;
+#if defined(SONIC_ORACLE_BUILD)
+extern uint64_t g_oracle_insn_count;
+#else
+static uint64_t g_oracle_insn_count = 0;
+#endif
+
+uint64_t rdb_native_insn_count(void) { return g_native_insn_count; }
+uint64_t rdb_oracle_insn_count(void) { return g_oracle_insn_count; }
+
+int rdb_vbla_format_entry(uint32_t i, char *buf, size_t buflen)
+{
+    if (!s_fires.snap_active || i >= s_fires.snap_count) return -1;
+    uint32_t idx = (s_fires.snap_start + i) % RDB_FIRE_RING_SIZE;
+    const FireEntry *e = &s_fires.log[idx];
+    int n = snprintf(buf, buflen,
+        "{\"wall\":%u,\"acc\":%u,\"game\":%llu,\"reason\":%u}",
+        (unsigned)e->wall, (unsigned)e->acc,
+        (unsigned long long)e->game, (unsigned)e->reason);
+    return (n < 0 || (size_t)n >= buflen) ? -1 : n;
+}
 
 #endif /* SONIC_REVERSE_DEBUG */

@@ -1552,6 +1552,45 @@ static void handle_rdb_continue(int id)
 #endif
 }
 
+static void handle_rdb_insn_break(int id, const char *json)
+{
+#if RDB_TIER2_NATIVE
+    uint32_t pc = rdb_parse_hex(json, "pc", UINT32_MAX);
+    if (pc == UINT32_MAX) { send_err(id, "need pc (hex string)"); return; }
+    if (!rdb_insn_break_add(pc)) {
+        send_err(id, "insn-break table full (max 128)"); return;
+    }
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"pc\":\"0x%06X\",\"count\":%d}",
+        id, (unsigned)pc, rdb_insn_break_count());
+    send_response(buf);
+#else
+    (void)json; send_err(id, "rdb_insn_break is native only");
+#endif
+}
+
+static void handle_rdb_insn_break_clear(int id)
+{
+#if RDB_TIER2_NATIVE
+    rdb_insn_break_clear_all();
+    send_ok(id);
+#else
+    send_err(id, "rdb_insn_break_clear is native only");
+#endif
+}
+
+static void handle_rdb_step_insn(int id)
+{
+#if RDB_TIER2_NATIVE
+    if (!rdb_is_parked()) { send_err(id, "not parked"); return; }
+    rdb_cmd_step_insn();
+    send_ok(id);
+#else
+    send_err(id, "rdb_step_insn is native only");
+#endif
+}
+
 static void handle_rdb_get_state(int id, const char *json)
 {
 #if RDB_TIER2_NATIVE
@@ -1624,6 +1663,75 @@ static void handle_rdb_get_state(int id, const char *json)
 #endif
 }
 /* =========================================================================
+ * Stage-A instrumentation: VBla-fire histogram + Iterate count.
+ *
+ * Native records each VBla-handler fire (from glue_check_vblank's while-
+ * loop) into a separate ring; TCP exposes the ring contents and an
+ * Iterate-count sanity check that proves oracle is 1-Iterate-per-wall-frame.
+ * ========================================================================= */
+
+static void handle_rdb_vbla_dump(int id, const char *json)
+{
+    int start = json_get_int(json, "start", 0);
+    int count = json_get_int(json, "count", 5000);
+    if (start < 0 || count <= 0) { send_err(id, "bad start/count"); return; }
+    if (count > 65536) count = 65536;
+
+    rdb_vbla_snapshot_begin();
+    uint32_t total = rdb_vbla_snapshot_count();
+
+    /* ~80 bytes per entry. */
+    size_t cap = (size_t)count * 96 + 4096;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { rdb_vbla_snapshot_end(); send_err(id, "alloc failed"); return; }
+
+    int pos = snprintf(buf, cap,
+        "{\"id\":%d,\"ok\":true,\"total\":%u,\"start\":%d,"
+         "\"iterate_count\":%llu,\"log\":[",
+        id, (unsigned)total, start,
+        (unsigned long long)rdb_iterate_count());
+    int emitted = 0;
+    for (int i = 0; i < count; i++) {
+        uint32_t idx = (uint32_t)(start + i);
+        if (idx >= total) break;
+        if (emitted) buf[pos++] = ',';
+        int n = rdb_vbla_format_entry(idx, buf + pos, cap - pos);
+        if (n < 0) break;
+        pos += n;
+        emitted++;
+    }
+    pos += snprintf(buf + pos, cap - pos,
+        "],\"returned\":%d,\"done\":%s}",
+        emitted, (start + emitted >= (int)total) ? "true" : "false");
+
+    rdb_vbla_snapshot_end();
+    send_response(buf);
+    free(buf);
+}
+
+/* =========================================================================
+ * Stage-C instruction-count telemetry.
+ *
+ * rdb_insn_counts returns { native, oracle, wall_frame }. On native the
+ * "native" field is non-zero (ticked from generated C) and "oracle" is 0.
+ * On oracle it's the mirror. The paired rdb_insn_diff.py tool queries
+ * one target per count and compares per-wall-frame throughput.
+ * ========================================================================= */
+
+static void handle_rdb_insn_counts(int id)
+{
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"native\":%llu,\"oracle\":%llu,"
+         "\"wall_frame\":%u}",
+        id,
+        (unsigned long long)rdb_native_insn_count(),
+        (unsigned long long)rdb_oracle_insn_count(),
+        (unsigned)cmd_server_current_frame());
+    send_response(buf);
+}
+
+/* =========================================================================
  * Tier 3: per-instruction capture on the oracle side.
  *
  * Only the oracle build records. On native the handlers reply
@@ -1666,6 +1774,101 @@ static void handle_t3_reset(int id)
     send_ok(id);
 #else
     send_err(id, "t3_reset is oracle only");
+#endif
+}
+
+/* ---- Phase 3: oracle-side break + step + state ---- */
+
+static void handle_rdb_oracle_break(int id, const char *json)
+{
+#if T3_ORACLE
+    uint32_t pc = rdb_parse_hex(json, "pc", UINT32_MAX);
+    if (pc == UINT32_MAX) { send_err(id, "need pc (hex string)"); return; }
+    if (!oracle_break_add(pc)) { send_err(id, "break table full"); return; }
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"pc\":\"0x%06X\",\"count\":%d}",
+        id, (unsigned)pc, oracle_break_count());
+    send_response(buf);
+#else
+    (void)json; send_err(id, "rdb_oracle_break is oracle only");
+#endif
+}
+
+static void handle_rdb_oracle_break_clear(int id)
+{
+#if T3_ORACLE
+    oracle_break_clear_all();
+    send_ok(id);
+#else
+    send_err(id, "rdb_oracle_break_clear is oracle only");
+#endif
+}
+
+static void handle_rdb_oracle_step_insn(int id)
+{
+#if T3_ORACLE
+    oracle_cmd_step_insn();
+    send_ok(id);
+#else
+    send_err(id, "rdb_oracle_step_insn is oracle only");
+#endif
+}
+
+static void handle_rdb_oracle_continue(int id)
+{
+#if T3_ORACLE
+    oracle_cmd_continue();
+    send_ok(id);
+#else
+    send_err(id, "rdb_oracle_continue is oracle only");
+#endif
+}
+
+static void handle_rdb_oracle_step_back(int id)
+{
+#if T3_ORACLE
+    uint64_t restored = 0;
+    if (!oracle_step_back(&restored)) {
+        send_err(id, "no snapshot available (run longer first)"); return;
+    }
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"restored_insn\":%llu,\"snap_count\":%d}",
+        id, (unsigned long long)restored, oracle_snap_count());
+    send_response(buf);
+#else
+    send_err(id, "rdb_oracle_step_back is oracle only");
+#endif
+}
+
+static void handle_rdb_oracle_state(int id)
+{
+#if T3_ORACLE
+    const Clown68000_State *st = &g_clownmdemu.m68k;
+    char buf[1024];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"parked\":%s,\"pc\":\"0x%06X\","
+         "\"frame\":%u,"
+         "\"D\":[%u,%u,%u,%u,%u,%u,%u,%u],"
+         "\"A\":[%u,%u,%u,%u,%u,%u,%u,%u],"
+         "\"SR\":\"0x%04X\"}",
+        id,
+        oracle_is_parked() ? "true" : "false",
+        (unsigned)(oracle_parked_pc() & 0xFFFFFFu),
+        (unsigned)cmd_server_current_frame(),
+        (unsigned)st->data_registers[0], (unsigned)st->data_registers[1],
+        (unsigned)st->data_registers[2], (unsigned)st->data_registers[3],
+        (unsigned)st->data_registers[4], (unsigned)st->data_registers[5],
+        (unsigned)st->data_registers[6], (unsigned)st->data_registers[7],
+        (unsigned)st->address_registers[0], (unsigned)st->address_registers[1],
+        (unsigned)st->address_registers[2], (unsigned)st->address_registers[3],
+        (unsigned)st->address_registers[4], (unsigned)st->address_registers[5],
+        (unsigned)st->address_registers[6], (unsigned)st->address_registers[7],
+        (unsigned)st->status_register);
+    send_response(buf);
+#else
+    send_err(id, "rdb_oracle_state is oracle only");
 #endif
 }
 
@@ -1844,14 +2047,36 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         handle_rdb_step_over(id);
     } else if (strcmp(cmd, "rdb_continue") == 0) {
         handle_rdb_continue(id);
+    } else if (strcmp(cmd, "rdb_insn_break") == 0) {
+        handle_rdb_insn_break(id, json);
+    } else if (strcmp(cmd, "rdb_insn_break_clear") == 0) {
+        handle_rdb_insn_break_clear(id);
+    } else if (strcmp(cmd, "rdb_step_insn") == 0) {
+        handle_rdb_step_insn(id);
     } else if (strcmp(cmd, "rdb_get_state") == 0) {
         handle_rdb_get_state(id, json);
+    } else if (strcmp(cmd, "rdb_vbla_dump") == 0) {
+        handle_rdb_vbla_dump(id, json);
+    } else if (strcmp(cmd, "rdb_insn_counts") == 0) {
+        handle_rdb_insn_counts(id);
     } else if (strcmp(cmd, "t3_range") == 0) {
         handle_t3_range(id, json);
     } else if (strcmp(cmd, "t3_reset") == 0) {
         handle_t3_reset(id);
     } else if (strcmp(cmd, "t3_dump") == 0) {
         handle_t3_dump(id, json);
+    } else if (strcmp(cmd, "rdb_oracle_break") == 0) {
+        handle_rdb_oracle_break(id, json);
+    } else if (strcmp(cmd, "rdb_oracle_break_clear") == 0) {
+        handle_rdb_oracle_break_clear(id);
+    } else if (strcmp(cmd, "rdb_oracle_step_insn") == 0) {
+        handle_rdb_oracle_step_insn(id);
+    } else if (strcmp(cmd, "rdb_oracle_continue") == 0) {
+        handle_rdb_oracle_continue(id);
+    } else if (strcmp(cmd, "rdb_oracle_step_back") == 0) {
+        handle_rdb_oracle_step_back(id);
+    } else if (strcmp(cmd, "rdb_oracle_state") == 0) {
+        handle_rdb_oracle_state(id);
 #endif
     } else if (strcmp(cmd, "coverage_dump") == 0) {
 #if !ENABLE_RECOMPILED_CODE
