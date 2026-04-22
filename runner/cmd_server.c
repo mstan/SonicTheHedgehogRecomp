@@ -1825,6 +1825,23 @@ static void handle_rdb_oracle_continue(int id)
 #endif
 }
 
+static void handle_rdb_oracle_step_back(int id)
+{
+#if T3_ORACLE
+    uint64_t restored = 0;
+    if (!oracle_step_back(&restored)) {
+        send_err(id, "no snapshot available (run longer first)"); return;
+    }
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"restored_insn\":%llu,\"snap_count\":%d}",
+        id, (unsigned long long)restored, oracle_snap_count());
+    send_response(buf);
+#else
+    send_err(id, "rdb_oracle_step_back is oracle only");
+#endif
+}
+
 static void handle_rdb_oracle_state(int id)
 {
 #if T3_ORACLE
@@ -2056,6 +2073,8 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         handle_rdb_oracle_step_insn(id);
     } else if (strcmp(cmd, "rdb_oracle_continue") == 0) {
         handle_rdb_oracle_continue(id);
+    } else if (strcmp(cmd, "rdb_oracle_step_back") == 0) {
+        handle_rdb_oracle_step_back(id);
     } else if (strcmp(cmd, "rdb_oracle_state") == 0) {
         handle_rdb_oracle_state(id);
 #endif
