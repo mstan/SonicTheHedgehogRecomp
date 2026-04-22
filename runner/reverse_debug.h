@@ -115,4 +115,77 @@ uint32_t rdb_parked_block(void);
  * reads it, clears it, and switches back to the game fiber. */
 extern int g_rdb_resume_now;
 
+/* =========================================================================
+ * Tier 4: per-instruction stepping (native, opt-in in generated C).
+ *
+ * Generator emits `rdb_on_insn(0xXXXXXXu);` alongside the cycle-bump
+ * emission, so the hook fires once per 68K instruction (not per label
+ * like Tier 2). The fast path is an inline that checks
+ * g_rdb_insn_pending — almost always not taken when no per-insn break
+ * or step is armed. When set, the slow path decides whether to park.
+ *
+ * Reuses Tier 2's fiber-yield + park-drain machinery. Breaks can be
+ * armed at ANY 68K instruction PC, not just block entries.
+ * ========================================================================= */
+
+extern int g_rdb_insn_pending;
+
+void rdb_on_insn_slow(uint32_t pc);
+
+static inline void rdb_on_insn(uint32_t pc)
+{
+    if (g_rdb_insn_pending) rdb_on_insn_slow(pc);
+}
+
+/* Per-instruction breakpoint table (separate from block breaks). */
+int  rdb_insn_break_add(uint32_t pc);
+void rdb_insn_break_clear_all(void);
+int  rdb_insn_break_count(void);
+uint32_t rdb_insn_break_get(int i);
+
+/* Single-instruction step — park on the next rdb_on_insn. */
+void rdb_cmd_step_insn(void);
+
+/* Where we parked (only valid while rdb_is_parked()). */
+uint32_t rdb_parked_pc(void);
+
+/* =========================================================================
+ * Stage-A instrumentation: VBla-fire event ring.
+ *
+ * Records each call to the native VBla-fire site in glue_check_vblank.
+ * Distribution over wall frames tells us whether native multi-fires per
+ * wall frame — the specific measurement we need before considering the
+ * cycle-pacing cap.
+ *
+ * Oracle is 1:1 by architecture (core calls RaiseVerticalInterruptIfNeeded
+ * once per ClownMDEmu_Iterate). An Iterate counter exposed below lets us
+ * sanity-check that invariant rather than assume it.
+ * ========================================================================= */
+
+#define RDB_FIRE_REASON_THRESHOLD  0   /* glue_check_vblank while-loop */
+#define RDB_FIRE_REASON_SUPPRESSED 1   /* IRQ mask blocked handler */
+#define RDB_FIRE_REASON_FORCED     2   /* reserved: end-of-wall-frame force */
+
+void     rdb_record_vbla_fire(uint32_t cycle_acc, uint64_t game_frame,
+                              int reason);
+void     rdb_record_iterate(void);
+
+void     rdb_vbla_snapshot_begin(void);
+void     rdb_vbla_snapshot_end  (void);
+uint32_t rdb_vbla_snapshot_count(void);
+uint64_t rdb_iterate_count(void);
+
+/* JSON-format the snapshot entry at index `i`:
+ *   {"wall":W,"acc":A,"game":G,"reason":R}
+ * where `wall` is cmd_server's wall-frame counter AT fire, and `game`
+ * is the native build's g_frame_count (both 0 on oracle). */
+int  rdb_vbla_format_entry(uint32_t i, char *buf, size_t buflen);
+
+/* Stage-C instruction-count accessors. Each returns the counter that
+ * lives on its build: native returns g_native_insn_count (ticked from
+ * generated C), oracle returns g_oracle_insn_count (ticked from
+ * t3_pre_insn). The other counter is 0 on each build. */
+uint64_t rdb_native_insn_count(void);
+uint64_t rdb_oracle_insn_count(void);
+
 #endif /* SONIC_REVERSE_DEBUG */

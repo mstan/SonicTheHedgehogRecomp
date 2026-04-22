@@ -496,6 +496,10 @@ int main(int argc, char *argv[])
      * gm=0 writes that TCP arming misses due to startup latency. */
     const char *mem_write_log_spec = NULL;
     const char *wav_path = NULL;
+    /* Pacing mode override: --pacing fiber|accurate or --pacing=...
+     * NULL = not set via CLI (debug.ini may still override; otherwise
+     * compiled default in glue.c wins). */
+    const char *pacing_cli = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--max-frames") == 0 && i + 1 < argc) {
@@ -516,6 +520,10 @@ int main(int argc, char *argv[])
             mem_write_log_spec = argv[++i];
         } else if (strcmp(argv[i], "--wav") == 0 && i + 1 < argc) {
             wav_path = argv[++i];
+        } else if (strcmp(argv[i], "--pacing") == 0 && i + 1 < argc) {
+            pacing_cli = argv[++i];
+        } else if (strncmp(argv[i], "--pacing=", 9) == 0) {
+            pacing_cli = argv[i] + 9;
         } else if (argv[i][0] != '-') {
             rom_path = argv[i];
         }
@@ -649,6 +657,7 @@ int main(int argc, char *argv[])
     static int s_debug_enabled    = 0;
     int    debug_port_from_ini    = 0;
     double target_fps_from_ini    = 0.0;
+    char   pacing_from_ini[32]    = {0};
     {
         FILE *df = fopen(exe_relative("debug.ini"), "r");
         if (df) {
@@ -665,8 +674,15 @@ int main(int argc, char *argv[])
                 while (ke > k && (ke[-1] == ' ' || ke[-1] == '\t')) ke--;
                 *ke = '\0';
                 while (*v == ' ' || *v == '\t') v++;
+                /* Strip trailing whitespace from value too. */
+                char *ve = v + strlen(v);
+                while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t' ||
+                                  ve[-1] == '\r' || ve[-1] == '\n')) ve--;
+                *ve = '\0';
                 if      (strcmp(k, "port")       == 0) debug_port_from_ini = atoi(v);
                 else if (strcmp(k, "target_fps") == 0) target_fps_from_ini = atof(v);
+                else if (strcmp(k, "pacing")     == 0)
+                    strncpy(pacing_from_ini, v, sizeof(pacing_from_ini) - 1);
             }
             fclose(df);
         }
@@ -681,6 +697,25 @@ int main(int argc, char *argv[])
                       DEFAULT_DEBUG_PORT);
     if (s_debug_enabled)
         cmd_server_init(debug_port);
+
+    /* Pacing resolution: --pacing wins over debug.ini, which wins over
+     * the compiled default in glue.c (CYCLE_ACCURATE since the cycle-
+     * tables fix made the per-instruction cycle counts exact). */
+    {
+        const char *chosen = pacing_cli ? pacing_cli :
+                             (pacing_from_ini[0] ? pacing_from_ini : NULL);
+        if (chosen) {
+            if (strcmp(chosen, "accurate") == 0)
+                g_pacing_mode = GLUE_PACING_CYCLE_ACCURATE;
+            else if (strcmp(chosen, "fiber") == 0)
+                g_pacing_mode = GLUE_PACING_FIBER_FULL;
+            else
+                fprintf(stderr, "[pacing] unknown mode '%s' — using compiled default\n",
+                        chosen);
+        }
+        fprintf(stderr, "[pacing] mode=%s\n",
+                g_pacing_mode == GLUE_PACING_CYCLE_ACCURATE ? "accurate" : "fiber");
+    }
 
     /* --mem-write-log: arm the memory-write logger BEFORE the first frame.
      * Spec format: "0xFFF001,0xFFF002,0xFFF009[@FRAMES]".  Output file name
@@ -858,13 +893,18 @@ int main(int argc, char *argv[])
           glue_run_game_frame();   /* prepares game fiber state */
           ClownMDEmu_Iterate(&g_clownmdemu);  /* DoCycles interleaves game */
 #if SONIC_REVERSE_DEBUG
+          rdb_record_iterate();
           rdb_park_drain();
           if (s_quit_via_park_drain) { running = 0; break; }
 #endif
-          glue_service_vblank(); }
+          glue_service_vblank();
+          glue_end_of_wall_frame(); }
 #else
         s_current_frame_for_input = frame_num;
         ClownMDEmu_Iterate(&g_clownmdemu);
+#if SONIC_REVERSE_DEBUG
+        rdb_record_iterate();
+#endif
 #endif
         check_ramdump();
 
@@ -903,12 +943,17 @@ int main(int argc, char *argv[])
                   glue_run_game_frame();
                   ClownMDEmu_Iterate(&g_clownmdemu);
 #if SONIC_REVERSE_DEBUG
+                  rdb_record_iterate();
                   rdb_park_drain();
                   if (s_quit_via_park_drain) { running = 0; break; }
 #endif
-                  glue_service_vblank(); }
+                  glue_service_vblank();
+          glue_end_of_wall_frame(); }
 #else
                 ClownMDEmu_Iterate(&g_clownmdemu);
+#if SONIC_REVERSE_DEBUG
+                rdb_record_iterate();
+#endif
 #endif
                 if (s_debug_enabled) cmd_server_record_frame(frame_num);
             }
