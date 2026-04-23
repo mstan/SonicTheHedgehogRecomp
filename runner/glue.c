@@ -51,6 +51,17 @@ uint8_t   g_controller2_buttons = 0;
 /* Contextual recompiler cycle tracking */
 uint32_t  g_cycle_accumulator  = 0;
 uint32_t  g_vblank_threshold   = 109312;  /* scanline 224 × 488 cycles */
+
+/* Audio event-queue cycle stamp: 68K cycles since wall-frame start. Bumped
+ * per-instruction by the generator (same cycle-table source as
+ * g_cycle_accumulator). Does NOT reset at game-frame yield — resets only at
+ * wall-frame boundary in glue_end_of_wall_frame. Monotonic within each wall,
+ * so FM/PSG writes during the VBla handler get cycle stamps that reflect
+ * their actual spacing in the handler's ~20k-cycle span. That's what lets
+ * the new audio backend (runner/audio/) render samples *between* writes
+ * instead of collapsing the handler's register burst onto a single
+ * FM-sample boundary (the "boop/squelch" artifact). */
+uint32_t  g_audio_cycle_counter = 0;
 /* NTSC wall-frame cycle budget — used in CYCLE_ACCURATE mode to cap
  * game-fiber work at hardware rate. 262 scanlines × 488 cycles each. */
 #define NTSC_CYCLES_PER_WALL_FRAME 127856u
@@ -692,6 +703,11 @@ void glue_end_of_wall_frame(void)
     }
     /* Reset the per-wall-frame latch for the next wall frame. */
     s_vblank_fired_this_frame = 0;
+
+    /* Reset audio cycle stamp for next wall frame. After Phase 5 switchover,
+     * audio_mixer_drain() is called right before this so the queue has
+     * already been consumed with the old stamps. */
+    g_audio_cycle_counter = 0;
 }
 
 void glue_set_callbacks(const void *callbacks)

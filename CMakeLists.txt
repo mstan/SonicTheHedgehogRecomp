@@ -48,6 +48,10 @@ set(SONIC_SHARED_SOURCES
     runner/sonic_extras.c
     runner/hybrid_global.c
     runner/glue.c
+    runner/audio/event_queue.c
+    runner/audio/ym2612.c
+    runner/audio/psg.c
+    runner/audio/mixer.c
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_full.c"
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_dispatch.c"
     "${RECOMP_ROOT}/sonicthehedgehog/extras.c"
