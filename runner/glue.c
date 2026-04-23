@@ -31,6 +31,9 @@
 /* clowncommon types */
 #include "clowncommon.h"
 
+/* Audio event queue (cycle-stamped FM/PSG writes) */
+#include "audio/event_queue.h"
+
 #if HYBRID_RECOMPILED_CODE
 #include "hybrid.h"
 #include "verify.h"
@@ -51,6 +54,17 @@ uint8_t   g_controller2_buttons = 0;
 /* Contextual recompiler cycle tracking */
 uint32_t  g_cycle_accumulator  = 0;
 uint32_t  g_vblank_threshold   = 109312;  /* scanline 224 × 488 cycles */
+
+/* Audio event-queue cycle stamp: 68K cycles since wall-frame start. Bumped
+ * per-instruction by the generator (same cycle-table source as
+ * g_cycle_accumulator). Does NOT reset at game-frame yield — resets only at
+ * wall-frame boundary in glue_end_of_wall_frame. Monotonic within each wall,
+ * so FM/PSG writes during the VBla handler get cycle stamps that reflect
+ * their actual spacing in the handler's ~20k-cycle span. That's what lets
+ * the new audio backend (runner/audio/) render samples *between* writes
+ * instead of collapsing the handler's register burst onto a single
+ * FM-sample boundary (the "boop/squelch" artifact). */
+uint32_t  g_audio_cycle_counter = 0;
 /* NTSC wall-frame cycle budget — used in CYCLE_ACCURATE mode to cap
  * game-fiber work at hardware rate. 262 scanlines × 488 cycles each. */
 #define NTSC_CYCLES_PER_WALL_FRAME 127856u
@@ -267,17 +281,18 @@ void glue_run_game_chunk(cc_u32f cycles)
     s_interleave_active = 0;
 }
 
-/* Called from bus access macro to check budget */
+/* Called from bus access macro to check the interleave budget (separate
+ * from g_hybrid_cycle_counter, which is now bumped per-instruction by
+ * the generator). Budget drives WHEN to yield back to clownmdemu; cycle
+ * counter drives WHAT cycle timestamps to report to clownmdemu. */
 #define BUDGET_COST_PER_ACCESS 10
+uint64_t g_chunk_yield_count = 0;
 static void check_cycle_budget(void)
 {
     if (s_interleave_active && !s_in_vblank_service) {
         s_cycle_budget -= BUDGET_COST_PER_ACCESS;
         if (s_cycle_budget <= 0) {
-            /* Top up g_hybrid_cycle_counter to match the full chunk budget.
-             * Bus accesses advanced it by N*CYCLES_PER_BUS_ACCESS, but
-             * the budget was s_chunk_cycles.  Add the remainder. */
-            g_hybrid_cycle_counter += (cc_u32f)(-s_cycle_budget);
+            g_chunk_yield_count++;
             SwitchToFiber(s_main_fiber);
         }
     }
@@ -691,6 +706,15 @@ void glue_end_of_wall_frame(void)
     }
     /* Reset the per-wall-frame latch for the next wall frame. */
     s_vblank_fired_this_frame = 0;
+
+    /* audio_mixer_drain in main.c (called right after Iterate) consumes
+     * all events; this reset is a sanity invariant. */
+    audio_event_queue_reset();
+
+    /* Reset audio cycle stamp for next wall frame. After Phase 5 switchover,
+     * audio_mixer_drain() is called right before this so the queue has
+     * already been consumed with the old stamps. */
+    g_audio_cycle_counter = 0;
 }
 
 void glue_set_callbacks(const void *callbacks)
@@ -775,6 +799,19 @@ void glue_load_state(FILE *sf)
 #else
 #define HYBRID_BUMP_CYCLES() do { g_hybrid_cycle_counter += CYCLES_PER_BUS_ACCESS; } while(0)
 #endif
+
+/* Audio event-queue detour.
+ *
+ * All audio-bus writes are captured inside clownmdemu (bus-z80.c for FM,
+ * bus-main-m68k.c for PSG) where target_cycle is available as a single
+ * consistent timestamp (68K-equivalent cycles since Iterate start).
+ * That path catches 68K-bus FM writes (which clownmdemu internally routes
+ * through the Z80 bus), Z80-native FM writes (SMPS Z80 driver for DAC +
+ * part-2 channels), AND PSG writes. No m68k_write detour needed here. */
+static inline void audio_detour_write(uint32_t byte_addr, uint8_t value)
+{
+    (void)byte_addr; (void)value;
+}
 
 uint16_t m68k_read16(uint32_t byte_addr)
 {
@@ -877,6 +914,11 @@ void m68k_write16(uint32_t byte_addr, uint16_t val)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, val);
+    /* 16-bit FM writes land one byte per port per cycle on hardware. The
+     * YM2612 only takes 8-bit data; SMPS always uses 8-bit writes. Be
+     * defensive: if a 16-bit write hits the FM bus, treat the low byte
+     * as the meaningful one (matches clownmdemu's bus routing). */
+    audio_detour_write(byte_addr, (uint8_t)val);
 #endif
     HYBRID_BUMP_CYCLES();
     M68kWriteCallback(&s_cpu_data,
@@ -890,6 +932,7 @@ void m68k_write8(uint32_t byte_addr, uint8_t val)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, val);
+    audio_detour_write(byte_addr, val);
 #endif
     if (s_io_log_enabled && byte_addr >= 0xA10000u && byte_addr <= 0xA1001Fu) {
         if (s_io_log_count < 200) {
@@ -914,6 +957,11 @@ void m68k_write32(uint32_t byte_addr, uint32_t val)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, (uint32_t)(val >> 16));
+    /* 32-bit write = two consecutive 16-bit writes. Only matters for FM
+     * bus; SMPS never uses 32-bit to write FM regs so this is defensive
+     * only. */
+    audio_detour_write(byte_addr,       (uint8_t)(val >> 16));
+    audio_detour_write(byte_addr + 2,   (uint8_t)val);
     /* Protect game variables at $FFFE00+: when the mode dispatch JSR
      * pushes a return address with A7 above the initial SSP ($FFFE00),
      * the low word lands at $FFFE02 (timer variable), causing false

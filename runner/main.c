@@ -237,32 +237,27 @@ static cc_s16l s_psg_accum[PSG_ACCUM_FRAMES];       /* mono   */
 static size_t  s_fm_count  = 0;
 static size_t  s_psg_count = 0;
 
-static void fm_audio_cb(void *user_data,
-                         ClownMDEmu *clownmdemu,
+#include "audio/mixer.h"  /* audio_mixer_drain */
+extern uint32_t g_audio_cycle_counter;
+
+/* Audio arch overhaul: clownmdemu's FM/PSG audio is no longer the source.
+ * These callbacks are now no-ops — s_fm_accum and s_psg_accum are filled
+ * by audio_mixer_drain() after Iterate returns (runner/audio/mixer.c).
+ * The callbacks stay registered because clownmdemu's sync path still
+ * invokes them; making them empty prevents the old generator from
+ * overwriting our mixer's output. */
+static void fm_audio_cb(void *user_data, ClownMDEmu *clownmdemu,
                          size_t total_frames,
                          void (*generate)(ClownMDEmu*, cc_s16l*, size_t))
 {
-    (void)user_data;
-    size_t avail = FM_ACCUM_FRAMES - s_fm_count;
-    if (total_frames > avail) total_frames = avail;
-    if (total_frames > 0) {
-        generate(clownmdemu, s_fm_accum + s_fm_count * 2, total_frames);
-        s_fm_count += total_frames;
-    }
+    (void)user_data; (void)clownmdemu; (void)total_frames; (void)generate;
 }
 
-static void psg_audio_cb(void *user_data,
-                          ClownMDEmu *clownmdemu,
+static void psg_audio_cb(void *user_data, ClownMDEmu *clownmdemu,
                           size_t total_frames,
                           void (*generate)(ClownMDEmu*, cc_s16l*, size_t))
 {
-    (void)user_data;
-    size_t avail = PSG_ACCUM_FRAMES - s_psg_count;
-    if (total_frames > avail) total_frames = avail;
-    if (total_frames > 0) {
-        generate(clownmdemu, s_psg_accum + s_psg_count, total_frames);
-        s_psg_count += total_frames;
-    }
+    (void)user_data; (void)clownmdemu; (void)total_frames; (void)generate;
 }
 
 static void pcm_audio_cb(void *user_data, ClownMDEmu *c, size_t f,
@@ -646,6 +641,11 @@ int main(int argc, char *argv[])
     glue_init(&g_clownmdemu, rom_raw, rom_raw_len);
 #endif
 
+    /* Audio arch overhaul: initialise our cycle-stamped YM2612 + PSG
+     * instances. Safe to call on oracle too (init functions are idempotent
+     * no-ops if stubs). */
+    audio_mixer_init();
+
     free(rom_raw);   /* glue_init copied what it needs */
 
     /* TCP debug server — only if debug.ini exists next to the exe.
@@ -892,6 +892,20 @@ int main(int argc, char *argv[])
           glue_reset_frame_sync();
           glue_run_game_frame();   /* prepares game fiber state */
           ClownMDEmu_Iterate(&g_clownmdemu);  /* DoCycles interleaves game */
+          /* Audio arch overhaul: fill s_fm_accum + s_psg_accum from our
+           * cycle-stamped mixer. Drain to NTSC wall-frame cycle count
+           * (not g_audio_cycle_counter): the game fiber stops running
+           * after WaitForVBlank yields, so g_audio_cycle_counter only
+           * tracks ~30-50% of a wall's cycles. The YM/PSG chips must
+           * still advance the full wall-frame span to generate the
+           * expected ~887 FM + ~3732 PSG samples per frame. Handler
+           * cycles carry accurate stamps inside [0, wall_cycles];
+           * tail advance past the last event fills silence/decay
+           * correctly. */
+          #define NTSC_WALL_FRAME_68K_CYCLES 127856u
+          audio_mixer_drain(NTSC_WALL_FRAME_68K_CYCLES,
+                            s_fm_accum,  FM_ACCUM_FRAMES,  &s_fm_count,
+                            s_psg_accum, PSG_ACCUM_FRAMES, &s_psg_count);
 #if SONIC_REVERSE_DEBUG
           rdb_record_iterate();
           rdb_park_drain();
