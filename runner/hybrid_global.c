@@ -26,3 +26,12 @@ cc_u32f g_hybrid_cycle_counter;
 #include <stdint.h>
 uint64_t g_frame_count = 0;
 #endif
+
+/* g_chunk_yield_count: interleave-chunk yield counter from glue.c.
+ * Only defined there under ENABLE_RECOMPILED_CODE; provide a zero for
+ * oracle (HYBRID_RECOMPILED_CODE) and interpreter-only builds so
+ * cmd_server's mem_write_log reference links. */
+#if !ENABLE_RECOMPILED_CODE
+#include <stdint.h>
+uint64_t g_chunk_yield_count = 0;
+#endif
