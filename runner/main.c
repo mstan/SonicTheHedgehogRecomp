@@ -893,12 +893,17 @@ int main(int argc, char *argv[])
           glue_run_game_frame();   /* prepares game fiber state */
           ClownMDEmu_Iterate(&g_clownmdemu);  /* DoCycles interleaves game */
           /* Audio arch overhaul: fill s_fm_accum + s_psg_accum from our
-           * cycle-stamped mixer (runner/audio/), replacing clownmdemu's
-           * audio output (no-op'd by fm_audio_cb/psg_audio_cb above).
-           * Frame end cycle = g_audio_cycle_counter as it stands after
-           * Iterate (which is everything the game fiber ran this wall,
-           * including handler cycles). */
-          audio_mixer_drain(g_audio_cycle_counter,
+           * cycle-stamped mixer. Drain to NTSC wall-frame cycle count
+           * (not g_audio_cycle_counter): the game fiber stops running
+           * after WaitForVBlank yields, so g_audio_cycle_counter only
+           * tracks ~30-50% of a wall's cycles. The YM/PSG chips must
+           * still advance the full wall-frame span to generate the
+           * expected ~887 FM + ~3732 PSG samples per frame. Handler
+           * cycles carry accurate stamps inside [0, wall_cycles];
+           * tail advance past the last event fills silence/decay
+           * correctly. */
+          #define NTSC_WALL_FRAME_68K_CYCLES 127856u
+          audio_mixer_drain(NTSC_WALL_FRAME_68K_CYCLES,
                             s_fm_accum,  FM_ACCUM_FRAMES,  &s_fm_count,
                             s_psg_accum, PSG_ACCUM_FRAMES, &s_psg_count);
 #if SONIC_REVERSE_DEBUG
