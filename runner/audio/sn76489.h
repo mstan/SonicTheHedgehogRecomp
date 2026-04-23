@@ -11,10 +11,11 @@
 #include <stdint.h>
 #include <stddef.h>
 
-void psg_init(void);
-void psg_advance(uint32_t cycles_68k);
-void psg_write(uint8_t value);
-void psg_render(int16_t *out, size_t sample_count);
+void   psg_init(void);
+void   psg_advance(uint32_t cycles_68k);
+void   psg_write(uint8_t value);
+size_t psg_render(int16_t *out, size_t sample_count);
+size_t psg_samples_available(void);
 uint32_t psg_sample_rate(void);
 
 #endif

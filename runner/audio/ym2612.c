@@ -94,26 +94,25 @@ void ym2612_write(uint8_t port, uint8_t value)
     }
 }
 
-void ym2612_render(int16_t *out, size_t sample_count)
+size_t ym2612_render(int16_t *out, size_t sample_count)
 {
-    if (!out || sample_count == 0) return;
-    /* Copy from scratch ring into caller buffer. If the scratch has
-     * fewer samples than requested, the tail is zeroed (silence) — the
-     * caller should typically ask for what was generated this frame. */
+    if (!out || sample_count == 0) return 0;
     size_t available = s_scratch_write - s_scratch_read;
     size_t copy = sample_count < available ? sample_count : available;
     if (copy > 0) {
         memcpy(out, &s_scratch[s_scratch_read * 2], copy * 2 * sizeof(int16_t));
         s_scratch_read += copy;
     }
-    if (copy < sample_count) {
-        memset(out + copy * 2, 0, (sample_count - copy) * 2 * sizeof(int16_t));
-    }
-    /* Rewind both pointers when fully drained to keep the ring "at zero"
-     * for the next frame. Simpler than wraparound bookkeeping. */
+    /* Rewind both pointers when fully drained. Simpler than wraparound. */
     if (s_scratch_read >= s_scratch_write) {
         s_scratch_read = s_scratch_write = 0;
     }
+    return copy;
+}
+
+size_t ym2612_samples_available(void)
+{
+    return s_scratch_write - s_scratch_read;
 }
 
 uint32_t ym2612_sample_rate(void)

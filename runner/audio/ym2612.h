@@ -28,9 +28,14 @@ void ym2612_advance(uint32_t cycles_68k);
 void ym2612_write(uint8_t port, uint8_t value);
 
 /* Render `sample_count` stereo samples (L, R interleaved, 16-bit signed)
- * into `out` at the chip's native sample rate. ACCUMULATES (+=) into
- * out to match clownmdemu's callback contract. */
-void ym2612_render(int16_t *out, size_t sample_count);
+ * into `out`. Returns the number of samples actually copied (may be less
+ * than `sample_count` if the internal scratch didn't have that many). */
+size_t ym2612_render(int16_t *out, size_t sample_count);
+
+/* How many stereo samples are sitting in the internal scratch waiting to
+ * be rendered. Call after ym2612_advance / write to know how many to
+ * request from ym2612_render. */
+size_t ym2612_samples_available(void);
 
 /* Sample rate the renderer emits at. Clownmdemu uses master/144 internally
  * upsampled — we'll match at init time. */
