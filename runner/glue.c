@@ -31,6 +31,9 @@
 /* clowncommon types */
 #include "clowncommon.h"
 
+/* Audio event queue (cycle-stamped FM/PSG writes) */
+#include "audio/event_queue.h"
+
 #if HYBRID_RECOMPILED_CODE
 #include "hybrid.h"
 #include "verify.h"
@@ -704,6 +707,14 @@ void glue_end_of_wall_frame(void)
     /* Reset the per-wall-frame latch for the next wall frame. */
     s_vblank_fired_this_frame = 0;
 
+    /* Reset the audio event queue. Phase 5 switchover will wire
+     * audio_mixer_drain() in *before* this reset so the queue gets
+     * consumed; for now it just drains-without-consuming so the queue
+     * doesn't overflow. Validated with a Phase 2 diagnostic: event
+     * counts per frame (4 boot, 68 title-music, 280 demo-start burst)
+     * match the expected SMPS write patterns. */
+    audio_event_queue_reset();
+
     /* Reset audio cycle stamp for next wall frame. After Phase 5 switchover,
      * audio_mixer_drain() is called right before this so the queue has
      * already been consumed with the old stamps. */
@@ -792,6 +803,24 @@ void glue_load_state(FILE *sf)
 #else
 #define HYBRID_BUMP_CYCLES() do { g_hybrid_cycle_counter += CYCLES_PER_BUS_ACCESS; } while(0)
 #endif
+
+/* Audio event-queue detour: when a 68K write targets the YM2612 FM bus
+ * ($A04000-$A04006) or the PSG write port ($C00011), push a cycle-stamped
+ * event onto the audio queue. Keeps the clownmdemu M68kWriteCallback call
+ * below (harmless — we ignore clownmdemu's audio output in Phase 5+).
+ * Header is included at the top of this file. */
+static inline void audio_detour_write(uint32_t byte_addr, uint8_t value)
+{
+    if ((byte_addr & 0xFFFFF8u) == 0xA04000u) {
+        /* FM bus: $A04000 addr part1, $A04002 data part1,
+         *         $A04004 addr part2, $A04006 data part2. */
+        uint8_t port = (uint8_t)((byte_addr & 0x6u) >> 1);  /* 0..3 */
+        audio_event_push(g_audio_cycle_counter, port, value);
+    } else if (byte_addr == 0xC00011u) {
+        /* PSG write port. 8-bit writes to this odd byte address. */
+        audio_event_push(g_audio_cycle_counter, AUDIO_PORT_PSG, value);
+    }
+}
 
 uint16_t m68k_read16(uint32_t byte_addr)
 {
@@ -894,6 +923,11 @@ void m68k_write16(uint32_t byte_addr, uint16_t val)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, val);
+    /* 16-bit FM writes land one byte per port per cycle on hardware. The
+     * YM2612 only takes 8-bit data; SMPS always uses 8-bit writes. Be
+     * defensive: if a 16-bit write hits the FM bus, treat the low byte
+     * as the meaningful one (matches clownmdemu's bus routing). */
+    audio_detour_write(byte_addr, (uint8_t)val);
 #endif
     HYBRID_BUMP_CYCLES();
     M68kWriteCallback(&s_cpu_data,
@@ -907,6 +941,7 @@ void m68k_write8(uint32_t byte_addr, uint8_t val)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, val);
+    audio_detour_write(byte_addr, val);
 #endif
     if (s_io_log_enabled && byte_addr >= 0xA10000u && byte_addr <= 0xA1001Fu) {
         if (s_io_log_count < 200) {
@@ -931,6 +966,11 @@ void m68k_write32(uint32_t byte_addr, uint32_t val)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, (uint32_t)(val >> 16));
+    /* 32-bit write = two consecutive 16-bit writes. Only matters for FM
+     * bus; SMPS never uses 32-bit to write FM regs so this is defensive
+     * only. */
+    audio_detour_write(byte_addr,       (uint8_t)(val >> 16));
+    audio_detour_write(byte_addr + 2,   (uint8_t)val);
     /* Protect game variables at $FFFE00+: when the mode dispatch JSR
      * pushes a return address with A7 above the initial SSP ($FFFE00),
      * the low word lands at $FFFE02 (timer variable), causing false
