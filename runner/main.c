@@ -237,8 +237,12 @@ static cc_s16l s_psg_accum[PSG_ACCUM_FRAMES];       /* mono   */
 static size_t  s_fm_count  = 0;
 static size_t  s_psg_count = 0;
 
-#include "audio/mixer.h"  /* audio_mixer_drain */
+#include "audio/mixer.h"          /* audio_mixer_drain */
+#include "audio/observability.h"  /* boop detector */
 extern uint32_t g_audio_cycle_counter;
+extern uint64_t g_frame_count;
+extern uint32_t m68k_read32(uint32_t);
+extern uint8_t  m68k_read8 (uint32_t);
 
 /* Audio arch overhaul:
  *   - Native build (ENABLE_RECOMPILED_CODE): clownmdemu's FM/PSG audio
@@ -667,6 +671,7 @@ int main(int argc, char *argv[])
      * instances. Safe to call on oracle too (init functions are idempotent
      * no-ops if stubs). */
     audio_mixer_init();
+    audio_obs_init();
 
     free(rom_raw);   /* glue_init copied what it needs */
 
@@ -928,6 +933,12 @@ int main(int argc, char *argv[])
           audio_mixer_drain(NTSC_WALL_FRAME_68K_CYCLES,
                             s_fm_accum,  FM_ACCUM_FRAMES,  &s_fm_count,
                             s_psg_accum, PSG_ACCUM_FRAMES, &s_psg_count);
+          /* Feed the boop detector. */
+          audio_obs_ingest_fm ((const int16_t *)s_fm_accum,  s_fm_count);
+          audio_obs_ingest_psg((const int16_t *)s_psg_accum, s_psg_count);
+          audio_obs_tick_frame(g_frame_count,
+                               m68k_read32(0xFFFE0C),
+                               m68k_read8 (0xFFF600));
 #if SONIC_REVERSE_DEBUG
           rdb_record_iterate();
           rdb_park_drain();
