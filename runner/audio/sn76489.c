@@ -9,6 +9,7 @@
 #include "sn76489.h"        /* our wrapper API */
 #include "psg.h"            /* clownmdemu's PSG — on include path */
 #include "clownmdemu.h"     /* CLOWNMDEMU_MASTER_CLOCK_NTSC + dividers */
+#include "low-pass-filter.h"
 #include <string.h>
 
 /* The clownmdemu PSG runs at 1 sample every (Z80_CLOCK_DIVIDER *
@@ -26,6 +27,7 @@
 static PSG s_psg;
 static int        s_inited = 0;
 static uint32_t   s_leftover_master_cycles = 0;  /* in master-cycle units */
+static LowPassFilter_FirstOrder_State s_lpf[1];   /* matches clownmdemu's psg filter */
 
 #define PSG_SCRATCH_SAMPLES  8192
 static int16_t s_scratch[PSG_SCRATCH_SAMPLES];
@@ -35,20 +37,23 @@ static size_t  s_scratch_read  = 0;
 void psg_init(void)
 {
     PSG_Initialise(&s_psg);
+    LowPassFilter_FirstOrder_Initialise(s_lpf, 1);
     s_scratch_write = s_scratch_read = 0;
     s_leftover_master_cycles = 0;
     s_inited = 1;
 }
 
-void psg_advance(uint32_t cycles_68k)
+void psg_advance(uint32_t cycles_master)
 {
     if (!s_inited) psg_init();
-    if (cycles_68k == 0) return;
+    if (cycles_master == 0) return;
 
-    /* Convert 68K cycles to master cycles, add leftover. */
-    uint64_t master_cycles = (uint64_t)cycles_68k * 7u + s_leftover_master_cycles;
-    size_t   samples_to_emit = (size_t)(master_cycles / PSG_SAMPLE_DIVISOR_MASTER);
-    s_leftover_master_cycles = (uint32_t)(master_cycles % PSG_SAMPLE_DIVISOR_MASTER);
+    /* Argument is MASTER cycles (stamp is master-cycle precise, not
+     * 68K-cycle truncated). Divide by 240 = Z80_CLOCK_DIVIDER *
+     * PSG_SAMPLE_RATE_DIVIDER to get PSG samples, carry leftover. */
+    uint64_t total = (uint64_t)cycles_master + s_leftover_master_cycles;
+    size_t   samples_to_emit = (size_t)(total / PSG_SAMPLE_DIVISOR_MASTER);
+    s_leftover_master_cycles = (uint32_t)(total % PSG_SAMPLE_DIVISOR_MASTER);
 
     while (samples_to_emit > 0) {
         size_t avail = PSG_SCRATCH_SAMPLES - s_scratch_write;
@@ -56,6 +61,14 @@ void psg_advance(uint32_t cycles_68k)
         size_t chunk = samples_to_emit < avail ? samples_to_emit : avail;
         memset(&s_scratch[s_scratch_write], 0, chunk * sizeof(int16_t));
         PSG_Update(&s_psg, &s_scratch[s_scratch_write], chunk);
+        /* Apply the same low-pass filter clownmdemu applies on its PSG
+         * output path (bus-common.c GeneratePSGAudio). The raw PSG is
+         * full of rapid step transitions (volume attenuation jumps) that
+         * sound like clicks without this filter — that's our residual
+         * "boop" source. Coefficients from clownmdemu's psg path. */
+        LowPassFilter_FirstOrder_Apply(
+            s_lpf, 1, &s_scratch[s_scratch_write], chunk,
+            LOW_PASS_FILTER_COMPUTE_MAGIC_FIRST_ORDER(26.044, 24.044));
         s_scratch_write  += chunk;
         samples_to_emit  -= chunk;
     }
@@ -91,4 +104,9 @@ uint32_t psg_sample_rate(void)
 {
     /* 53693175 / 240 = 223721 Hz NTSC. */
     return (uint32_t)(CLOWNMDEMU_MASTER_CLOCK_NTSC / PSG_SAMPLE_DIVISOR_MASTER);
+}
+
+void psg_reset_leftover(void)
+{
+    s_leftover_master_cycles = 0;
 }

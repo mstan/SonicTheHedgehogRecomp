@@ -69,15 +69,21 @@ void ym2612_init(void)
     s_inited = 1;
 }
 
-void ym2612_advance(uint32_t cycles_68k)
+static uint32_t s_fm_leftover_master = 0;
+
+void ym2612_advance(uint32_t cycles_master)
 {
     if (!s_inited) ym2612_init();
-    if (cycles_68k == 0) return;
-    /* FM_Update takes cycles in master-clock units divided by M68K_CLOCK_DIVIDER
-     * (which is 7). Our counter is in 68K cycles. SyncCommon in bus-common.c
-     * does target_cycle/divisor → 68K cycles then feeds to FM_Update. So
-     * our units already match what FM_Update expects (68K cycles). */
-    FM_Update(&s_fm, (cc_u32f)cycles_68k, fm_emit_callback, NULL);
+    if (cycles_master == 0) return;
+    /* Argument is MASTER cycles. FM_Update takes 68K cycles
+     * (master / M68K_CLOCK_DIVIDER = master / 7). Carry the remainder
+     * so fractional 68K cycles accumulate across calls and we don't
+     * lose precision the way the old /7-per-event approach did. */
+    uint64_t total_master = (uint64_t)cycles_master + s_fm_leftover_master;
+    uint32_t cycles_68k   = (uint32_t)(total_master / 7u);
+    s_fm_leftover_master  = (uint32_t)(total_master % 7u);
+    if (cycles_68k > 0)
+        FM_Update(&s_fm, (cc_u32f)cycles_68k, fm_emit_callback, NULL);
 }
 
 void ym2612_write(uint8_t port, uint8_t value)

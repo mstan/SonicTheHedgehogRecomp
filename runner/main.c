@@ -244,29 +244,31 @@ extern uint64_t g_frame_count;
 extern uint32_t m68k_read32(uint32_t);
 extern uint8_t  m68k_read8 (uint32_t);
 
-/* Audio arch overhaul:
- *   - Native build (ENABLE_RECOMPILED_CODE): clownmdemu's FM/PSG audio
- *     is no longer the source. These callbacks are no-ops; s_fm_accum
- *     and s_psg_accum are filled by audio_mixer_drain() after Iterate
- *     returns. Keeping them registered keeps clownmdemu's internal
- *     sync paths happy without overwriting our mixer output.
- *   - Oracle build: no mixer; callbacks keep their original accumulate
- *     behavior so oracle audio still works for A/B comparisons. */
+/* Audio backend switch for A/B diagnosis:
+ *   "ours"       (default) : our cycle-stamped YM2612/PSG via audio_mixer_drain
+ *   "clownmdemu"           : clownmdemu's FM/PSG via its sync callbacks
+ * Select with --audio-backend=ours|clownmdemu. */
+enum { AUDIO_BACKEND_OURS = 0, AUDIO_BACKEND_CLOWNMDEMU = 1 };
+static int s_audio_backend = AUDIO_BACKEND_OURS;
+
 static void fm_audio_cb(void *user_data, ClownMDEmu *clownmdemu,
                          size_t total_frames,
                          void (*generate)(ClownMDEmu*, cc_s16l*, size_t))
 {
     (void)user_data;
 #if ENABLE_RECOMPILED_CODE
-    (void)clownmdemu; (void)total_frames; (void)generate;
-#else
+    if (s_audio_backend == AUDIO_BACKEND_OURS) {
+        /* Our mixer is the source; clownmdemu's callback is a no-op. */
+        (void)clownmdemu; (void)total_frames; (void)generate;
+        return;
+    }
+#endif
     size_t avail = FM_ACCUM_FRAMES - s_fm_count;
     if (total_frames > avail) total_frames = avail;
     if (total_frames > 0) {
         generate(clownmdemu, s_fm_accum + s_fm_count * 2, total_frames);
         s_fm_count += total_frames;
     }
-#endif
 }
 
 static void psg_audio_cb(void *user_data, ClownMDEmu *clownmdemu,
@@ -275,15 +277,17 @@ static void psg_audio_cb(void *user_data, ClownMDEmu *clownmdemu,
 {
     (void)user_data;
 #if ENABLE_RECOMPILED_CODE
-    (void)clownmdemu; (void)total_frames; (void)generate;
-#else
+    if (s_audio_backend == AUDIO_BACKEND_OURS) {
+        (void)clownmdemu; (void)total_frames; (void)generate;
+        return;
+    }
+#endif
     size_t avail = PSG_ACCUM_FRAMES - s_psg_count;
     if (total_frames > avail) total_frames = avail;
     if (total_frames > 0) {
         generate(clownmdemu, s_psg_accum + s_psg_count, total_frames);
         s_psg_count += total_frames;
     }
-#endif
 }
 
 static void pcm_audio_cb(void *user_data, ClownMDEmu *c, size_t f,
@@ -545,6 +549,13 @@ int main(int argc, char *argv[])
             pacing_cli = argv[++i];
         } else if (strncmp(argv[i], "--pacing=", 9) == 0) {
             pacing_cli = argv[i] + 9;
+        } else if (strncmp(argv[i], "--audio-backend=", 16) == 0) {
+            const char *v = argv[i] + 16;
+            if      (strcmp(v, "ours")       == 0) s_audio_backend = AUDIO_BACKEND_OURS;
+            else if (strcmp(v, "clownmdemu") == 0) s_audio_backend = AUDIO_BACKEND_CLOWNMDEMU;
+            else fprintf(stderr, "warning: unknown --audio-backend=%s (use ours|clownmdemu)\n", v);
+            fprintf(stderr, "[audio] backend=%s\n",
+                    s_audio_backend == AUDIO_BACKEND_OURS ? "ours" : "clownmdemu");
         } else if (argv[i][0] != '-') {
             rom_path = argv[i];
         }
@@ -930,10 +941,14 @@ int main(int argc, char *argv[])
            * tail advance past the last event fills silence/decay
            * correctly. */
           #define NTSC_WALL_FRAME_68K_CYCLES 127856u
-          audio_mixer_drain(NTSC_WALL_FRAME_68K_CYCLES,
-                            s_fm_accum,  FM_ACCUM_FRAMES,  &s_fm_count,
-                            s_psg_accum, PSG_ACCUM_FRAMES, &s_psg_count);
-          /* Feed the boop detector. */
+          if (s_audio_backend == AUDIO_BACKEND_OURS) {
+              #define NTSC_WALL_FRAME_MASTER_CYCLES 895780u
+              audio_mixer_drain(NTSC_WALL_FRAME_MASTER_CYCLES,
+                                s_fm_accum,  FM_ACCUM_FRAMES,  &s_fm_count,
+                                s_psg_accum, PSG_ACCUM_FRAMES, &s_psg_count);
+          }
+          /* Observability runs regardless — we want to detect boops in
+           * whichever backend is providing samples. */
           audio_obs_ingest_fm ((const int16_t *)s_fm_accum,  s_fm_count);
           audio_obs_ingest_psg((const int16_t *)s_psg_accum, s_psg_count);
           audio_obs_tick_frame(g_frame_count,
