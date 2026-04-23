@@ -14,7 +14,7 @@
 #define AUDIO_EVENT_QUEUE_H
 
 #include <stdint.h>
-#include <stddef.h>
+#include <stddef.h>  /* size_t */
 
 enum {
     AUDIO_PORT_FM1_ADDR = 0,   /* $A04000 write */
