@@ -67,21 +67,24 @@ void psg_write(uint8_t value)
     PSG_DoCommand(&s_psg, value);
 }
 
-void psg_render(int16_t *out, size_t sample_count)
+size_t psg_render(int16_t *out, size_t sample_count)
 {
-    if (!out || sample_count == 0) return;
+    if (!out || sample_count == 0) return 0;
     size_t available = s_scratch_write - s_scratch_read;
     size_t copy = sample_count < available ? sample_count : available;
     if (copy > 0) {
         memcpy(out, &s_scratch[s_scratch_read], copy * sizeof(int16_t));
         s_scratch_read += copy;
     }
-    if (copy < sample_count) {
-        memset(out + copy, 0, (sample_count - copy) * sizeof(int16_t));
-    }
     if (s_scratch_read >= s_scratch_write) {
         s_scratch_read = s_scratch_write = 0;
     }
+    return copy;
+}
+
+size_t psg_samples_available(void)
+{
+    return s_scratch_write - s_scratch_read;
 }
 
 uint32_t psg_sample_rate(void)
