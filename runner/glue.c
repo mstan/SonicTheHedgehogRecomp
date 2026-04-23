@@ -771,17 +771,10 @@ void glue_load_state(FILE *sf)
  * access including non-bus instructions), we use budget/48 ≈ 10 per access.
  * This keeps g_hybrid_cycle_counter aligned with Iterate's scanline timing. */
 #define CYCLES_PER_BUS_ACCESS 10u
-/* g_hybrid_cycle_counter is bumped per-instruction in generated code using
- * real 68K cycle costs (same cycle-table source as g_cycle_accumulator).
- * The bus-access wrapper only polls the interleave-chunk budget; it no
- * longer advances the counter, else bus-access costs would be double-
- * counted (cycle-table values already include memory-access costs).
- * This narrows the target_cycle reported to clownmdemu to match oracle's
- * per-instruction accounting (median ratio 0.42 -> 0.68). */
 #if ENABLE_RECOMPILED_CODE
-#define HYBRID_BUMP_CYCLES() do { check_cycle_budget(); } while(0)
+#define HYBRID_BUMP_CYCLES() do { g_hybrid_cycle_counter += CYCLES_PER_BUS_ACCESS; check_cycle_budget(); } while(0)
 #else
-#define HYBRID_BUMP_CYCLES() do { } while(0)
+#define HYBRID_BUMP_CYCLES() do { g_hybrid_cycle_counter += CYCLES_PER_BUS_ACCESS; } while(0)
 #endif
 
 uint16_t m68k_read16(uint32_t byte_addr)
