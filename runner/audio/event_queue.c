@@ -5,7 +5,11 @@
 #include <assert.h>
 #include <stdio.h>
 
-#define QUEUE_CAP 1024  /* handler ~50 writes + game ~20/frame; 1024 is lots of headroom */
+/* Capacity sized for worst case: Z80-driven DAC sample writes hit reg 0x2A
+ * at ~8 kHz, which is ~140 writes per wall frame (addr + data = 280). Plus
+ * music FM writes, SFX bursts, PSG. 4096 gives 14x headroom on measured
+ * peak (~280/frame). */
+#define QUEUE_CAP 4096
 
 static AudioEvent s_ring[QUEUE_CAP];
 static size_t     s_head = 0;  /* producer writes here */
@@ -16,9 +20,6 @@ void audio_event_push(uint32_t cycle_stamp, uint8_t port, uint8_t value)
 {
     size_t next_head = (s_head + 1) % QUEUE_CAP;
     if (next_head == s_tail) {
-        /* Overflow: drop the event. This shouldn't happen in practice
-         * (capacity sized for worst-case + margin) but we fail soft rather
-         * than crash. Counter is available for debugging. */
         s_overflow_count++;
         if (s_overflow_count < 10)
             fprintf(stderr, "[audio-queue] OVERFLOW cap=%d head=%zu tail=%zu\n",

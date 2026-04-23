@@ -707,12 +707,8 @@ void glue_end_of_wall_frame(void)
     /* Reset the per-wall-frame latch for the next wall frame. */
     s_vblank_fired_this_frame = 0;
 
-    /* Reset the audio event queue. Phase 5 switchover will wire
-     * audio_mixer_drain() in *before* this reset so the queue gets
-     * consumed; for now it just drains-without-consuming so the queue
-     * doesn't overflow. Validated with a Phase 2 diagnostic: event
-     * counts per frame (4 boot, 68 title-music, 280 demo-start burst)
-     * match the expected SMPS write patterns. */
+    /* audio_mixer_drain in main.c (called right after Iterate) consumes
+     * all events; this reset is a sanity invariant. */
     audio_event_queue_reset();
 
     /* Reset audio cycle stamp for next wall frame. After Phase 5 switchover,
@@ -804,22 +800,17 @@ void glue_load_state(FILE *sf)
 #define HYBRID_BUMP_CYCLES() do { g_hybrid_cycle_counter += CYCLES_PER_BUS_ACCESS; } while(0)
 #endif
 
-/* Audio event-queue detour: when a 68K write targets the YM2612 FM bus
- * ($A04000-$A04006) or the PSG write port ($C00011), push a cycle-stamped
- * event onto the audio queue. Keeps the clownmdemu M68kWriteCallback call
- * below (harmless — we ignore clownmdemu's audio output in Phase 5+).
- * Header is included at the top of this file. */
+/* Audio event-queue detour.
+ *
+ * All audio-bus writes are captured inside clownmdemu (bus-z80.c for FM,
+ * bus-main-m68k.c for PSG) where target_cycle is available as a single
+ * consistent timestamp (68K-equivalent cycles since Iterate start).
+ * That path catches 68K-bus FM writes (which clownmdemu internally routes
+ * through the Z80 bus), Z80-native FM writes (SMPS Z80 driver for DAC +
+ * part-2 channels), AND PSG writes. No m68k_write detour needed here. */
 static inline void audio_detour_write(uint32_t byte_addr, uint8_t value)
 {
-    if ((byte_addr & 0xFFFFF8u) == 0xA04000u) {
-        /* FM bus: $A04000 addr part1, $A04002 data part1,
-         *         $A04004 addr part2, $A04006 data part2. */
-        uint8_t port = (uint8_t)((byte_addr & 0x6u) >> 1);  /* 0..3 */
-        audio_event_push(g_audio_cycle_counter, port, value);
-    } else if (byte_addr == 0xC00011u) {
-        /* PSG write port. 8-bit writes to this odd byte address. */
-        audio_event_push(g_audio_cycle_counter, AUDIO_PORT_PSG, value);
-    }
+    (void)byte_addr; (void)value;
 }
 
 uint16_t m68k_read16(uint32_t byte_addr)
