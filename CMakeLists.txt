@@ -52,6 +52,7 @@ set(SONIC_SHARED_SOURCES
     runner/audio/ym2612.c
     runner/audio/sn76489.c
     runner/audio/mixer.c
+    runner/audio/observability.c
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_full.c"
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_dispatch.c"
     "${RECOMP_ROOT}/sonicthehedgehog/extras.c"
