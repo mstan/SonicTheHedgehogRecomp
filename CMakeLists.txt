@@ -46,6 +46,7 @@ set(SONIC_SHARED_SOURCES
     runner/cmd_server.c
     runner/frame_snapshots.c
     runner/sonic_extras.c
+    runner/sonic1_spec.c
     runner/hybrid_global.c
     runner/glue.c
     runner/audio/event_queue.c

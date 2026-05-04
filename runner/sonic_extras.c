@@ -118,7 +118,7 @@ static int json_get_int(const char *json, const char *key, int def)
     return def;
 }
 
-static void handle_sonic_state(int id)
+void handle_sonic_state(int id)
 {
     char buf[512];
     snprintf(buf, sizeof(buf),
@@ -145,7 +145,7 @@ static void handle_sonic_state(int id)
     cmd_send_response(buf);
 }
 
-static void handle_object_table(int id, const char *json)
+void handle_object_table(int id, const char *json)
 {
     int max_objs = json_get_int(json, "count", 64);
     if (max_objs > 64) max_objs = 64;
