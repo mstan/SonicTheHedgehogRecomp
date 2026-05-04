@@ -11,3 +11,4 @@ last_rom.txt
 screenshots/
 *.log
 rdb_*.json
+**/__pycache__/

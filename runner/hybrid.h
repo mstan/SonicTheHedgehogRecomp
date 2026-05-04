@@ -16,8 +16,9 @@
 #include "clowncommon.h"
 #include "clownmdemu.h"
 
-/* A single dispatch table entry. */
-typedef struct {
+/* A single dispatch table entry. Tagged so game_spec.h can forward-
+ * declare it without pulling in the clownmdemu surface. */
+typedef struct HybridEntry {
     cc_u32l addr;           /* 68K byte address of the function entry point */
     void  (*fn)(void);      /* native C implementation                       */
 } HybridEntry;

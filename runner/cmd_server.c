@@ -281,6 +281,7 @@ void cmd_server_mem_write_log_tick(void)
 
 #include "frame_record.h"
 #include "game_extras.h"
+#include "game_spec.h"
 #include "sonic_extras.h"
 
 static FrameRecord s_frame_history[FRAME_HISTORY_CAP];
@@ -1939,10 +1940,13 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         return cr;
     }
 
-    /* Game-specific commands first (sonic_extras.c). Falls through to
-     * the framework table below if the hook returns false. */
-    if (game_handle_debug_cmd(id, cmd, json)) {
-        return cr;
+    /* Game-specific commands first (g_game_spec.commands[]). Falls
+     * through to the framework table below if no game command matches. */
+    for (int i = 0; i < g_game_spec.command_count; i++) {
+        if (strcmp(cmd, g_game_spec.commands[i].name) == 0) {
+            g_game_spec.commands[i].handler(id, json);
+            return cr;
+        }
     }
 
     if (strcmp(cmd, "pause") == 0) {
@@ -2398,7 +2402,10 @@ void cmd_server_record_frame(uint32_t frame_num)
     wram_snapshot(r->wram,  &g_clownmdemu);
 
     /* Per-game tail. */
-    game_fill_frame_record(r->game_data);
+    if (g_game_spec.fill_frame_record)
+        g_game_spec.fill_frame_record(r->game_data);
+    else
+        memset(r->game_data, 0, sizeof(r->game_data));
 
     s_history_count = frame_num + 1;
 }

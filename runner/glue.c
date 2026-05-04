@@ -119,14 +119,25 @@ int       g_dbg_b88_count     = 0;
 #define WATCHDOG_LIMIT  10000000u  /* 10M bus ops ≈ way too many for one frame */
 static uint32_t s_watchdog_counter = 0;
 
+#if SONIC_REVERSE_DEBUG
+extern uint32_t g_rdb_current_func;
+#endif
+
 static void watchdog_check(uint32_t addr, int is_write, uint32_t val)
 {
     if (++s_watchdog_counter != WATCHDOG_LIMIT)
         return;
 
+#if SONIC_REVERSE_DEBUG
+    uint32_t cur_func = g_rdb_current_func;
+#else
+    uint32_t cur_func = 0;
+#endif
+
     fprintf(stderr,
         "\n=== WATCHDOG: %u bus accesses without yield (frame %"PRIu64") ===\n"
         "  Last access: %s $%06X val=$%04X\n"
+        "  Current func: $%06X\n"
         "  D0=$%08X D1=$%08X D2=$%08X D3=$%08X\n"
         "  D4=$%08X D5=$%08X D6=$%08X D7=$%08X\n"
         "  A0=$%08X A1=$%08X A2=$%08X A3=$%08X\n"
@@ -135,6 +146,7 @@ static void watchdog_check(uint32_t addr, int is_write, uint32_t val)
         "=== Exiting to prevent hang ===\n",
         s_watchdog_counter, g_frame_count,
         is_write ? "WRITE" : "READ", addr, val,
+        cur_func,
         g_cpu.D[0], g_cpu.D[1], g_cpu.D[2], g_cpu.D[3],
         g_cpu.D[4], g_cpu.D[5], g_cpu.D[6], g_cpu.D[7],
         g_cpu.A[0], g_cpu.A[1], g_cpu.A[2], g_cpu.A[3],
@@ -212,12 +224,7 @@ static int s_in_vblank_service = 0;
 #if ENABLE_RECOMPILED_CODE
 
 #include <windows.h>
-
-/* func_000206 is the recompiled entry point declared in the generated headers */
-void func_000206(void);
-/* VBlank / HBlank interrupt handlers */
-void func_000B10(void);   /* VBlank IRQ6 */
-void func_001126(void);   /* HBlank IRQ4 */
+#include "game_spec.h"      /* g_game_spec.call_entry_point / vblank / hblank / periodic */
 
 void glue_log_frame_state(uint64_t frame);  /* defined below */
 
@@ -235,11 +242,12 @@ static void CALLBACK game_fiber_func(LPVOID param)
                   |  (uint32_t)g_rom[3];
     g_cpu.SR  = 0x2700u;
 
-    func_000206();
+    g_game_spec.call_entry_point();
 
-    /* func_000206 should never return — it contains the main game loop.
+    /* call_entry_point should never return — it contains the main game loop.
      * If it does, just yield back to main forever. */
-    fprintf(stderr, "[GAME] func_000206 returned unexpectedly!\n");
+    fprintf(stderr, "[GAME] %s entry point returned unexpectedly!\n",
+            g_game_spec.short_name);
     for (;;) SwitchToFiber(s_main_fiber);
 }
 
@@ -321,7 +329,7 @@ void glue_handle_interrupt(cc_u16f level)
         s_in_vblank_service = 1;
         g_rte_pending = 0;
         g_rte_pending_ptr = &s_rte_dummy;
-        func_000B10();
+        if (g_game_spec.call_vblank) g_game_spec.call_vblank();
         g_rte_pending_ptr = &s_rte_real;
         g_rte_pending = 0;
         s_in_vblank_service = 0;
@@ -347,7 +355,7 @@ void glue_handle_interrupt(cc_u16f level)
         s_in_vblank_service = 1;
         g_rte_pending = 0;
         g_rte_pending_ptr = &s_rte_dummy;
-        func_001126();
+        if (g_game_spec.call_hblank) g_game_spec.call_hblank();
         g_rte_pending_ptr = &s_rte_real;
         g_rte_pending = 0;
         s_in_vblank_service = 0;
@@ -433,13 +441,14 @@ void glue_yield_for_vblank(void)
         g_cycle_accumulator = 0;
     }
 
-    /* PLC tile processing */
+    /* PLC tile processing — periodic hook (Sonic 1: func_001642 / RunPLC).
+     * Gated on $FFF6F8 (PLC pending counter) being non-zero so games that
+     * don't run the SMPS-style PLC system pay nothing. */
     {
         extern uint16_t m68k_read16(uint32_t);
-        extern void func_001642(void);
-        if (m68k_read16(0xFFF6F8) != 0) {
+        if (g_game_spec.call_periodic && m68k_read16(0xFFF6F8) != 0) {
             M68KState plc_save = g_cpu;
-            func_001642();
+            g_game_spec.call_periodic();
             g_cpu = plc_save;
         }
     }
@@ -638,7 +647,7 @@ static void fire_vblank_handler_once(void)
     g_rte_pending = 0;
     g_rte_pending_ptr = &s_rte_dummy;
     uint32_t acc_saved = g_cycle_accumulator;
-    func_000B10();
+    if (g_game_spec.call_vblank) g_game_spec.call_vblank();
     g_cycle_accumulator = acc_saved;
     g_rte_pending_ptr = &s_rte_real;
     g_rte_pending = 0;
