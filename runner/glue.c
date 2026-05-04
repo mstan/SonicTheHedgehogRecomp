@@ -822,11 +822,63 @@ static inline void audio_detour_write(uint32_t byte_addr, uint8_t value)
     (void)byte_addr; (void)value;
 }
 
+/*
+ * Spin-detect-and-yield: when the game fiber reads the same address
+ * repeatedly without either writing, reading a different address, or
+ * yielding for VBlank, force a fiber yield so the main loop can
+ * advance clownmdemu (which may then update the value the spin is
+ * waiting on — VDP DMA-busy clears, Z80 bus-request resolves, etc.).
+ *
+ * This catches any busy-wait pattern in recompiled code without
+ * needing a per-pattern detector. Invariant: a legitimate access
+ * sequence reads multiple addresses or interleaves reads with
+ * writes; only true spin loops repeat the same address indefinitely.
+ *
+ * The threshold balances false positives (too low — yields during
+ * legit hot loops touching one address) against latency (too high
+ * — game spends millions of bus accesses spinning before unjamming).
+ * Set high enough to clear normal data-shuffling loops, low enough
+ * to react before the watchdog kills us.
+ */
+#define SPIN_YIELD_THRESHOLD 256
+static uint32_t s_spin_addr = 0;
+static int      s_spin_count = 0;
+
+static inline void spin_check(uint32_t byte_addr, int is_write)
+{
+#if ENABLE_RECOMPILED_CODE
+    if (is_write || s_in_vblank_service) {
+        s_spin_addr  = 0;
+        s_spin_count = 0;
+        return;
+    }
+    if (byte_addr == s_spin_addr) {
+        if (++s_spin_count > SPIN_YIELD_THRESHOLD) {
+            /* Yield to the main fiber so DoCycles ticks clownmdemu;
+             * resume returns here and the subsequent read sees a
+             * possibly-updated value. Reset the streak so we don't
+             * yield on every single read once over threshold — the
+             * yield itself is the act we want, not a repeated one.
+             * s_main_fiber is the file-static set in glue_install_*. */
+            if (s_main_fiber)
+                SwitchToFiber(s_main_fiber);
+            s_spin_count = 0;
+        }
+    } else {
+        s_spin_addr  = byte_addr;
+        s_spin_count = 1;
+    }
+#else
+    (void)byte_addr; (void)is_write;
+#endif
+}
+
 uint16_t m68k_read16(uint32_t byte_addr)
 {
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 0, 0);
+    spin_check(byte_addr, 0);
 #endif
     HYBRID_BUMP_CYCLES();
     return (uint16_t)M68kReadCallback(&s_cpu_data,
@@ -903,6 +955,7 @@ uint32_t m68k_read32(uint32_t byte_addr)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 0, 0);
+    spin_check(byte_addr, 0);
 #endif
     /* Bump once for the whole 32-bit op — both halves at same cycle.
      * Prevents VDP/Z80 sync between the two 16-bit reads. */
