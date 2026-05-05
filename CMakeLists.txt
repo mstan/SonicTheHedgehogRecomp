@@ -50,6 +50,7 @@ set(SONIC_SHARED_SOURCES
     runner/hybrid_global.c
     runner/glue.c
     runner/crash_report.c
+    runner/input_script.c
     runner/audio/event_queue.c
     runner/audio/ym2612.c
     runner/audio/sn76489.c

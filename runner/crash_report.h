@@ -68,3 +68,23 @@ void crash_report_dump(FILE *out, const char *reason,
                        uint32_t last_access_addr,
                        int last_access_is_write,
                        uint64_t frame_count);
+
+/*
+ * Same payload as crash_report_dump, but fans out to BOTH stderr AND
+ * a persistent log file (build/Release/last_error.log by default,
+ * appended). Pattern lifted from PokemonStadiumRecomp's diagnostic
+ * surface — critical when the runner is launched headless or with
+ * stderr piped to a tool that closes early (head -N, etc.). The
+ * persistent log survives any pipe-closing exit and lets you
+ * post-mortem the most-recent crash by just opening the file.
+ */
+void crash_report_dump_persistent(const char *reason,
+                                  const struct M68KState *cpu,
+                                  uint32_t last_access_addr,
+                                  int last_access_is_write,
+                                  uint64_t frame_count);
+
+/*
+ * Optional: override the persistent-log path. Default is
+ * "last_error.log" in the runner's CWD. Pass NULL to disable. */
+void crash_report_set_log_path(const char *path);

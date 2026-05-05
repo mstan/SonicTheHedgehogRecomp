@@ -154,7 +154,7 @@ static void watchdog_check(uint32_t addr, int is_write, uint32_t val)
     snprintf(reason, sizeof(reason),
              "watchdog: %u bus accesses without yield", s_watchdog_counter);
 
-    crash_report_dump(stderr, reason, &g_cpu, addr, is_write, g_frame_count);
+    crash_report_dump_persistent(reason, &g_cpu, addr, is_write, g_frame_count);
 
     /* Also dump the bus-access ring (low-level access pattern) — useful
      * for spin-loop classification when crash_report's symbol-resolved
@@ -740,6 +740,39 @@ void glue_end_of_wall_frame(void)
         if (g_cycle_accumulator < g_vblank_threshold)
             g_cycle_accumulator = g_vblank_threshold;
         glue_check_vblank();
+    }
+    /* Per-frame cycle-pacing telemetry. Single structured line per wall
+     * frame, identical format in native + oracle so a side-by-side run
+     * can be diffed directly. Fields:
+     *
+     *   frame=<wall>           — runner's wall-frame counter
+     *   insns=<delta>          — recompiled-C 68K instructions retired
+     *                            (always 0 in oracle — interpreter doesn't
+     *                            bump g_native_insn_count)
+     *   audio_cyc=<delta>      — 68K-equivalent cycles charged against
+     *                            audio synthesis (g_audio_cycle_counter)
+     *   bus=<delta>            — bus accesses (s_bus_ring_total)
+     *   vblanks=<latched>      — 1 if VBla fired this wall, 0 otherwise
+     *
+     * Slow-music symptoms in native vs oracle should appear here as
+     * a clean ratio mismatch on audio_cyc and/or insns. */
+    {
+        static uint64_t s_prev_insns      = 0;
+        static uint64_t s_prev_audio_cyc  = 0;
+        static uint64_t s_prev_bus_total  = 0;
+        uint64_t insns_now     = g_native_insn_count;
+        uint64_t audio_cyc_now = g_audio_cycle_counter;
+        uint64_t bus_now       = s_bus_ring_total;
+        fprintf(stderr,
+                "[FPACE] frame=%llu insns=%llu audio_cyc=%llu bus=%llu vblanks=%d\n",
+                (unsigned long long)g_frame_count,
+                (unsigned long long)(insns_now     - s_prev_insns),
+                (unsigned long long)(audio_cyc_now - s_prev_audio_cyc),
+                (unsigned long long)(bus_now       - s_prev_bus_total),
+                s_vblank_fired_this_frame);
+        s_prev_insns     = insns_now;
+        s_prev_audio_cyc = audio_cyc_now;
+        s_prev_bus_total = bus_now;
     }
     /* Reset the per-wall-frame latch for the next wall frame. */
     s_vblank_fired_this_frame = 0;

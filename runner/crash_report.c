@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 /* ---- Ring buffer ---- */
 
@@ -36,6 +37,20 @@ void crash_report_record_block(uint32_t block_addr) {
     s_block_ring[s_block_head & (BLOCK_RING_SIZE - 1)] = block_addr;
     s_block_head++;
     s_block_total++;
+}
+
+/* ---- Persistent crash log ---- */
+
+static char s_log_path[256] = "last_error.log";
+static int  s_log_disabled  = 0;
+
+void crash_report_set_log_path(const char *path) {
+    if (!path) {
+        s_log_disabled = 1;
+        return;
+    }
+    s_log_disabled = 0;
+    snprintf(s_log_path, sizeof(s_log_path), "%s", path);
 }
 
 /* ---- Symbol table ---- */
@@ -242,4 +257,37 @@ void crash_report_dump(FILE *out, const char *reason,
             s_symbol_count == 0 ? "  (call crash_report_load_symbols at startup)" : "");
 
     fprintf(out, "=========================================================================\n");
+}
+
+void crash_report_dump_persistent(const char *reason,
+                                  const M68KState *cpu,
+                                  uint32_t last_access_addr,
+                                  int last_access_is_write,
+                                  uint64_t frame_count)
+{
+    /* Always emit to stderr first so live observers see it. */
+    crash_report_dump(stderr, reason, cpu, last_access_addr,
+                      last_access_is_write, frame_count);
+    fflush(stderr);
+
+    if (s_log_disabled) return;
+
+    /* Append to the persistent log so the most-recent crash is
+     * preserved even if stderr was redirected, piped through head,
+     * or otherwise eaten. Open in append mode so multiple runs
+     * accumulate (pruned externally via log rotation if needed). */
+    FILE *lf = fopen(s_log_path, "a");
+    if (!lf) return;
+    /* Lead with a separator + ISO-style timestamp so distinct crash
+     * sessions are easy to spot when grepping the log. */
+    {
+        time_t now = time(NULL);
+        struct tm *tm_now = localtime(&now);
+        char ts[32] = "(no time)";
+        if (tm_now) strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", tm_now);
+        fprintf(lf, "\n\n========== crash @ %s ==========\n", ts);
+    }
+    crash_report_dump(lf, reason, cpu, last_access_addr,
+                      last_access_is_write, frame_count);
+    fclose(lf);
 }
