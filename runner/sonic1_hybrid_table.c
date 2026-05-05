@@ -1,5 +1,8 @@
 /*
- * hybrid_table.c -- Dispatch table for the hybrid interpreter system.
+ * sonic1_hybrid_table.c — Sonic 1 dispatch table for the oracle build's
+ * hybrid interpreter system. Renamed from runner/hybrid_table.c when
+ * the table moved out of the shared runner: each game owns its own
+ * verified-clean func_NNNNNN list (Sonic 2's lives in sonic2_hybrid_table.c).
  *
  * Phase 1 verification: 38 functions.
  * Removed: func_0011E6 (IO ports), func_005EBE (wild divergence),

@@ -123,7 +123,7 @@ _sonic_finalize_target(SonicTheHedgehogRecomp)
 
 set(SONIC_ORACLE_EXTRA_SOURCES
     runner/hybrid.c
-    runner/hybrid_table.c
+    runner/sonic1_hybrid_table.c    # per-game (Sonic 1's verified-clean overrides)
     runner/hybrid_jmp.c
 )
 if(SONIC_REVERSE_DEBUG)

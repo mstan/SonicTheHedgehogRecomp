@@ -231,10 +231,11 @@ void glue_restore_sync(void)
 /* Re-entrancy guard (used by glue_check_vblank, must be in global scope) */
 static int s_in_vblank_service = 0;
 
+#include "game_spec.h"      /* g_game_spec.call_entry_point / vblank / hblank / periodic */
+
 #if ENABLE_RECOMPILED_CODE
 
 #include <windows.h>
-#include "game_spec.h"      /* g_game_spec.call_entry_point / vblank / hblank / periodic */
 
 void glue_log_frame_state(uint64_t frame);  /* defined below */
 
