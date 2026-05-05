@@ -125,6 +125,39 @@ extern uint32_t g_rdb_current_func;
 
 #include "crash_report.h"
 
+/* VDP control-port (i.e. $C00004 / $C00006) read+write capture log.
+ * Enabled by --vdp-ctrl-log PATH on the runner CLI; one append-mode
+ * file per binary so a paired native+oracle run produces two
+ * comparable transcripts. Each line: frame target_cycle kind addr
+ * val. Used to diagnose VDP DMA setup divergences where the
+ * recompiled write sequence somehow lands clownmdemu's VDP state
+ * machine in a different mode than the interpreter does. */
+static FILE *g_vdp_ctrl_log = NULL;
+
+void glue_vdp_ctrl_log_open(const char *path) {
+    if (g_vdp_ctrl_log) fclose(g_vdp_ctrl_log);
+    g_vdp_ctrl_log = path ? fopen(path, "w") : NULL;
+    if (g_vdp_ctrl_log)
+        fprintf(g_vdp_ctrl_log,
+                "# frame cycle kind addr val   "
+                "(kind: R16/R32/W16/W32, addr=$C00004/$C00006)\n");
+}
+
+static inline void vdp_ctrl_log_record(uint32_t addr, const char *kind, uint32_t val) {
+    if (!g_vdp_ctrl_log) return;
+    uint32_t a = addr & 0xFFFFFFu;
+    /* Capture both data port ($C00000-$C00003) AND control port
+     * ($C00004-$C00007). Both are necessary to reconstruct what
+     * the VDP actually saw — control sets up access mode/address,
+     * data carries the bytes. */
+    if (a < 0xC00000u || a > 0xC00007u) return;
+    extern cc_u32f g_hybrid_cycle_counter;
+    fprintf(g_vdp_ctrl_log, "%llu %u %s $%06X $%08X\n",
+            (unsigned long long)g_frame_count,
+            (unsigned)g_hybrid_cycle_counter,
+            kind, a, val);
+}
+
 /* Ring buffer of the last N bus accesses, populated by every
  * m68k_read / m68k_write call. Dumped by the watchdog so we can see
  * exactly what address sequence the game thread is touching when it
@@ -944,10 +977,12 @@ uint16_t m68k_read16(uint32_t byte_addr)
     spin_check(byte_addr, 0);
 #endif
     HYBRID_BUMP_CYCLES();
-    return (uint16_t)M68kReadCallback(&s_cpu_data,
+    uint16_t r16_result = (uint16_t)M68kReadCallback(&s_cpu_data,
                                        byte_addr >> 1,
                                        cc_true, cc_true,
                                        g_hybrid_cycle_counter);
+    vdp_ctrl_log_record(byte_addr, "R16", r16_result);
+    return r16_result;
 }
 
 /* IO port access logging for joypad debugging */
@@ -1021,6 +1056,7 @@ uint32_t m68k_read32(uint32_t byte_addr)
     watchdog_check(byte_addr, 0, 0);
     bus_ring_push(byte_addr, 2);
     spin_check(byte_addr, 0);
+    vdp_ctrl_log_record(byte_addr, "R32", 0);
 #endif
     /* Bump once for the whole 32-bit op — both halves at same cycle.
      * Prevents VDP/Z80 sync between the two 16-bit reads. */
@@ -1042,6 +1078,7 @@ void m68k_write16(uint32_t byte_addr, uint16_t val)
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, val);
     bus_ring_push(byte_addr, 4);
+    vdp_ctrl_log_record(byte_addr, "W16", val);
     /* 16-bit FM writes land one byte per port per cycle on hardware. The
      * YM2612 only takes 8-bit data; SMPS always uses 8-bit writes. Be
      * defensive: if a 16-bit write hits the FM bus, treat the low byte
@@ -1087,6 +1124,7 @@ void m68k_write32(uint32_t byte_addr, uint32_t val)
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, (uint32_t)(val >> 16));
     bus_ring_push(byte_addr, 5);
+    vdp_ctrl_log_record(byte_addr, "W32", val);
     /* 32-bit write = two consecutive 16-bit writes. Only matters for FM
      * bus; SMPS never uses 32-bit to write FM regs so this is defensive
      * only. */
