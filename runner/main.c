@@ -154,6 +154,8 @@ static uint32_t s_current_frame_for_input = 0;
 static int      s_tcp_input_active = 0;
 static uint8_t  s_tcp_input_keys   = 0;  /* Genesis: Up=0,Down=1,Left=2,Right=3,B=4,C=5,A=6,Start=7 */
 
+#include "input_script.h"
+
 static cc_bool input_requested_cb(void *user_data,
                                    cc_u8f player_id,
                                    ClownMDEmu_Button button_id)
@@ -161,6 +163,24 @@ static cc_bool input_requested_cb(void *user_data,
     (void)user_data;
     if (player_id != 0)
         return cc_false;    /* only P1 */
+
+    /* Scripted-script (.input file) override — fully takes priority
+     * over SDL/TCP/legacy script when active. Held-button mask is
+     * already in Genesis bit order. */
+    if (input_script_active()) {
+        uint8_t mask = input_script_held_mask();
+        switch (button_id) {
+            case CLOWNMDEMU_BUTTON_UP:    return (mask & 0x01) ? cc_true : cc_false;
+            case CLOWNMDEMU_BUTTON_DOWN:  return (mask & 0x02) ? cc_true : cc_false;
+            case CLOWNMDEMU_BUTTON_LEFT:  return (mask & 0x04) ? cc_true : cc_false;
+            case CLOWNMDEMU_BUTTON_RIGHT: return (mask & 0x08) ? cc_true : cc_false;
+            case CLOWNMDEMU_BUTTON_B:     return (mask & 0x10) ? cc_true : cc_false;
+            case CLOWNMDEMU_BUTTON_C:     return (mask & 0x20) ? cc_true : cc_false;
+            case CLOWNMDEMU_BUTTON_A:     return (mask & 0x40) ? cc_true : cc_false;
+            case CLOWNMDEMU_BUTTON_START: return (mask & 0x80) ? cc_true : cc_false;
+            default: return cc_false;
+        }
+    }
 
     /* Scripted inputs override keyboard when active */
     if (s_script_start_frame || s_script_right_frame) {
@@ -521,6 +541,20 @@ int main(int argc, char *argv[])
      * gm=0 writes that TCP arming misses due to startup latency. */
     const char *mem_write_log_spec = NULL;
     const char *wav_path = NULL;
+
+    /* Headless smoke / framebuffer-hash assertion mode. When --hash-frames
+     * is set, emit a [FBHASH] line every N wall frames with an FNV-1a-64
+     * fingerprint of the framebuffer's active region. Used by CI / golden
+     * comparison to detect regressions without a human watching the screen.
+     * Pairs naturally with --max-frames; together they make the runner a
+     * one-shot regression test. */
+    uint32_t hash_frames = 0;
+
+    /* --input-script PATH — load a .input scripting file (button
+     * timeline + RAM assertions + EXIT). See runner/input_script.h
+     * for the format spec. Combined with --max-frames + --hash-frames,
+     * makes the runner a one-shot regression-test driver. */
+    const char *input_script_path = NULL;
     /* Pacing mode override: --pacing fiber|accurate or --pacing=...
      * NULL = not set via CLI (debug.ini may still override; otherwise
      * compiled default in glue.c wins). */
@@ -549,6 +583,10 @@ int main(int argc, char *argv[])
             pacing_cli = argv[++i];
         } else if (strncmp(argv[i], "--pacing=", 9) == 0) {
             pacing_cli = argv[i] + 9;
+        } else if (strcmp(argv[i], "--hash-frames") == 0 && i + 1 < argc) {
+            hash_frames = (uint32_t)atol(argv[++i]);
+        } else if (strcmp(argv[i], "--input-script") == 0 && i + 1 < argc) {
+            input_script_path = argv[++i];
         } else if (strncmp(argv[i], "--audio-backend=", 16) == 0) {
             const char *v = argv[i] + 16;
             if      (strcmp(v, "ours")       == 0) s_audio_backend = AUDIO_BACKEND_OURS;
@@ -599,6 +637,10 @@ int main(int argc, char *argv[])
     cc_u32l rom_raw_len = 0;
     cc_u16l *rom_buf  = load_rom(rom_path, &rom_words, &rom_raw, &rom_raw_len);
     if (!rom_buf) return 1;
+
+    /* --- Load input script (if requested) before the SDL window opens
+     * so any parse error fails fast without a flash of black window. */
+    if (input_script_path) input_script_load(input_script_path);
 
     /* --- Load symbol table for crash reports ---
      * Look for `annotations_from_disasm.csv` adjacent to the ROM.
@@ -1082,6 +1124,43 @@ int main(int argc, char *argv[])
             }
         }
         frame_num++;
+
+        /* Tick the input script (if loaded). RAM read helpers route
+         * through clownmdemu's main RAM via emu_read8/16 — same
+         * accessors the cmd_server uses. Auto-exit if the script
+         * ran an EXIT directive. */
+        if (input_script_active()) {
+            extern uint8_t  m68k_read8 (uint32_t);
+            extern uint16_t m68k_read16(uint32_t);
+            input_script_tick(frame_num, m68k_read8, m68k_read16);
+            if (input_script_should_exit()) {
+                fprintf(stderr, "[input_script] exiting per script directive (code=%d)\n",
+                        input_script_exit_code());
+                return input_script_exit_code();
+            }
+        }
+
+        /* FNV-1a-64 hash of the framebuffer's active region. Emitted
+         * every `hash_frames` frames when --hash-frames is set so CI /
+         * golden-image comparison can detect rendering regressions
+         * without a human watching the screen. Cheap (one full pass
+         * over the active pixels per N frames). */
+        if (hash_frames > 0 && (frame_num % hash_frames) == 0) {
+            uint64_t h = 0xCBF29CE484222325ULL;
+            const uint8_t *p = (const uint8_t *)s_framebuf;
+            int row_bytes = s_screen_width * (int)sizeof(uint32_t);
+            int stride    = MAX_SCREEN_WIDTH * (int)sizeof(uint32_t);
+            for (int y = 0; y < s_screen_height; y++) {
+                const uint8_t *row = p + (size_t)y * stride;
+                for (int x = 0; x < row_bytes; x++) {
+                    h ^= row[x];
+                    h *= 0x100000001B3ULL;
+                }
+            }
+            fprintf(stderr, "[FBHASH] frame=%u w=%d h=%d hash=0x%016llX\n",
+                    frame_num, s_screen_width, s_screen_height,
+                    (unsigned long long)h);
+        }
 
         /* Upload framebuffer to GPU texture */
         SDL_UpdateTexture(texture, NULL, s_framebuf,
