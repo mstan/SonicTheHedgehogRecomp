@@ -89,8 +89,15 @@ extern int g_rdb_break_pending;
 
 void rdb_on_block_slow(uint32_t block_id);
 
+/* Cheap unconditional ring recorder for the crash-report tool.
+ * Same hot path as rdb_on_block, populates the recent-block ring
+ * even when no breakpoint is armed so the watchdog dump can show
+ * the last N block transitions. Defined in crash_report.c. */
+void crash_report_record_block(uint32_t block_addr);
+
 static inline void rdb_on_block(uint32_t block_id)
 {
+    crash_report_record_block(block_id);
     if (g_rdb_break_pending) rdb_on_block_slow(block_id);
 }
 

@@ -600,6 +600,28 @@ int main(int argc, char *argv[])
     cc_u16l *rom_buf  = load_rom(rom_path, &rom_words, &rom_raw, &rom_raw_len);
     if (!rom_buf) return 1;
 
+    /* --- Load symbol table for crash reports ---
+     * Look for `annotations_from_disasm.csv` adjacent to the ROM.
+     * Falls back silently if not present — crash reports will just
+     * show raw $XXXXXX addresses without names. */
+    {
+        extern int crash_report_load_symbols(const char *);
+        char sym_path[640];
+        const char *slash  = strrchr(rom_path, '/');
+        const char *bslash = strrchr(rom_path, '\\');
+        const char *sep    = slash > bslash ? slash : bslash;
+        if (sep) {
+            int dir_len = (int)(sep - rom_path) + 1;
+            snprintf(sym_path, sizeof(sym_path),
+                     "%.*sannotations_from_disasm.csv", dir_len, rom_path);
+        } else {
+            snprintf(sym_path, sizeof(sym_path), "annotations_from_disasm.csv");
+        }
+        int n = crash_report_load_symbols(sym_path);
+        if (n > 0)
+            fprintf(stderr, "[crash_report] loaded %d symbols from %s\n", n, sym_path);
+    }
+
     /* --- SDL init --- */
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
