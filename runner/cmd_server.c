@@ -1413,6 +1413,28 @@ static void handle_rdb_reset(int id)
     send_ok(id);
 }
 
+/* Return just the snapshot count + the active range list. Cheap status
+ * probe that lets divergence_diff check whether a target range has
+ * captured any writes before paying for a full rdb_dump payload. */
+static void handle_rdb_count(int id)
+{
+    rdb_snapshot_begin();
+    uint32_t total = rdb_snapshot_count();
+    char buf[512];
+    int pos = snprintf(buf, sizeof(buf),
+        "{\"id\":%d,\"ok\":true,\"count\":%u,\"ranges\":[",
+        id, (unsigned)total);
+    for (int i = 0, n = rdb_range_count(); i < n && pos < (int)sizeof(buf) - 64; i++) {
+        uint32_t lo = 0, hi = 0; rdb_range_get(i, &lo, &hi);
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+            "%s[\"0x%06X\",\"0x%06X\"]", i ? "," : "",
+            (unsigned)lo, (unsigned)hi);
+    }
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "]}");
+    rdb_snapshot_end();
+    send_response(buf);
+}
+
 static void handle_rdb_dump(int id, const char *json)
 {
     int start = json_get_int(json, "start", 0);
@@ -2041,6 +2063,8 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
         handle_rdb_reset(id);
     } else if (strcmp(cmd, "rdb_dump") == 0) {
         handle_rdb_dump(id, json);
+    } else if (strcmp(cmd, "rdb_count") == 0) {
+        handle_rdb_count(id);
     } else if (strcmp(cmd, "rdb_break") == 0) {
         handle_rdb_break(id, json);
     } else if (strcmp(cmd, "rdb_break_clear") == 0) {

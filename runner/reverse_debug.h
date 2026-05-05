@@ -34,6 +34,13 @@ extern uint32_t g_rdb_current_func;
 
 /* ---- Control API (called from cmd_server.c dispatcher) ---- */
 
+/* Always-on bring-up: install the bus tap with a default WRAM-wide
+ * range and start recording from boot. Per the project's ring-buffer
+ * rule, observation must not require arm-then-attach: Tier 1 captures
+ * every store from cycle 0 and probes query backward. Called from
+ * main.c init (before the first 68K instruction executes). */
+void rdb_autostart(void);
+
 /* Register the Tier-1 bus tap with the shared write-trace hook slot in
  * bus-main-m68k.c. Chains any previously-installed callback so
  * --mem-write-log and rdb can coexist. Idempotent; safe to call more
