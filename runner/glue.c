@@ -123,47 +123,57 @@ static uint32_t s_watchdog_counter = 0;
 extern uint32_t g_rdb_current_func;
 #endif
 
+#include "crash_report.h"
+
+/* Ring buffer of the last N bus accesses, populated by every
+ * m68k_read / m68k_write call. Dumped by the watchdog so we can see
+ * exactly what address sequence the game thread is touching when it
+ * stalls — particularly useful for spin-loop diagnosis where the
+ * spin_check counter shows 0 (something is interleaving). */
+#define BUS_RING_SIZE 64
+typedef struct { uint32_t addr; uint8_t kind; } BusRingEntry;
+static BusRingEntry s_bus_ring[BUS_RING_SIZE];
+static uint32_t     s_bus_ring_head = 0;     /* next write slot */
+static uint64_t     s_bus_ring_total = 0;    /* total events ever recorded */
+
+static inline void bus_ring_push(uint32_t addr, uint8_t kind) {
+    s_bus_ring[s_bus_ring_head & (BUS_RING_SIZE - 1)].addr = addr;
+    s_bus_ring[s_bus_ring_head & (BUS_RING_SIZE - 1)].kind = kind;
+    s_bus_ring_head++;
+    s_bus_ring_total++;
+}
+/* kind: 0=R8 1=R16 2=R32 3=W8 4=W16 5=W32 */
+
 static void watchdog_check(uint32_t addr, int is_write, uint32_t val)
 {
+    (void)val;
     if (++s_watchdog_counter != WATCHDOG_LIMIT)
         return;
 
-#if SONIC_REVERSE_DEBUG
-    uint32_t cur_func = g_rdb_current_func;
-#else
-    uint32_t cur_func = 0;
-#endif
+    char reason[128];
+    snprintf(reason, sizeof(reason),
+             "watchdog: %u bus accesses without yield", s_watchdog_counter);
 
-    fprintf(stderr,
-        "\n=== WATCHDOG: %u bus accesses without yield (frame %"PRIu64") ===\n"
-        "  Last access: %s $%06X val=$%04X\n"
-        "  Current func: $%06X\n"
-        "  D0=$%08X D1=$%08X D2=$%08X D3=$%08X\n"
-        "  D4=$%08X D5=$%08X D6=$%08X D7=$%08X\n"
-        "  A0=$%08X A1=$%08X A2=$%08X A3=$%08X\n"
-        "  A4=$%08X A5=$%08X A6=$%08X A7=$%08X\n"
-        "  SR=$%04X  rte_pending=%d\n"
-        "=== Exiting to prevent hang ===\n",
-        s_watchdog_counter, g_frame_count,
-        is_write ? "WRITE" : "READ", addr, val,
-        cur_func,
-        g_cpu.D[0], g_cpu.D[1], g_cpu.D[2], g_cpu.D[3],
-        g_cpu.D[4], g_cpu.D[5], g_cpu.D[6], g_cpu.D[7],
-        g_cpu.A[0], g_cpu.A[1], g_cpu.A[2], g_cpu.A[3],
-        g_cpu.A[4], g_cpu.A[5], g_cpu.A[6], g_cpu.A[7],
-        g_cpu.SR, g_rte_pending);
+    crash_report_dump(stderr, reason, &g_cpu, addr, is_write, g_frame_count);
 
-    /* Also dump the 68K stack (top 16 words) */
+    /* Also dump the bus-access ring (low-level access pattern) — useful
+     * for spin-loop classification when crash_report's symbol-resolved
+     * trail isn't enough. */
     {
-        extern uint16_t m68k_read16(uint32_t);
-        uint32_t sp = g_cpu.A[7] & 0xFFFFFFu;
-        fprintf(stderr, "  Stack @$%06X:", sp);
-        for (int i = 0; i < 16 && sp + i*2 < 0x1000000u; i++)
-            fprintf(stderr, " %04X", m68k_read16(sp + i*2));
-        fprintf(stderr, "\n");
+        static const char *kind_str[] = {"R8","R16","R32","W8","W16","W32"};
+        uint64_t total = s_bus_ring_total;
+        uint32_t window = (total < BUS_RING_SIZE) ? (uint32_t)total : BUS_RING_SIZE;
+        fprintf(stderr, "\n  Bus ring (last %u of %llu accesses):\n",
+                window, (unsigned long long)total);
+        for (uint32_t i = 0; i < window; i++) {
+            uint32_t idx = (s_bus_ring_head - window + i) & (BUS_RING_SIZE - 1);
+            const BusRingEntry *e = &s_bus_ring[idx];
+            const char *k = (e->kind < 6) ? kind_str[e->kind] : "??";
+            fprintf(stderr, "    [%2u] %s $%06X\n", i, k, e->addr);
+        }
     }
 
-    exit(2);  /* clean exit with error code */
+    exit(2);
 }
 
 /* =========================================================================
@@ -329,7 +339,18 @@ void glue_handle_interrupt(cc_u16f level)
         s_in_vblank_service = 1;
         g_rte_pending = 0;
         g_rte_pending_ptr = &s_rte_dummy;
+        /* Pin clownmdemu's VDP "currently in VBlank" flag for the
+         * duration of the handler. By the time we reach this point in
+         * Iterate, the VDP simulator has already advanced past
+         * scanline -1 (where it clears the flag), so a Sonic-2-style
+         * V_Int handler that reads $C00004 expecting bit 3 set would
+         * spin forever. On real hardware the IRQ fires AT scanline
+         * 224 with the VBlank flag still raised. Sonic 1 doesn't read
+         * the bit so it doesn't trip on this. */
+        cc_bool saved_vblank_flag = s_emu->vdp.state.currently_in_vblank;
+        s_emu->vdp.state.currently_in_vblank = cc_true;
         if (g_game_spec.call_vblank) g_game_spec.call_vblank();
+        s_emu->vdp.state.currently_in_vblank = saved_vblank_flag;
         g_rte_pending_ptr = &s_rte_real;
         g_rte_pending = 0;
         s_in_vblank_service = 0;
@@ -647,7 +668,13 @@ static void fire_vblank_handler_once(void)
     g_rte_pending = 0;
     g_rte_pending_ptr = &s_rte_dummy;
     uint32_t acc_saved = g_cycle_accumulator;
+    /* Pin VDP VBlank flag while the handler runs — see glue_run_irq
+     * for rationale. Sonic 2's V_Int reads $C00004 expecting bit 3
+     * set; without this it spins forever. */
+    cc_bool saved_vblank_flag = s_emu->vdp.state.currently_in_vblank;
+    s_emu->vdp.state.currently_in_vblank = cc_true;
     if (g_game_spec.call_vblank) g_game_spec.call_vblank();
+    s_emu->vdp.state.currently_in_vblank = saved_vblank_flag;
     g_cycle_accumulator = acc_saved;
     g_rte_pending_ptr = &s_rte_real;
     g_rte_pending = 0;
@@ -878,6 +905,7 @@ uint16_t m68k_read16(uint32_t byte_addr)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 0, 0);
+    bus_ring_push(byte_addr, 1);
     spin_check(byte_addr, 0);
 #endif
     HYBRID_BUMP_CYCLES();
@@ -896,6 +924,7 @@ uint8_t m68k_read8(uint32_t byte_addr)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 0, 0);
+    bus_ring_push(byte_addr, 0);
     /* Z80 sync polls — the SMPS sound driver and Z80 bus arbiter both
      * require the Z80 to actually advance before responding. In native
      * mode the game fiber can run thousands of instructions without
@@ -955,6 +984,7 @@ uint32_t m68k_read32(uint32_t byte_addr)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 0, 0);
+    bus_ring_push(byte_addr, 2);
     spin_check(byte_addr, 0);
 #endif
     /* Bump once for the whole 32-bit op — both halves at same cycle.
@@ -976,6 +1006,7 @@ void m68k_write16(uint32_t byte_addr, uint16_t val)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, val);
+    bus_ring_push(byte_addr, 4);
     /* 16-bit FM writes land one byte per port per cycle on hardware. The
      * YM2612 only takes 8-bit data; SMPS always uses 8-bit writes. Be
      * defensive: if a 16-bit write hits the FM bus, treat the low byte
@@ -994,6 +1025,7 @@ void m68k_write8(uint32_t byte_addr, uint8_t val)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, val);
+    bus_ring_push(byte_addr, 3);
     audio_detour_write(byte_addr, val);
 #endif
     if (s_io_log_enabled && byte_addr >= 0xA10000u && byte_addr <= 0xA1001Fu) {
@@ -1019,6 +1051,7 @@ void m68k_write32(uint32_t byte_addr, uint32_t val)
     byte_addr &= 0xFFFFFFu;
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, (uint32_t)(val >> 16));
+    bus_ring_push(byte_addr, 5);
     /* 32-bit write = two consecutive 16-bit writes. Only matters for FM
      * bus; SMPS never uses 32-bit to write FM regs so this is defensive
      * only. */

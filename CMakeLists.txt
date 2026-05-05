@@ -49,6 +49,7 @@ set(SONIC_SHARED_SOURCES
     runner/sonic1_spec.c
     runner/hybrid_global.c
     runner/glue.c
+    runner/crash_report.c
     runner/audio/event_queue.c
     runner/audio/ym2612.c
     runner/audio/sn76489.c
@@ -91,6 +92,12 @@ function(_sonic_finalize_target tgt)
                 "${RECOMP_ROOT}/runner/external/SDL2/SDL2-2.28.5/lib/x64/SDL2.dll"
                 "$<TARGET_FILE_DIR:${tgt}>"
             COMMENT "Copying SDL2.dll for ${tgt}")
+        # Annotation CSV used by crash_report.c for symbol resolution.
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${RECOMP_ROOT}/sonicthehedgehog/annotations_from_disasm.csv"
+                "$<TARGET_FILE_DIR:${tgt}>/annotations_from_disasm.csv"
+            COMMENT "Copying Sonic 1 annotations for crash-report symbol resolution")
     endif()
 endfunction()
 
