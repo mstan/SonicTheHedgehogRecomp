@@ -757,21 +757,22 @@ void glue_end_of_wall_frame(void)
      * Slow-music symptoms in native vs oracle should appear here as
      * a clean ratio mismatch on audio_cyc and/or insns. */
     {
-        static uint64_t s_prev_insns      = 0;
-        static uint64_t s_prev_audio_cyc  = 0;
-        static uint64_t s_prev_bus_total  = 0;
+        /* native_insns and bus_total are monotonic — we want per-frame
+         * deltas. g_audio_cycle_counter is per-wall-frame (reset later
+         * in this function), so its current value IS the per-frame
+         * count. Mixing those would underflow on the audio side. */
+        static uint64_t s_prev_insns     = 0;
+        static uint64_t s_prev_bus_total = 0;
         uint64_t insns_now     = g_native_insn_count;
-        uint64_t audio_cyc_now = g_audio_cycle_counter;
         uint64_t bus_now       = s_bus_ring_total;
         fprintf(stderr,
-                "[FPACE] frame=%llu insns=%llu audio_cyc=%llu bus=%llu vblanks=%d\n",
+                "[FPACE] frame=%llu insns=%llu audio_cyc=%u bus=%llu vblanks=%d\n",
                 (unsigned long long)g_frame_count,
-                (unsigned long long)(insns_now     - s_prev_insns),
-                (unsigned long long)(audio_cyc_now - s_prev_audio_cyc),
-                (unsigned long long)(bus_now       - s_prev_bus_total),
+                (unsigned long long)(insns_now - s_prev_insns),
+                (unsigned)g_audio_cycle_counter,
+                (unsigned long long)(bus_now   - s_prev_bus_total),
                 s_vblank_fired_this_frame);
         s_prev_insns     = insns_now;
-        s_prev_audio_cyc = audio_cyc_now;
         s_prev_bus_total = bus_now;
     }
     /* Reset the per-wall-frame latch for the next wall frame. */
