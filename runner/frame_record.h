@@ -104,6 +104,27 @@ typedef struct {
     uint16_t raw_len;
 } PsgSnap;
 
+/* ---------------------------------------------------------------- pace */
+
+/* Per-wall-frame cycle-pacing telemetry. Captured from glue.c's
+ * counters at end_of_wall_frame and included in every FrameRecord so
+ * divergence_diff can spot recomp-vs-oracle pacing skew (slow music,
+ * starved audio, missed VBlanks) without parsing stderr. Replaces the
+ * legacy `[FPACE]` printf line. All fields are per-wall-frame deltas
+ * unless noted. */
+typedef struct {
+    uint64_t insns_delta;        /* recompiled-C 68K instructions retired
+                                  * (oracle: always 0 — interpreter
+                                  * does not bump g_native_insn_count). */
+    uint64_t bus_delta;          /* bus accesses through glue's read/write
+                                  * wrappers; native-side only. */
+    uint32_t audio_cyc;          /* 68K-equivalent cycles charged against
+                                  * audio synthesis this wall frame. */
+    uint8_t  vblanks_fired;      /* 1 if the VBla handler ran this wall
+                                  * frame, 0 if forcing was skipped. */
+    uint8_t  _pad[3];
+} PaceSnap;
+
 /* ---------------------------------------------------------------- diff */
 
 #define MAX_FRAME_DIFFS 32

@@ -39,6 +39,8 @@
 #include "verify.h"
 #endif
 
+#include "frame_record.h"
+
 /* =========================================================================
  * Global state required by genesis_runtime.h
  * ========================================================================= */
@@ -68,7 +70,14 @@ uint32_t  g_audio_cycle_counter = 0;
 /* NTSC wall-frame cycle budget — used in CYCLE_ACCURATE mode to cap
  * game-fiber work at hardware rate. 262 scanlines × 488 cycles each. */
 #define NTSC_CYCLES_PER_WALL_FRAME 127856u
-static int s_vblank_fired_this_frame = 0;
+static int s_vblank_fired_this_frame   = 0;  /* cycle-budget latch: 1 means
+                                                * the wall frame's VBla budget
+                                                * has been consumed (whether or
+                                                * not the handler body ran). */
+static int s_vblank_executed_this_frame = 0; /* did the recompiled VBla body
+                                                * actually run this wall
+                                                * frame. False when imask>=6
+                                                * suppressed the call. */
 
 /* Instruction-count telemetry (Stage C). Incremented by generated C
  * once per decoded 68K instruction via the generator's cycle-bump
@@ -76,6 +85,36 @@ static int s_vblank_fired_this_frame = 0;
  * compare native per-wall-frame instruction throughput against oracle.
  * Stays 0 on oracle builds (generated func_* bodies never run there). */
 uint64_t g_native_insn_count = 0;
+
+/* Cycle-pacing telemetry. Updated once per wall frame in
+ * glue_end_of_wall_frame. cmd_server_record_frame copies this into
+ * the FrameRecord ring so frame_timeseries can serve it retroactively
+ * (replaces the legacy [FPACE] stderr line). */
+PaceSnap g_pace_snap = {0};
+
+/* Recompiler emits calls to these for any opcode that doesn't decode
+ * as a known 68K instruction (canonical ILLEGAL $4AFC, A-line, F-line,
+ * or just unknown bytes mid-stream when codegen seeded a label that
+ * happens to be data). On real hardware these would push an exception
+ * frame and vector through $00010-$00040; in the recomp model we just
+ * loud-abort with the PC and opcode so the cause is obvious. Without
+ * this Sonic 2's broader function set fails to link at every address
+ * whose label-seed pulled in non-code bytes. */
+__declspec(noreturn) static void s_m68k_trap_die(unsigned vec, uint32_t pc, unsigned opcode)
+{
+    fprintf(stderr, "[ILLEGAL] m68k trap vec=%u pc=%06X opcode=%04X — abort\n",
+            vec, pc, opcode);
+    fflush(stderr);
+    abort();
+}
+void m68k_trap_vector(uint8_t vec)              { s_m68k_trap_die(vec, g_cpu.PC, 0); }
+void m68k_illegal_trap(uint32_t pc, uint16_t op) {
+    int top4 = (op >> 12) & 0xF;
+    unsigned vec = (op == 0x4AFC) ? 4u :
+                   (top4 == 0xA)  ? 10u :
+                   (top4 == 0xF)  ? 11u : 4u;
+    s_m68k_trap_die(vec, pc, op);
+}
 
 /* Pacing mode (see glue.h). Default stays FIBER_FULL because
  * CYCLE_ACCURATE measurement (Stage B, this branch) shows the cap
@@ -125,38 +164,14 @@ extern uint32_t g_rdb_current_func;
 
 #include "crash_report.h"
 
-/* VDP control-port (i.e. $C00004 / $C00006) read+write capture log.
- * Enabled by --vdp-ctrl-log PATH on the runner CLI; one append-mode
- * file per binary so a paired native+oracle run produces two
- * comparable transcripts. Each line: frame target_cycle kind addr
- * val. Used to diagnose VDP DMA setup divergences where the
- * recompiled write sequence somehow lands clownmdemu's VDP state
- * machine in a different mode than the interpreter does. */
-static FILE *g_vdp_ctrl_log = NULL;
-
-void glue_vdp_ctrl_log_open(const char *path) {
-    if (g_vdp_ctrl_log) fclose(g_vdp_ctrl_log);
-    g_vdp_ctrl_log = path ? fopen(path, "w") : NULL;
-    if (g_vdp_ctrl_log)
-        fprintf(g_vdp_ctrl_log,
-                "# frame cycle kind addr val   "
-                "(kind: R16/R32/W16/W32, addr=$C00004/$C00006)\n");
-}
-
-static inline void vdp_ctrl_log_record(uint32_t addr, const char *kind, uint32_t val) {
-    if (!g_vdp_ctrl_log) return;
-    uint32_t a = addr & 0xFFFFFFu;
-    /* Capture both data port ($C00000-$C00003) AND control port
-     * ($C00004-$C00007). Both are necessary to reconstruct what
-     * the VDP actually saw — control sets up access mode/address,
-     * data carries the bytes. */
-    if (a < 0xC00000u || a > 0xC00007u) return;
-    extern cc_u32f g_hybrid_cycle_counter;
-    fprintf(g_vdp_ctrl_log, "%llu %u %s $%06X $%08X\n",
-            (unsigned long long)g_frame_count,
-            (unsigned)g_hybrid_cycle_counter,
-            kind, a, val);
-}
+/* VDP control-port capture used to live here as a separate
+ * file-backed printf log (--vdp-ctrl-log PATH). Retired in favor of
+ * the always-on Tier 1 store ring: arm `rdb_range 0xC00000 0xC00007`
+ * via TCP and dump it with `rdb_dump`. The ring has the same write
+ * coverage plus per-entry attribution (frame, vint_runcount, func,
+ * caller) and works retroactively without rebuilding or restarting.
+ * Reads of $C00004 (VDP status) are reconstructable from the
+ * FrameRecord vdp snapshot. */
 
 /* Ring buffer of the last N bus accesses, populated by every
  * m68k_read / m68k_write call. Dumped by the watchdog so we can see
@@ -708,6 +723,7 @@ static void fire_vblank_handler_once(void)
     cc_bool saved_vblank_flag = s_emu->vdp.state.currently_in_vblank;
     s_emu->vdp.state.currently_in_vblank = cc_true;
     if (g_game_spec.call_vblank) g_game_spec.call_vblank();
+    s_vblank_executed_this_frame = 1;
     s_emu->vdp.state.currently_in_vblank = saved_vblank_flag;
     g_cycle_accumulator = acc_saved;
     g_rte_pending_ptr = &s_rte_real;
@@ -774,42 +790,26 @@ void glue_end_of_wall_frame(void)
             g_cycle_accumulator = g_vblank_threshold;
         glue_check_vblank();
     }
-    /* Per-frame cycle-pacing telemetry. Single structured line per wall
-     * frame, identical format in native + oracle so a side-by-side run
-     * can be diffed directly. Fields:
-     *
-     *   frame=<wall>           — runner's wall-frame counter
-     *   insns=<delta>          — recompiled-C 68K instructions retired
-     *                            (always 0 in oracle — interpreter doesn't
-     *                            bump g_native_insn_count)
-     *   audio_cyc=<delta>      — 68K-equivalent cycles charged against
-     *                            audio synthesis (g_audio_cycle_counter)
-     *   bus=<delta>            — bus accesses (s_bus_ring_total)
-     *   vblanks=<latched>      — 1 if VBla fired this wall, 0 otherwise
-     *
-     * Slow-music symptoms in native vs oracle should appear here as
-     * a clean ratio mismatch on audio_cyc and/or insns. */
+    /* Per-frame cycle-pacing telemetry. Captured into the always-on
+     * FrameRecord ring (PaceSnap) so divergence_diff queries it
+     * retroactively via frame_timeseries — no per-frame fprintf. The
+     * "insns_delta vs audio_cyc" ratio surfaces slow-music symptoms
+     * cleanly when comparing native and oracle. */
     {
-        /* native_insns and bus_total are monotonic — we want per-frame
-         * deltas. g_audio_cycle_counter is per-wall-frame (reset later
-         * in this function), so its current value IS the per-frame
-         * count. Mixing those would underflow on the audio side. */
         static uint64_t s_prev_insns     = 0;
         static uint64_t s_prev_bus_total = 0;
-        uint64_t insns_now     = g_native_insn_count;
-        uint64_t bus_now       = s_bus_ring_total;
-        fprintf(stderr,
-                "[FPACE] frame=%llu insns=%llu audio_cyc=%u bus=%llu vblanks=%d\n",
-                (unsigned long long)g_frame_count,
-                (unsigned long long)(insns_now - s_prev_insns),
-                (unsigned)g_audio_cycle_counter,
-                (unsigned long long)(bus_now   - s_prev_bus_total),
-                s_vblank_fired_this_frame);
+        uint64_t insns_now = g_native_insn_count;
+        uint64_t bus_now   = s_bus_ring_total;
+        g_pace_snap.insns_delta  = insns_now - s_prev_insns;
+        g_pace_snap.bus_delta    = bus_now   - s_prev_bus_total;
+        g_pace_snap.audio_cyc    = g_audio_cycle_counter;
+        g_pace_snap.vblanks_fired = (uint8_t)s_vblank_executed_this_frame;
         s_prev_insns     = insns_now;
         s_prev_bus_total = bus_now;
     }
-    /* Reset the per-wall-frame latch for the next wall frame. */
-    s_vblank_fired_this_frame = 0;
+    /* Reset the per-wall-frame latches for the next wall frame. */
+    s_vblank_fired_this_frame    = 0;
+    s_vblank_executed_this_frame = 0;
 
     /* audio_mixer_drain in main.c (called right after Iterate) consumes
      * all events; this reset is a sanity invariant. */
@@ -981,7 +981,6 @@ uint16_t m68k_read16(uint32_t byte_addr)
                                        byte_addr >> 1,
                                        cc_true, cc_true,
                                        g_hybrid_cycle_counter);
-    vdp_ctrl_log_record(byte_addr, "R16", r16_result);
     return r16_result;
 }
 
@@ -1056,7 +1055,6 @@ uint32_t m68k_read32(uint32_t byte_addr)
     watchdog_check(byte_addr, 0, 0);
     bus_ring_push(byte_addr, 2);
     spin_check(byte_addr, 0);
-    vdp_ctrl_log_record(byte_addr, "R32", 0);
 #endif
     /* Bump once for the whole 32-bit op — both halves at same cycle.
      * Prevents VDP/Z80 sync between the two 16-bit reads. */
@@ -1078,7 +1076,6 @@ void m68k_write16(uint32_t byte_addr, uint16_t val)
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, val);
     bus_ring_push(byte_addr, 4);
-    vdp_ctrl_log_record(byte_addr, "W16", val);
     /* 16-bit FM writes land one byte per port per cycle on hardware. The
      * YM2612 only takes 8-bit data; SMPS always uses 8-bit writes. Be
      * defensive: if a 16-bit write hits the FM bus, treat the low byte
@@ -1124,7 +1121,6 @@ void m68k_write32(uint32_t byte_addr, uint32_t val)
 #if ENABLE_RECOMPILED_CODE
     watchdog_check(byte_addr, 1, (uint32_t)(val >> 16));
     bus_ring_push(byte_addr, 5);
-    vdp_ctrl_log_record(byte_addr, "W32", val);
     /* 32-bit write = two consecutive 16-bit writes. Only matters for FM
      * bus; SMPS never uses 32-bit to write FM regs so this is defensive
      * only. */

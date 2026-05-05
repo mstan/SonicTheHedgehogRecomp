@@ -556,12 +556,6 @@ int main(int argc, char *argv[])
      * makes the runner a one-shot regression-test driver. */
     const char *input_script_path = NULL;
 
-    /* --vdp-ctrl-log PATH — capture every read+write to $C00004 /
-     * $C00006 (VDP control port) into a tab-separated file. Used to
-     * compare native vs oracle command-word sequences when the VDP
-     * state machine ends up in different modes despite identical
-     * recompiled code paths. See runner/glue.c::glue_vdp_ctrl_log_open. */
-    const char *vdp_ctrl_log_path = NULL;
     /* Pacing mode override: --pacing fiber|accurate or --pacing=...
      * NULL = not set via CLI (debug.ini may still override; otherwise
      * compiled default in glue.c wins). */
@@ -594,8 +588,6 @@ int main(int argc, char *argv[])
             hash_frames = (uint32_t)atol(argv[++i]);
         } else if (strcmp(argv[i], "--input-script") == 0 && i + 1 < argc) {
             input_script_path = argv[++i];
-        } else if (strcmp(argv[i], "--vdp-ctrl-log") == 0 && i + 1 < argc) {
-            vdp_ctrl_log_path = argv[++i];
         } else if (strncmp(argv[i], "--audio-backend=", 16) == 0) {
             const char *v = argv[i] + 16;
             if      (strcmp(v, "ours")       == 0) s_audio_backend = AUDIO_BACKEND_OURS;
@@ -650,16 +642,6 @@ int main(int argc, char *argv[])
     /* --- Load input script (if requested) before the SDL window opens
      * so any parse error fails fast without a flash of black window. */
     if (input_script_path) input_script_load(input_script_path);
-
-    /* --- Open VDP control-port log if requested. Must happen BEFORE
-     * the first instruction executes so we capture the boot
-     * sequence (the troublesome palette DMA happens within frame 1). */
-    if (vdp_ctrl_log_path) {
-        extern void glue_vdp_ctrl_log_open(const char *);
-        glue_vdp_ctrl_log_open(vdp_ctrl_log_path);
-        fprintf(stderr, "[vdp-ctrl-log] capturing $C00004/$C00006 to %s\n",
-                vdp_ctrl_log_path);
-    }
 
     /* --- Load symbol table for crash reports ---
      * Look for `annotations_from_disasm.csv` adjacent to the ROM.
@@ -818,6 +800,14 @@ int main(int argc, char *argv[])
                       DEFAULT_DEBUG_PORT);
     if (s_debug_enabled)
         cmd_server_init(debug_port);
+
+#if SONIC_REVERSE_DEBUG
+    /* Always-on Tier 1 store ring — install before the first 68K
+     * instruction so probes have full coverage from boot without any
+     * arm-then-attach sequence. Per the global ring-buffer rule:
+     * observation must not require timing or pre-arming. */
+    { extern void rdb_autostart(void); rdb_autostart(); }
+#endif
 
     /* Pacing resolution: --pacing wins over debug.ini, which wins over
      * the compiled default in glue.c (CYCLE_ACCURATE since the cycle-

@@ -18,9 +18,22 @@
 #include "reverse_debug.h"
 #include "cmd_server.h"
 #include "glue.h"
+#include "clownmdemu.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+
+extern ClownMDEmu g_clownmdemu;
+
+/* Read $FFFExxxx as a longword from clownmdemu's 68K work-RAM mirror.
+ * Used to capture Vint_runcount (the cross-binary state-sync key) in
+ * every Tier-1 store ring entry. */
+static inline uint32_t rdb_read_wram32(uint16_t off)
+{
+    uint16_t hi = g_clownmdemu.state.m68k.ram[off / 2];
+    uint16_t lo = g_clownmdemu.state.m68k.ram[(off + 2) / 2];
+    return ((uint32_t)hi << 16) | (uint32_t)lo;
+}
 
 /* Shared hook slot in clownmdemu-core/source/bus-main-m68k.c. It is
  * defined unconditionally there; null when nobody has installed a tap. */
@@ -35,6 +48,8 @@ uint32_t g_rdb_current_func = 0;
 
 typedef struct {
     uint32_t frame;
+    uint32_t vint;    /* Vint_runcount at $FFFFFE0C — state-sync key
+                       * across native vs oracle. */
     uint32_t adr;
     uint32_t val;     /* byte writes zero-extend into low 8 */
     uint32_t func;
@@ -82,6 +97,7 @@ static void rdb_bus_tap(uint32_t byte_address, uint8_t value, uint32_t target_cy
     uint32_t a7  = cmd_server_current_a7();
 
     s_rdb.log[idx].frame  = cmd_server_current_frame();
+    s_rdb.log[idx].vint   = rdb_read_wram32(0xFE0C);
     s_rdb.log[idx].adr    = adr;
     s_rdb.log[idx].val    = value;
     s_rdb.log[idx].width  = 1;
@@ -139,6 +155,19 @@ void rdb_reset(void)
     rdb_uninstall_bus_tap();
 }
 
+void rdb_autostart(void)
+{
+    /* Default-on with a single WRAM-wide range ($FF0000-$FFFFFF). The
+     * 1M-entry ring is enough for ~5 minutes of typical SMPS+gameplay
+     * write traffic before eviction; anything older was already
+     * uninteresting by the time a probe runs. Probes that want a
+     * narrower view call rdb_reset+rdb_range as before — but the
+     * default capture means probes work even on first connect with
+     * no prior arming. */
+    if (s_rdb.tap_installed) return;
+    rdb_add_range(0xFF0000u, 0xFFFFFFu);
+}
+
 int rdb_range_count(void) { return s_rdb.nranges; }
 
 int rdb_range_get(int i, uint32_t *lo_out, uint32_t *hi_out)
@@ -172,9 +201,10 @@ int rdb_format_entry(uint32_t i, char *buf, size_t buflen)
     uint32_t idx = (s_rdb.snap_start + i) % RDB_LOG_SIZE;
     const RdbEntry *e = &s_rdb.log[idx];
     int n = snprintf(buf, buflen,
-        "{\"f\":%u,\"adr\":\"0x%06X\",\"val\":\"0x%02X\",\"w\":%u,"
+        "{\"f\":%u,\"vint\":%u,\"adr\":\"0x%06X\",\"val\":\"0x%02X\",\"w\":%u,"
          "\"func\":\"0x%06X\",\"caller\":\"0x%06X\"}",
         (unsigned)e->frame,
+        (unsigned)e->vint,
         (unsigned)e->adr,
         (unsigned)(e->val & 0xFFu),
         (unsigned)e->width,
