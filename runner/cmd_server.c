@@ -38,6 +38,7 @@ typedef int sock_t;
 #include "cmd_server.h"
 #include "clownmdemu.h"
 #include "audio.h"
+#include "game_layout.h"
 #if SONIC_REVERSE_DEBUG
 #include "reverse_debug.h"
 #if defined(SONIC_ORACLE_BUILD)
@@ -213,8 +214,8 @@ static void mem_write_log_callback(uint32_t byte_address, uint8_t value, uint32_
     uint32_t r2 = fm_trace_stack_read32(a7 + 8);
     uint32_t r3 = fm_trace_stack_read32(a7 + 12);
 
-    uint32_t internal_frame = emu_read32(0xFE0C);  /* v_vblank_count */
-    uint8_t  game_mode      = emu_read8 (0xF600);  /* v_gamemode     */
+    uint32_t internal_frame = emu_read32(g_game_layout.vint_runcount_addr);
+    uint8_t  game_mode      = emu_read8 (g_game_layout.game_mode_addr);
 
     extern uint64_t g_chunk_yield_count;
     fprintf(s_mem_write_log_file,

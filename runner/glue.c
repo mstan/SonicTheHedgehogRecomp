@@ -40,6 +40,7 @@
 #endif
 
 #include "frame_record.h"
+#include "game_layout.h"
 
 /* =========================================================================
  * Global state required by genesis_runtime.h
@@ -271,9 +272,10 @@ void glue_restore_sync(void)
  * VBlank / single-threaded fiber sync (Step 2)
  *
  * Game code and VDP rendering alternate on the same thread using Windows
- * Fibers.  func_0029A8 (WaitForVBlank) yields to the main fiber; the main
- * loop runs Iterate + VBlank handlers, then resumes the game fiber.
- * No threads, no semaphores, no races.
+ * Fibers.  WaitForVBla (pattern-detected per-game in code_generator.c —
+ * any function matching `move #imm,sr; tst.b mem; bne self; rts`) yields
+ * to the main fiber; the main loop runs Iterate + VBlank handlers, then
+ * resumes the game fiber. No threads, no semaphores, no races.
  * ========================================================================= */
 
 /* Re-entrancy guard (used by glue_check_vblank, must be in global scope) */
@@ -377,14 +379,18 @@ void glue_handle_interrupt(cc_u16f level)
         /* VBlank interrupt — run handler with register save/restore */
         M68KState saved = g_cpu;
 
-        #define INTR_STACK 0x00FFD000u
+        /* Per-game IRQ-handler stack base (game_layout.intr_stack).
+         * 256 bytes immediately below it are saved before the call and
+         * restored after. The base must NOT lie inside the live object
+         * table — see Sonic 2's game.toml comment for why. */
+        const uint32_t INTR_STACK_ADDR = g_game_layout.intr_stack;
         #define INTR_SAVE 128
         cc_u16l intr_ram[INTR_SAVE];
-        uint32_t base = ((INTR_STACK - INTR_SAVE * 2) & 0xFFFF) / 2;
+        uint32_t base = ((INTR_STACK_ADDR - INTR_SAVE * 2) & 0xFFFF) / 2;
         for (int i = 0; i < INTR_SAVE; i++)
             intr_ram[i] = s_emu->state.m68k.ram[base + i];
 
-        g_cpu.A[7] = INTR_STACK;
+        g_cpu.A[7] = INTR_STACK_ADDR;
         s_in_vblank_service = 1;
         g_rte_pending = 0;
         g_rte_pending_ptr = &s_rte_dummy;
@@ -416,12 +422,13 @@ void glue_handle_interrupt(cc_u16f level)
         /* HBlank — run with save/restore */
         M68KState saved = g_cpu;
 
-        uint32_t base = ((INTR_STACK - INTR_SAVE * 2) & 0xFFFF) / 2;
+        const uint32_t HBL_STACK_ADDR = g_game_layout.intr_stack;
+        uint32_t base = ((HBL_STACK_ADDR - INTR_SAVE * 2) & 0xFFFF) / 2;
         cc_u16l hbl_ram[INTR_SAVE];
         for (int i = 0; i < INTR_SAVE; i++)
             hbl_ram[i] = s_emu->state.m68k.ram[base + i];
 
-        g_cpu.A[7] = INTR_STACK;
+        g_cpu.A[7] = HBL_STACK_ADDR;
         s_in_vblank_service = 1;
         g_rte_pending = 0;
         g_rte_pending_ptr = &s_rte_dummy;
@@ -451,15 +458,17 @@ extern uint16_t m68k_read16(uint32_t);
 extern uint8_t  m68k_read8(uint32_t);
 extern uint32_t m68k_read32(uint32_t);
 
-/* Called from func_0029A8: yield to main loop for one frame. */
+/* Called from each game's WaitForVBla function (pattern-detected in
+ * code_generator.c; see Sonic 1 $0029A8, Sonic 2 $003384, etc.):
+ * yield to main loop for one frame. */
 void glue_yield_for_vblank(void)
 {
     if (s_in_vblank_service)
         return;
     s_watchdog_counter = 0;
     if (g_yield_log_file) {
-        uint32_t vbc = m68k_read32(0xFE0C);
-        uint8_t  vr  = m68k_read8(0xF62A);
+        uint32_t vbc = m68k_read32(g_game_layout.vint_runcount_addr & 0xFFFF);
+        uint8_t  vr  = m68k_read8 (g_game_layout.vint_routine_addr  & 0xFFFF);
         fprintf(g_yield_log_file,
                 "%llu %u %u %u\n",
                 (unsigned long long)g_frame_count,
@@ -467,15 +476,15 @@ void glue_yield_for_vblank(void)
                 vbc,
                 vr);
     }
-    /* At yield, the game is inside WaitForVBlank (func_0029A8), which was
-     * called via JSR from the game loop.  The expected A7 at yield is
-     * initial_SSP - 4 (one return address pushed for the JSR to func_0029A8)
-     * minus 4 more for the dispatch JSR = initial_SSP - 8 = $FFFDF8.
-     * But A7 can drift above $FFFE00 if GM_Level's internal restart (goto
-     * label_0037A2) bypasses the mode dispatch's A7 pop, accumulating +4
-     * per restart.  Clamp to prevent stack/variable collision. */
-    if (g_cpu.A[7] > 0x00FFFE00u)
-        g_cpu.A[7] = 0x00FFFE00u;
+    /* At yield, the game is inside WaitForVBla (pattern-detected in
+     * code_generator.c), which was called via JSR from the main loop.
+     * Expected A7 at yield is initial_SSP - 8: one return address for
+     * the JSR to WaitForVBla, plus 4 more for the dispatch JSR. But
+     * A7 can drift above initial_SSP if a mode handler's internal
+     * restart bypasses the dispatch's A7 pop, accumulating +4 per
+     * restart. Clamp to prevent stack/variable collision. */
+    if (g_cpu.A[7] > g_game_layout.initial_ssp)
+        g_cpu.A[7] = g_game_layout.initial_ssp;
     s_game_yielded_vblank = 1;
     SwitchToFiber(s_main_fiber);
     /* Resumed here when next frame's DoCycles calls glue_run_game_chunk.
@@ -511,12 +520,14 @@ void glue_yield_for_vblank(void)
         g_cycle_accumulator = 0;
     }
 
-    /* PLC tile processing — periodic hook (Sonic 1: func_001642 / RunPLC).
-     * Gated on $FFF6F8 (PLC pending counter) being non-zero so games that
-     * don't run the SMPS-style PLC system pay nothing. */
+    /* PLC tile processing — periodic hook (Sonic 1: RunPLC).
+     * Gated on the PLC pending counter being non-zero so games that
+     * don't run the SMPS-style PLC system pay nothing. plc_pending=0
+     * disables the gate and the hook never fires (Sonic 2 path). */
     {
         extern uint16_t m68k_read16(uint32_t);
-        if (g_game_spec.call_periodic && m68k_read16(0xFFF6F8) != 0) {
+        if (g_game_spec.call_periodic && g_game_layout.plc_pending_addr &&
+            m68k_read16(g_game_layout.plc_pending_addr & 0xFFFF) != 0) {
             M68KState plc_save = g_cpu;
             g_game_spec.call_periodic();
             g_cpu = plc_save;
@@ -705,14 +716,19 @@ static void fire_vblank_handler_once(void)
 
     M68KState saved = g_cpu;
 
-    #define VBLK_STACK 0x00FFD000u
+    /* Per-game VBlank-handler stack (game_layout.vbla_stack). See the
+     * commentary at the IRQ-stack site above; same shape, same
+     * per-game caveats. Sonic 2 must NOT use $FFD000 — Object_RAM_End
+     * lives there and the save window would land inside the dynamic
+     * object table. */
+    const uint32_t VBLK_STACK_ADDR = g_game_layout.vbla_stack;
     #define VBLK_SAVE  128
     cc_u16l vblk_ram[VBLK_SAVE];
-    uint32_t vbase = ((VBLK_STACK - VBLK_SAVE * 2) & 0xFFFF) / 2;
+    uint32_t vbase = ((VBLK_STACK_ADDR - VBLK_SAVE * 2) & 0xFFFF) / 2;
     for (int i = 0; i < VBLK_SAVE; i++)
         vblk_ram[i] = s_emu->state.m68k.ram[vbase + i];
 
-    g_cpu.A[7] = VBLK_STACK;
+    g_cpu.A[7] = VBLK_STACK_ADDR;
     s_in_vblank_service = 1;
     g_rte_pending = 0;
     g_rte_pending_ptr = &s_rte_dummy;
@@ -1126,12 +1142,12 @@ void m68k_write32(uint32_t byte_addr, uint32_t val)
      * only. */
     audio_detour_write(byte_addr,       (uint8_t)(val >> 16));
     audio_detour_write(byte_addr + 2,   (uint8_t)val);
-    /* Protect game variables at $FFFE00+: when the mode dispatch JSR
-     * pushes a return address with A7 above the initial SSP ($FFFE00),
-     * the low word lands at $FFFE02 (timer variable), causing false
-     * level restarts.  Block writes to $FFFE00-$FFFE06. */
-    if (byte_addr == 0xFFFE00u)
-        return;  /* block JSR push that corrupts $FE02 timer */
+    /* Protect game variables at initial_ssp: when the mode dispatch
+     * JSR pushes a return address with A7 above initial_ssp, the low
+     * word lands at initial_ssp+2 (a timer variable in S1), causing
+     * false level restarts. Block longword writes to that exact addr. */
+    if (byte_addr == g_game_layout.initial_ssp)
+        return;
 #endif
     /* Bump once for the whole 32-bit op — both halves at same cycle.
      * Critical for VDP control port: the VDP latches a 32-bit command
@@ -1295,14 +1311,19 @@ void glue_log_frame_state(uint64_t frame)
     #define EMU_RAM_LONG(addr) \
         (((uint32_t)EMU_RAM_WORD(addr) << 16) | EMU_RAM_WORD((addr)+2))
 
-    uint8_t  game_mode = EMU_RAM_BYTE(0xF600);
-    uint8_t  vbl_flag  = EMU_RAM_BYTE(0xF62A);
+    uint8_t  game_mode = EMU_RAM_BYTE(g_game_layout.game_mode_addr);
+    uint8_t  vbl_flag  = EMU_RAM_BYTE(g_game_layout.vint_routine_addr);
+    /* The next three (vbl_count $F628, scroll_x $F700, plc_ptr $F680)
+     * are Sonic-1-specific debug fields whose semantics differ on other
+     * games — addresses kept literal here so the S1 framelog stays
+     * verbatim. For Sonic 2+ these values are decorative noise; rely
+     * on FrameRecord/per-game extras for game-specific telemetry. */
     uint16_t vbl_count = EMU_RAM_WORD(0xF628);
     uint16_t scroll_x  = EMU_RAM_WORD(0xF700);
     uint16_t plc_ptr   = EMU_RAM_WORD(0xF680);
-    uint32_t frame_cnt = EMU_RAM_LONG(0xFE0C);
-    uint8_t  obj0_id   = EMU_RAM_BYTE(0xD000);
-    uint8_t  obj0_rt   = EMU_RAM_BYTE(0xD001);
+    uint32_t frame_cnt = EMU_RAM_LONG(g_game_layout.vint_runcount_addr);
+    uint8_t  obj0_id   = EMU_RAM_BYTE(g_game_layout.player_object_addr + 0);
+    uint8_t  obj0_rt   = EMU_RAM_BYTE(g_game_layout.player_object_addr + 1);
 
     fprintf(s_framelog,
             "F%03llu mode=%02X vbl=%02X cnt=%04X scrl=%04X plc=%04X "
