@@ -15,6 +15,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 
 #include <SDL2/SDL.h>
@@ -66,6 +67,7 @@ const char *exe_relative(const char *filename)
 #endif
 
 #include "cmd_server.h"
+#include "game_layout.h"
 #if SONIC_REVERSE_DEBUG
 #include "reverse_debug.h"
 #endif
@@ -408,16 +410,22 @@ static FILE *s_framelog_file = NULL;
 /* Dump full 64KB work RAM at a specific game frame counter for comparison */
 static void check_ramdump(void)
 {
-    /* Align by game state: dump when in gameplay mode ($0C) with Sonic
-     * active (obj0 byte=$01) and 50 frames into gameplay (stable state). */
+    /* Align by game state: dump when in a gameplay mode (per-game
+     * level_modes from g_game_layout) with the player object active
+     * (obj_id byte = $01 = Sonic) and 50 frames into stable state. */
     #define EMU_BYTE_D(a) ((uint8_t)(g_clownmdemu.state.m68k.ram[((a) & 0xFFFF) / 2] >> \
                    (((a) & 1) ? 0 : 8)))
-    uint8_t mode = EMU_BYTE_D(0xF600);
-    uint8_t obj0 = EMU_BYTE_D(0xD000);
+    uint8_t mode = EMU_BYTE_D(g_game_layout.game_mode_addr);
+    uint8_t obj0 = EMU_BYTE_D(g_game_layout.player_object_addr);
     static uint32_t s_gameplay_frames = 0;
-    /* Accept both $0C (GM_Level) and $08 (GM_Demo/gameplay) with or without bit 7 */
+    /* Accept any of the per-game gameplay modes (with or without high
+     * bit set, since some games flip $80 during transitions). */
     uint8_t base_mode = mode & 0x7Fu;
-    if ((base_mode == 0x0Cu || base_mode == 0x08u) && obj0 == 0x01u)
+    bool in_gameplay = false;
+    for (int i = 0; i < g_game_layout.level_mode_count; i++) {
+        if (base_mode == g_game_layout.level_modes[i]) { in_gameplay = true; break; }
+    }
+    if (in_gameplay && obj0 == 0x01u)
         s_gameplay_frames++;
     if (s_gameplay_frames == 50) {  /* 50 frames into stable gameplay */
         static int s_dumped = 0;
@@ -452,22 +460,32 @@ static void write_framelog(uint32_t frame)
     #define EMU_LONG(addr) \
         (((uint32_t)EMU_WORD(addr) << 16) | EMU_WORD((addr)+2))
 
+    /* Universal fields come from g_game_layout. Game-specific fields
+     * (cnt $F628, scrl $F700, plc $F680, P1 ctrl mirrors, Sonic-1
+     * object-slot offsets) keep raw addresses — they are S1-shaped
+     * debug telemetry and are decorative on other games. Use the
+     * FrameRecord ring + per-game fill_frame_record() for game-
+     * specific debug data. */
+    uint32_t player = g_game_layout.player_object_addr;
     fprintf(s_framelog_file,
             "F%03u mode=%02X vbl=%02X cnt=%04X scrl=%04X plc=%04X "
             "fcnt=%08X obj0=%02X/%02X ypos=%04X yvel=%04X rtn=%02X log=%02X/%02X phys=%02X/%02X st=%02X lk=%02X\n",
             frame,
-            EMU_BYTE(0xF600), EMU_BYTE(0xF62A), EMU_WORD(0xF628),
-            EMU_WORD(0xF700), EMU_WORD(0xF680), EMU_LONG(0xFE0C),
-            EMU_BYTE(0xD000), EMU_BYTE(0xD001),
-            EMU_WORD(0xD00C),  /* Sonic Y position */
-            EMU_WORD(0xD012),  /* Sonic Y velocity */
-            EMU_BYTE(0xD024),  /* Sonic routine */
-            EMU_BYTE(0xF602),  /* P1 held (logical) */
+            EMU_BYTE(g_game_layout.game_mode_addr),
+            EMU_BYTE(g_game_layout.vint_routine_addr),
+            EMU_WORD(0xF628),
+            EMU_WORD(0xF700), EMU_WORD(0xF680),
+            EMU_LONG(g_game_layout.vint_runcount_addr),
+            EMU_BYTE(player + 0x00), EMU_BYTE(player + 0x01),
+            EMU_WORD(player + 0x0C),  /* player Y position */
+            EMU_WORD(player + 0x12),  /* player Y velocity */
+            EMU_BYTE(player + 0x24),  /* player routine     */
+            EMU_BYTE(0xF602),  /* P1 held (logical) — S1-shaped */
             EMU_BYTE(0xF603),  /* P1 pressed (logical) */
             EMU_BYTE(0xF604),  /* P1 held (physical) */
             EMU_BYTE(0xF605),  /* P1 pressed (physical) */
-            EMU_BYTE(0xD022),  /* Sonic status */
-            EMU_BYTE(0xF62A)); /* VBlank flag */
+            EMU_BYTE(player + 0x22),  /* player status */
+            EMU_BYTE(g_game_layout.vint_routine_addr));
     fflush(s_framelog_file);
 
     #undef EMU_BYTE

@@ -58,6 +58,7 @@ set(SONIC_SHARED_SOURCES
     runner/audio/observability.c
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_full.c"
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_dispatch.c"
+    "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_layout.c"
     "${RECOMP_ROOT}/sonicthehedgehog/extras.c"
 )
 
