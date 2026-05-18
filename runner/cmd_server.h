@@ -39,6 +39,11 @@ void cmd_server_mem_write_log_tick(void);
  * success.  `frames` is the wall-frame cap (0 = unlimited). */
 int cmd_server_mem_write_log_start(const uint32_t *addrs, int n_addrs,
                                    int frames, const char *path);
+int cmd_server_mem_write_log_start_ranges(const uint32_t *lo,
+                                          const uint32_t *hi,
+                                          int n_ranges,
+                                          int frames,
+                                          const char *path);
 
 /* True while a TCP client has issued "pause". Main loop should poll
  * cmd_server but skip game-frame advancement until cleared by

@@ -2,6 +2,8 @@
 #define GLUE_H
 
 #include "clownmdemu.h"
+#include <stdio.h>
+#include <stdint.h>
 
 /* Call after ClownMDEmu_Initialise() and ROM load.
  * Stores the emulator pointer for m68k_read/write routing, and
@@ -23,6 +25,12 @@ void glue_set_callbacks(const void *callbacks);
 /* Block until the game thread has finished servicing VBlank.
  * Called from the main loop after ClownMDEmu_Iterate(). */
 void glue_wait_vblank_done(void);
+
+/* Runner save-state support for recompiled/hybrid state that lives
+ * outside the emulator core. */
+void glue_save_state(FILE *sf);
+void glue_load_state(FILE *sf);
+void glue_restart_game_fiber(uint32_t resume_pc);
 
 /* Shutdown: signal game thread to stop (if running). */
 void glue_shutdown(void);

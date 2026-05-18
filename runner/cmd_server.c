@@ -190,7 +190,8 @@ static FILE    *s_mem_write_log_file = NULL;
 static int      s_mem_write_log_active = 0;
 static int      s_mem_write_log_max_frames = 0;
 static int      s_mem_write_log_frame_count = 0;
-static uint32_t s_mem_write_log_watch[MEM_WRITE_LOG_MAX_WATCH];
+static uint32_t s_mem_write_log_watch_lo[MEM_WRITE_LOG_MAX_WATCH];
+static uint32_t s_mem_write_log_watch_hi[MEM_WRITE_LOG_MAX_WATCH];
 static int      s_mem_write_log_watch_count = 0;
 
 /* Forward decls — emu_read8/emu_read32 are defined later in this file but
@@ -203,8 +204,10 @@ static void mem_write_log_callback(uint32_t byte_address, uint8_t value, uint32_
     if (!s_mem_write_log_file) return;
     /* Watchlist filter — small N, linear scan is fine. */
     int hit = 0;
+    uint32_t watched_addr = byte_address & 0xFFFFFFu;
     for (int i = 0; i < s_mem_write_log_watch_count; i++) {
-        if (s_mem_write_log_watch[i] == (byte_address & 0xFFFFFFu)) { hit = 1; break; }
+        if (watched_addr >= s_mem_write_log_watch_lo[i] &&
+            watched_addr <= s_mem_write_log_watch_hi[i]) { hit = 1; break; }
     }
     if (!hit) return;
 
@@ -219,7 +222,13 @@ static void mem_write_log_callback(uint32_t byte_address, uint8_t value, uint32_
 
     extern uint64_t g_chunk_yield_count;
     fprintf(s_mem_write_log_file,
-            "%d %u %u 0x%06X 0x%02X 0x%06X 0x%06X 0x%06X 0x%06X 0x%06X %u %llu\n",
+            "%d %u %u 0x%06X 0x%02X 0x%06X 0x%06X 0x%06X 0x%06X 0x%06X %u %llu "
+#if SONIC_REVERSE_DEBUG && (ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE)
+            "0x%06X 0x%06X "
+            "D0=0x%08X D1=0x%08X D2=0x%08X D3=0x%08X D4=0x%08X D5=0x%08X D6=0x%08X D7=0x%08X "
+            "A0=0x%08X A1=0x%08X A2=0x%08X A3=0x%08X A4=0x%08X A5=0x%08X A6=0x%08X A7=0x%08X"
+#endif
+            "\n",
             s_mem_write_log_frame_count,
             (unsigned)internal_frame,
             (unsigned)game_mode,
@@ -227,29 +236,57 @@ static void mem_write_log_callback(uint32_t byte_address, uint8_t value, uint32_
             a7 & 0xFFFFFFu, r0 & 0xFFFFFFu, r1 & 0xFFFFFFu,
             r2 & 0xFFFFFFu, r3 & 0xFFFFFFu,
             (unsigned)target_cycle,
-            (unsigned long long)g_chunk_yield_count);
+            (unsigned long long)g_chunk_yield_count
+#if SONIC_REVERSE_DEBUG && (ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE)
+            , (unsigned)(g_rdb_current_func & 0xFFFFFFu),
+            (unsigned)(g_cpu.PC & 0xFFFFFFu),
+            (unsigned)g_cpu.D[0], (unsigned)g_cpu.D[1],
+            (unsigned)g_cpu.D[2], (unsigned)g_cpu.D[3],
+            (unsigned)g_cpu.D[4], (unsigned)g_cpu.D[5],
+            (unsigned)g_cpu.D[6], (unsigned)g_cpu.D[7],
+            (unsigned)g_cpu.A[0], (unsigned)g_cpu.A[1],
+            (unsigned)g_cpu.A[2], (unsigned)g_cpu.A[3],
+            (unsigned)g_cpu.A[4], (unsigned)g_cpu.A[5],
+            (unsigned)g_cpu.A[6], (unsigned)g_cpu.A[7]
+#endif
+            );
 }
 
 /* Arm the logger directly (no TCP needed).  Returns 1 on success, 0 on
  * failure.  Safe to call before cmd_server_init.  Used by the --mem-write-log
  * CLI flag so we can capture writes from frame 0 (TCP arming has ~tens of
  * wall-frames of startup latency — too late to catch gm=0 boot music). */
-int cmd_server_mem_write_log_start(const uint32_t *addrs, int n_addrs, int frames, const char *path)
+int cmd_server_mem_write_log_start_ranges(const uint32_t *lo, const uint32_t *hi,
+                                          int n_ranges, int frames, const char *path)
 {
-    if (n_addrs <= 0 || n_addrs > MEM_WRITE_LOG_MAX_WATCH) return 0;
+    if (n_ranges <= 0 || n_ranges > MEM_WRITE_LOG_MAX_WATCH) return 0;
     if (s_mem_write_log_file) fclose(s_mem_write_log_file);
     s_mem_write_log_file = fopen(path, "w");
     if (!s_mem_write_log_file) return 0;
 
-    s_mem_write_log_watch_count = n_addrs;
-    for (int i = 0; i < n_addrs; i++)
-        s_mem_write_log_watch[i] = addrs[i] & 0xFFFFFFu;
+    s_mem_write_log_watch_count = n_ranges;
+    for (int i = 0; i < n_ranges; i++) {
+        uint32_t a = lo[i] & 0xFFFFFFu;
+        uint32_t b = hi[i] & 0xFFFFFFu;
+        if (b < a) { uint32_t t = a; a = b; b = t; }
+        s_mem_write_log_watch_lo[i] = a;
+        s_mem_write_log_watch_hi[i] = b;
+    }
 
     fprintf(s_mem_write_log_file,
-        "# wall_frame internal_frame game_mode address value a7 ret0 ret1 ret2 ret3 target_cycle\n");
+        "# wall_frame internal_frame game_mode address value a7 ret0 ret1 ret2 ret3 target_cycle yield"
+#if SONIC_REVERSE_DEBUG && (ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE)
+        " func pc D0 D1 D2 D3 D4 D5 D6 D7 A0 A1 A2 A3 A4 A5 A6 A7"
+#endif
+        "\n");
     fprintf(s_mem_write_log_file, "# watching:");
-    for (int i = 0; i < n_addrs; i++)
-        fprintf(s_mem_write_log_file, " 0x%06X", s_mem_write_log_watch[i]);
+    for (int i = 0; i < n_ranges; i++) {
+        if (s_mem_write_log_watch_lo[i] == s_mem_write_log_watch_hi[i])
+            fprintf(s_mem_write_log_file, " 0x%06X", s_mem_write_log_watch_lo[i]);
+        else
+            fprintf(s_mem_write_log_file, " 0x%06X-0x%06X",
+                    s_mem_write_log_watch_lo[i], s_mem_write_log_watch_hi[i]);
+    }
     fprintf(s_mem_write_log_file, "\n");
 
     s_mem_write_log_active = 1;
@@ -257,8 +294,16 @@ int cmd_server_mem_write_log_start(const uint32_t *addrs, int n_addrs, int frame
     s_mem_write_log_frame_count = 0;
     g_mem_write_trace_fn = mem_write_log_callback;
     fprintf(stderr, "[MEM-WRITE-LOG] Started (CLI): %s (%d addrs, %d frames)\n",
-            path, n_addrs, frames);
+            path, n_ranges, frames);
     return 1;
+}
+
+int cmd_server_mem_write_log_start(const uint32_t *addrs, int n_addrs, int frames, const char *path)
+{
+    uint32_t hi[MEM_WRITE_LOG_MAX_WATCH];
+    if (n_addrs <= 0 || n_addrs > MEM_WRITE_LOG_MAX_WATCH) return 0;
+    for (int i = 0; i < n_addrs; i++) hi[i] = addrs[i];
+    return cmd_server_mem_write_log_start_ranges(addrs, hi, n_addrs, frames, path);
 }
 
 void cmd_server_mem_write_log_tick(void)
@@ -2197,7 +2242,9 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
                     while (*p == ' ' || *p == ',' || *p == '\t' || *p == '\n') p++;
                     if (*p == ']' || *p == '\0') break;
                     uint32_t v = (uint32_t)strtoul(p, (char **)&p, 0);  /* 0 → accept 0x */
-                    s_mem_write_log_watch[s_mem_write_log_watch_count++] = v & 0xFFFFFFu;
+                    s_mem_write_log_watch_lo[s_mem_write_log_watch_count] = v & 0xFFFFFFu;
+                    s_mem_write_log_watch_hi[s_mem_write_log_watch_count] = v & 0xFFFFFFu;
+                    s_mem_write_log_watch_count++;
                 }
                 if (s_mem_write_log_watch_count == 0) { send_err(id, "addrs empty"); return cr; }
 
@@ -2216,7 +2263,7 @@ static CmdResult dispatch_command(const char *json, uint32_t frame_num)
                     "# wall_frame internal_frame game_mode address value a7 ret0 ret1 ret2 ret3 target_cycle\n");
                 fprintf(s_mem_write_log_file, "# watching:");
                 for (int i = 0; i < s_mem_write_log_watch_count; i++)
-                    fprintf(s_mem_write_log_file, " 0x%06X", s_mem_write_log_watch[i]);
+                    fprintf(s_mem_write_log_file, " 0x%06X", s_mem_write_log_watch_lo[i]);
                 fprintf(s_mem_write_log_file, "\n");
 
                 s_mem_write_log_active = 1;

@@ -42,6 +42,15 @@
 #include "frame_record.h"
 #include "game_layout.h"
 
+void recomp_push_return(uint32_t ret_addr)
+{
+    if (g_game_layout.initial_ssp && g_cpu.A[7] > g_game_layout.initial_ssp)
+        g_cpu.A[7] = g_game_layout.initial_ssp;
+
+    g_cpu.A[7] -= 4;
+    m68k_write32(g_cpu.A[7], ret_addr & 0xFFFFFFu);
+}
+
 /* =========================================================================
  * Global state required by genesis_runtime.h
  * ========================================================================= */
@@ -164,6 +173,34 @@ extern uint32_t g_rdb_current_func;
 #endif
 
 #include "crash_report.h"
+
+#define INSN_WATCHDOG_LIMIT 20000000ull
+static uint64_t s_insn_watchdog_base = 0;
+
+static void instruction_watchdog_reset(void)
+{
+    s_insn_watchdog_base = g_native_insn_count;
+}
+
+static void instruction_watchdog_check(void)
+{
+    if (g_native_insn_count - s_insn_watchdog_base < INSN_WATCHDOG_LIMIT)
+        return;
+
+    char reason[160];
+#if SONIC_REVERSE_DEBUG
+    snprintf(reason, sizeof(reason),
+             "instruction watchdog: %llu native insns without yielding (func=$%06X)",
+             (unsigned long long)(g_native_insn_count - s_insn_watchdog_base),
+             (unsigned)(g_rdb_current_func & 0xFFFFFFu));
+#else
+    snprintf(reason, sizeof(reason),
+             "instruction watchdog: %llu native insns without yielding",
+             (unsigned long long)(g_native_insn_count - s_insn_watchdog_base));
+#endif
+    crash_report_dump_persistent(reason, &g_cpu, 0, 0, g_frame_count);
+    exit(2);
+}
 
 /* VDP control-port capture used to live here as a separate
  * file-backed printf log (--vdp-ctrl-log PATH). Retired in favor of
@@ -292,11 +329,69 @@ void glue_log_frame_state(uint64_t frame);  /* defined below */
 static LPVOID s_main_fiber = NULL;
 static LPVOID s_game_fiber = NULL;
 static int    s_game_running = 0;   /* 1 once the game fiber has started */
+static uint32_t s_game_fiber_resume_pc = 0;
+
+#define GAME_FIBER_STACK_COMMIT  (1u * 1024u * 1024u)
+#define GAME_FIBER_STACK_RESERVE (32u * 1024u * 1024u)
+#define GAME_FIBER_STACK_WARN_STEP (1024u * 1024u)
+#define GAME_FIBER_STACK_ABORT     (28u * 1024u * 1024u)
+
+static uintptr_t s_game_stack_top = 0;
+static size_t    s_game_stack_last_report = 0;
+
+static void game_stack_note(const char *reason, const void *stack_marker)
+{
+    if (!s_game_stack_top || !stack_marker)
+        return;
+
+    uintptr_t marker = (uintptr_t)stack_marker;
+    size_t used = (s_game_stack_top >= marker)
+        ? (size_t)(s_game_stack_top - marker)
+        : (size_t)(marker - s_game_stack_top);
+
+    if (used >= s_game_stack_last_report + GAME_FIBER_STACK_WARN_STEP ||
+        used >= GAME_FIBER_STACK_ABORT) {
+        fprintf(stderr,
+                "[STACK] reason=%s used=%zu frame=%" PRIu64
+                " a7=%06X vblank_service=%d\n",
+                reason, used, g_frame_count, (unsigned)(g_cpu.A[7] & 0xFFFFFFu),
+                s_in_vblank_service);
+        s_game_stack_last_report = used;
+    }
+
+    if (used >= GAME_FIBER_STACK_ABORT) {
+        char crash_reason[160];
+        snprintf(crash_reason, sizeof(crash_reason),
+                 "game fiber stack runaway: %zu bytes used at %s",
+                 used, reason);
+        crash_report_dump_persistent(crash_reason, &g_cpu, 0, 0, g_frame_count);
+        exit(2);
+    }
+}
 
 /* Game fiber entry point. */
 static void CALLBACK game_fiber_func(LPVOID param)
 {
     (void)param;
+    char stack_top_marker;
+    s_game_stack_top = (uintptr_t)&stack_top_marker;
+    s_game_stack_last_report = 0;
+    if (s_game_fiber_resume_pc) {
+        uint32_t resume_pc = s_game_fiber_resume_pc & 0xFFFFFFu;
+        s_game_fiber_resume_pc = 0;
+        g_cpu.A[7] = g_game_layout.initial_ssp;
+        recomp_call_addr(resume_pc);
+        if (g_game_spec.dispatch_main_loop_pc) {
+            uint32_t dispatch_pc = g_game_spec.dispatch_main_loop_pc & 0xFFFFFFu;
+            fprintf(stderr, "[GAME] %s resume loop returned at $%06X; continuing at dispatcher $%06X\n",
+                    g_game_spec.short_name, resume_pc, dispatch_pc);
+            recomp_call_addr(dispatch_pc);
+        }
+        fprintf(stderr, "[GAME] %s resume/dispatch returned unexpectedly!\n",
+                g_game_spec.short_name);
+        for (;;) SwitchToFiber(s_main_fiber);
+    }
+
     g_cpu.A[7] =   ((uint32_t)g_rom[0] << 24)
                   | ((uint32_t)g_rom[1] << 16)
                   | ((uint32_t)g_rom[2] <<  8)
@@ -310,6 +405,25 @@ static void CALLBACK game_fiber_func(LPVOID param)
     fprintf(stderr, "[GAME] %s entry point returned unexpectedly!\n",
             g_game_spec.short_name);
     for (;;) SwitchToFiber(s_main_fiber);
+}
+
+static int create_game_fiber(uint32_t resume_pc)
+{
+    s_game_fiber_resume_pc = resume_pc & 0xFFFFFFu;
+    s_game_fiber = CreateFiberEx(GAME_FIBER_STACK_COMMIT,
+                                 GAME_FIBER_STACK_RESERVE,
+                                 0,
+                                 game_fiber_func,
+                                 NULL);
+    if (!s_game_fiber) {
+        fprintf(stderr, "glue: CreateFiber failed\n");
+        s_game_fiber_resume_pc = 0;
+        s_game_running = 0;
+        return 0;
+    }
+
+    s_game_running = 1;
+    return 1;
 }
 
 /* Scanline interleave state */
@@ -346,7 +460,9 @@ void glue_run_game_chunk(cc_u32f cycles)
     s_chunk_cycles = cycles;
     s_cycle_budget = (int32_t)cycles;
     s_interleave_active = 1;
+    instruction_watchdog_reset();
     SwitchToFiber(s_game_fiber);
+    instruction_watchdog_reset();
     s_interleave_active = 0;
 }
 
@@ -362,6 +478,7 @@ static void check_cycle_budget(void)
         s_cycle_budget -= BUDGET_COST_PER_ACCESS;
         if (s_cycle_budget <= 0) {
             g_chunk_yield_count++;
+            { char stack_marker; game_stack_note("cycle-budget", &stack_marker); }
             SwitchToFiber(s_main_fiber);
         }
     }
@@ -486,6 +603,7 @@ void glue_yield_for_vblank(void)
     if (g_cpu.A[7] > g_game_layout.initial_ssp)
         g_cpu.A[7] = g_game_layout.initial_ssp;
     s_game_yielded_vblank = 1;
+    { char stack_marker; game_stack_note("WaitForVint", &stack_marker); }
     SwitchToFiber(s_main_fiber);
     /* Resumed here when next frame's DoCycles calls glue_run_game_chunk.
      *
@@ -653,12 +771,11 @@ void glue_init(ClownMDEmu *emu, const cc_u8l *rom_bytes, cc_u32l rom_byte_len)
         fprintf(stderr, "glue: ConvertThreadToFiber failed\n");
         return;
     }
-    s_game_fiber = CreateFiber(0, game_fiber_func, NULL);
-    if (!s_game_fiber) {
-        fprintf(stderr, "glue: CreateFiber failed\n");
+    if (!create_game_fiber(0)) {
         return;
     }
-    s_game_running = 1;
+    fprintf(stderr, "[fiber] game stack reserve=%u commit=%u bytes\n",
+            GAME_FIBER_STACK_RESERVE, GAME_FIBER_STACK_COMMIT);
 #endif
 }
 
@@ -754,6 +871,8 @@ static void fire_vblank_handler_once(void)
 
 void glue_check_vblank(void)
 {
+    instruction_watchdog_check();
+
     if (s_in_vblank_service)
         return;  /* already servicing — don't re-enter from handler's own accumulator */
 
@@ -887,6 +1006,43 @@ void glue_load_state(FILE *sf)
     fread(&g_vblank_threshold, 1, sizeof(g_vblank_threshold), sf);
 }
 
+void glue_restart_game_fiber(uint32_t resume_pc)
+{
+#if ENABLE_RECOMPILED_CODE
+    if (!s_main_fiber)
+        return;
+
+    if (s_game_fiber) {
+        DeleteFiber(s_game_fiber);
+        s_game_fiber = NULL;
+    }
+
+    s_game_running = 0;
+    s_game_yielded_vblank = 0;
+#if SONIC_REVERSE_DEBUG
+    s_game_yielded_break = 0;
+#endif
+    s_interleave_active = 0;
+    s_cycle_budget = 0;
+    s_chunk_cycles = 0;
+    s_watchdog_counter = 0;
+    s_vblank_fired_this_frame = 0;
+    s_vblank_executed_this_frame = 0;
+    g_cycle_accumulator = 0;
+    g_audio_cycle_counter = 0;
+    s_game_stack_top = 0;
+    s_game_stack_last_report = 0;
+    g_rte_pending = 0;
+
+    if (create_game_fiber(resume_pc)) {
+        fprintf(stderr, "[fiber] restarted game fiber at $%06X\n",
+                (unsigned)(resume_pc & 0xFFFFFFu));
+    }
+#else
+    (void)resume_pc;
+#endif
+}
+
 /* =========================================================================
  * Memory access — route through clownmdemu's bus layer (M68kReadCallback /
  * M68kWriteCallback), which handles ROM, work RAM, VDP, IO, Z80 bus, etc.
@@ -972,6 +1128,8 @@ static inline void spin_check(uint32_t byte_addr, int is_write)
              * yield itself is the act we want, not a repeated one.
              * s_main_fiber is the file-static set in glue_install_*. */
             if (s_main_fiber)
+                { char stack_marker; game_stack_note("spin-read", &stack_marker); }
+            if (s_main_fiber)
                 SwitchToFiber(s_main_fiber);
             s_spin_count = 0;
         }
@@ -1036,6 +1194,7 @@ uint8_t m68k_read8(uint32_t byte_addr)
                 last_poll_addr = byte_addr;
                 poll_streak    = 1;
             }
+            { char stack_marker; game_stack_note("z80-poll", &stack_marker); }
             SwitchToFiber(s_main_fiber);
             /* fall through to real read */
         } else {
@@ -1142,12 +1301,6 @@ void m68k_write32(uint32_t byte_addr, uint32_t val)
      * only. */
     audio_detour_write(byte_addr,       (uint8_t)(val >> 16));
     audio_detour_write(byte_addr + 2,   (uint8_t)val);
-    /* Protect game variables at initial_ssp: when the mode dispatch
-     * JSR pushes a return address with A7 above initial_ssp, the low
-     * word lands at initial_ssp+2 (a timer variable in S1), causing
-     * false level restarts. Block longword writes to that exact addr. */
-    if (byte_addr == g_game_layout.initial_ssp)
-        return;
 #endif
     /* Bump once for the whole 32-bit op — both halves at same cycle.
      * Critical for VDP control port: the VDP latches a 32-bit command

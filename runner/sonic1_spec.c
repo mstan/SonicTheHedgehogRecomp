@@ -99,6 +99,8 @@ const GameSpec g_game_spec = {
     .call_entry_point       = func_000206,
     .call_vblank            = func_000B10,
     .call_hblank            = func_001126,
+    .resume_main_loop_pc    = 0x003AE2u,
+    .dispatch_main_loop_pc  = 0x000388u,
     .call_periodic          = s1_call_periodic,
 
     .on_post_reset          = s1_on_post_reset,
