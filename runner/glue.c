@@ -487,12 +487,15 @@ static void check_cycle_budget(void)
 /* Called from Clown68000_Interrupt during Iterate when VBlank/HBlank fires. */
 void glue_handle_interrupt(cc_u16f level)
 {
-    if (!s_game_running || !s_game_yielded_vblank)
+    if (!s_game_running)
         return;
 
     int imask = (g_cpu.SR >> 8) & 7;
 
     if (level == 6 && imask < 6) {
+        if (!s_game_yielded_vblank)
+            return;
+
         /* VBlank interrupt — run handler with register save/restore */
         M68KState saved = g_cpu;
 
@@ -655,6 +658,20 @@ void glue_yield_for_vblank(void)
     }
 }
 
+/* Yield from a short hardware-polling loop without declaring a game-frame
+ * boundary. This lets clownmdemu advance to the next scanline and deliver
+ * IRQ4/HBlank or update device status while the game remains in the same
+ * frame. True WaitForVint sites still use glue_yield_for_vblank(). */
+void glue_yield_for_interrupt_poll(void)
+{
+    if (s_in_vblank_service || !s_main_fiber)
+        return;
+
+    s_watchdog_counter = 0;
+    { char stack_marker; game_stack_note("irq-poll", &stack_marker); }
+    SwitchToFiber(s_main_fiber);
+}
+
 /* Called from main loop: start the game frame. With interleave mode,
  * the game runs in small chunks during Iterate's DoCycles calls.
  * Without interleave, it runs until WaitForVBlank as before. */
@@ -718,6 +735,7 @@ void glue_resume_from_break(void)
 /* In hybrid mode, VBlank is handled by the interpreter — yield is a no-op. */
 #if !ENABLE_RECOMPILED_CODE
 void glue_yield_for_vblank(void) { /* stub */ }
+void glue_yield_for_interrupt_poll(void) { /* stub */ }
 #if SONIC_REVERSE_DEBUG
 /* Tier 2 is native-only. Oracle never enters recompiled C so block-entry
  * hooks don't fire, but the symbols must exist for reverse_debug.c to
