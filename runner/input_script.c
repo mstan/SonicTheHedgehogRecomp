@@ -28,7 +28,13 @@ typedef enum {
     OP_WAIT_RAM8,
     OP_ASSERT_RAM16,
     OP_WAIT_RAM16,
+    OP_WRITE_RAM8,
+    OP_WRITE_RAM16,
+    OP_WRITE_RAM32,
     OP_SCREENSHOT,
+    OP_SAVE_STATE,
+    OP_LOAD_STATE,
+    OP_DUMP_RAM,
     OP_EXIT,
 } OpCode;
 
@@ -38,7 +44,7 @@ typedef struct {
     uint32_t  arg32b;      /* RAM expected value, PRESS frames */
     uint8_t   button_mask; /* HOLD/RELEASE/PRESS button bit */
     int       line_no;     /* source line for error messages */
-    char      str[64];     /* SCREENSHOT path */
+    char      str[260];    /* path/string argument */
 } ScriptOp;
 
 /* ---- State ---- */
@@ -52,6 +58,10 @@ static uint64_t s_wait_until_frame = 0;
 static uint8_t  s_held_mask        = 0;
 static int      s_exit_pending     = 0;
 static int      s_exit_code        = 0;
+static char     s_pending_screenshot[260];
+static char     s_pending_save_state[260];
+static char     s_pending_load_state[260];
+static char     s_pending_ram_dump[260];
 
 /* PRESS auto-release tracking. Up to 4 simultaneous PRESS timers. */
 typedef struct { uint8_t mask; uint64_t release_frame; } PressTimer;
@@ -92,8 +102,8 @@ static int parse_line(char *line, int line_no) {
     o->line_no = line_no;
     o->str[0]  = '\0';
 
-    char tok[64], a1[64], a2[64];
-    int n = sscanf(p, "%63s %63s %63s", tok, a1, a2);
+    char tok[64], a1[260], a2[260];
+    int n = sscanf(p, "%63s %259s %259s", tok, a1, a2);
     if (n < 1) return 1;
 
     if (!_stricmp(tok, "WAIT") && n >= 2) {
@@ -121,10 +131,31 @@ static int parse_line(char *line, int line_no) {
         o->op     = !_stricmp(tok, "ASSERT_RAM16") ? OP_ASSERT_RAM16 : OP_WAIT_RAM16;
         o->arg32  = (uint32_t)strtoul(a1, NULL, 16);
         o->arg32b = (uint32_t)strtoul(a2, NULL, 16);
+    } else if (!_stricmp(tok, "WRITE_RAM8") && n >= 3) {
+        o->op     = OP_WRITE_RAM8;
+        o->arg32  = (uint32_t)strtoul(a1, NULL, 16);
+        o->arg32b = (uint32_t)strtoul(a2, NULL, 16);
+    } else if (!_stricmp(tok, "WRITE_RAM16") && n >= 3) {
+        o->op     = OP_WRITE_RAM16;
+        o->arg32  = (uint32_t)strtoul(a1, NULL, 16);
+        o->arg32b = (uint32_t)strtoul(a2, NULL, 16);
+    } else if (!_stricmp(tok, "WRITE_RAM32") && n >= 3) {
+        o->op     = OP_WRITE_RAM32;
+        o->arg32  = (uint32_t)strtoul(a1, NULL, 16);
+        o->arg32b = (uint32_t)strtoul(a2, NULL, 16);
     } else if (!_stricmp(tok, "SCREENSHOT")) {
         o->op = OP_SCREENSHOT;
         if (n >= 2) snprintf(o->str, sizeof(o->str), "%s", a1);
         else        snprintf(o->str, sizeof(o->str), "screenshot.png");
+    } else if (!_stricmp(tok, "SAVE_STATE") && n >= 2) {
+        o->op = OP_SAVE_STATE;
+        snprintf(o->str, sizeof(o->str), "%s", a1);
+    } else if (!_stricmp(tok, "LOAD_STATE") && n >= 2) {
+        o->op = OP_LOAD_STATE;
+        snprintf(o->str, sizeof(o->str), "%s", a1);
+    } else if (!_stricmp(tok, "DUMP_RAM") && n >= 2) {
+        o->op = OP_DUMP_RAM;
+        snprintf(o->str, sizeof(o->str), "%s", a1);
     } else if (!_stricmp(tok, "EXIT")) {
         o->op    = OP_EXIT;
         o->arg32 = (n >= 2) ? (uint32_t)strtoul(a1, NULL, 0) : 0u;
@@ -143,8 +174,13 @@ int input_script_load(const char *path) {
     s_op_count = 0;
     s_pc = 0;
     s_active = 0;
+    s_wait_until_frame = 0;
     s_held_mask = 0;
     s_exit_pending = 0;
+    s_pending_screenshot[0] = '\0';
+    s_pending_save_state[0] = '\0';
+    s_pending_load_state[0] = '\0';
+    s_pending_ram_dump[0] = '\0';
     memset(s_press_timers, 0, sizeof(s_press_timers));
     if (!path) return 0;
 
@@ -167,7 +203,10 @@ int input_script_load(const char *path) {
 
 void input_script_tick(uint64_t frame,
                        input_script_read8_fn  r8,
-                       input_script_read16_fn r16)
+                       input_script_read16_fn r16,
+                       input_script_write8_fn  w8,
+                       input_script_write16_fn w16,
+                       input_script_write32_fn w32)
 {
     if (!s_active) return;
 
@@ -257,9 +296,52 @@ void input_script_tick(uint64_t frame,
                 break;
             }
 
+            case OP_WRITE_RAM8:
+                if (w8) w8(o->arg32, (uint8_t)o->arg32b);
+                fprintf(stderr, "[input_script] WRITE_RAM8 at frame %llu ($%06X=$%02X)\n",
+                        (unsigned long long)frame, o->arg32, (uint8_t)o->arg32b);
+                s_pc++;
+                break;
+
+            case OP_WRITE_RAM16:
+                if (w16) w16(o->arg32, (uint16_t)o->arg32b);
+                fprintf(stderr, "[input_script] WRITE_RAM16 at frame %llu ($%06X=$%04X)\n",
+                        (unsigned long long)frame, o->arg32, (uint16_t)o->arg32b);
+                s_pc++;
+                break;
+
+            case OP_WRITE_RAM32:
+                if (w32) w32(o->arg32, (uint32_t)o->arg32b);
+                fprintf(stderr, "[input_script] WRITE_RAM32 at frame %llu ($%06X=$%08X)\n",
+                        (unsigned long long)frame, o->arg32, (uint32_t)o->arg32b);
+                s_pc++;
+                break;
+
             case OP_SCREENSHOT:
+                snprintf(s_pending_screenshot, sizeof(s_pending_screenshot), "%s", o->str);
                 /* Wired by the main loop next frame — see input_script_pending_screenshot. */
                 fprintf(stderr, "[input_script] SCREENSHOT requested at frame %llu (path=%s)\n",
+                        (unsigned long long)frame, o->str);
+                s_pc++;
+                break;
+
+            case OP_SAVE_STATE:
+                snprintf(s_pending_save_state, sizeof(s_pending_save_state), "%s", o->str);
+                fprintf(stderr, "[input_script] SAVE_STATE requested at frame %llu (path=%s)\n",
+                        (unsigned long long)frame, o->str);
+                s_pc++;
+                break;
+
+            case OP_LOAD_STATE:
+                snprintf(s_pending_load_state, sizeof(s_pending_load_state), "%s", o->str);
+                fprintf(stderr, "[input_script] LOAD_STATE requested at frame %llu (path=%s)\n",
+                        (unsigned long long)frame, o->str);
+                s_pc++;
+                break;
+
+            case OP_DUMP_RAM:
+                snprintf(s_pending_ram_dump, sizeof(s_pending_ram_dump), "%s", o->str);
+                fprintf(stderr, "[input_script] DUMP_RAM requested at frame %llu (path=%s)\n",
                         (unsigned long long)frame, o->str);
                 s_pc++;
                 break;
@@ -279,3 +361,33 @@ uint8_t input_script_held_mask(void) { return s_held_mask;     }
 bool    input_script_should_exit(void){ return s_exit_pending != 0; }
 int     input_script_exit_code  (void){ return s_exit_code;    }
 bool    input_script_active     (void){ return s_active != 0;  }
+
+static bool take_pending_path(char *pending, char *out, size_t out_cap)
+{
+    if (!pending[0])
+        return false;
+    if (out && out_cap)
+        snprintf(out, out_cap, "%s", pending);
+    pending[0] = '\0';
+    return true;
+}
+
+bool input_script_take_save_state(char *out, size_t out_cap)
+{
+    return take_pending_path(s_pending_save_state, out, out_cap);
+}
+
+bool input_script_take_screenshot(char *out, size_t out_cap)
+{
+    return take_pending_path(s_pending_screenshot, out, out_cap);
+}
+
+bool input_script_take_load_state(char *out, size_t out_cap)
+{
+    return take_pending_path(s_pending_load_state, out, out_cap);
+}
+
+bool input_script_take_ram_dump(char *out, size_t out_cap)
+{
+    return take_pending_path(s_pending_ram_dump, out, out_cap);
+}

@@ -67,6 +67,7 @@ const char *exe_relative(const char *filename)
 #endif
 
 #include "cmd_server.h"
+#include "game_spec.h"
 #include "game_layout.h"
 #if SONIC_REVERSE_DEBUG
 #include "reverse_debug.h"
@@ -401,6 +402,133 @@ static cc_u16l *load_rom(const char *path,
 
 ClownMDEmu g_clownmdemu;
 
+static int path_is_absolute(const char *path)
+{
+    if (!path || !path[0])
+        return 0;
+    if (path[0] == '/' || path[0] == '\\')
+        return 1;
+    return ((path[0] >= 'A' && path[0] <= 'Z') ||
+            (path[0] >= 'a' && path[0] <= 'z')) &&
+           path[1] == ':';
+}
+
+static const char *resolve_runner_path(const char *path, char *buf, size_t buf_len)
+{
+    if (path_is_absolute(path))
+        return path;
+    snprintf(buf, buf_len, "%s", exe_relative(path));
+    return buf;
+}
+
+static int runner_save_state_file(const char *path)
+{
+    char full_path[512];
+    const char *resolved = resolve_runner_path(path, full_path, sizeof(full_path));
+    FILE *sf = fopen(resolved, "wb");
+    if (!sf) {
+        fprintf(stderr, "[SAVE] failed to open %s\n", resolved);
+        return 0;
+    }
+
+    size_t wrote = fwrite(&g_clownmdemu, 1, sizeof(g_clownmdemu), sf);
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+    glue_save_state(sf);
+#endif
+    int ok = (wrote == sizeof(g_clownmdemu)) && !ferror(sf);
+    fclose(sf);
+
+    if (ok)
+        fprintf(stderr, "[SAVE] saved %s\n", resolved);
+    else
+        fprintf(stderr, "[SAVE] failed while writing %s\n", resolved);
+    return ok;
+}
+
+static int runner_load_state_file(const char *path)
+{
+    char full_path[512];
+    const char *resolved = resolve_runner_path(path, full_path, sizeof(full_path));
+    FILE *sf = fopen(resolved, "rb");
+    if (!sf) {
+        fprintf(stderr, "[LOAD] empty/missing %s\n", resolved);
+        return 0;
+    }
+
+    const ClownMDEmu_Callbacks *cb = g_clownmdemu.callbacks;
+    const cc_u16l *cart = g_clownmdemu.cartridge_buffer;
+    cc_u32l cart_len = g_clownmdemu.cartridge_buffer_length;
+    size_t read = fread(&g_clownmdemu, 1, sizeof(g_clownmdemu), sf);
+    g_clownmdemu.callbacks = cb;
+    g_clownmdemu.cartridge_buffer = cart;
+    g_clownmdemu.cartridge_buffer_length = cart_len;
+
+    if (read == sizeof(g_clownmdemu)) {
+#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
+        glue_load_state(sf);
+#endif
+    }
+    int ok = (read == sizeof(g_clownmdemu)) && !ferror(sf);
+    fclose(sf);
+
+#if ENABLE_RECOMPILED_CODE
+    if (ok && g_game_spec.resume_main_loop_pc)
+        glue_restart_game_fiber(g_game_spec.resume_main_loop_pc);
+#endif
+
+    if (ok)
+        fprintf(stderr, "[LOAD] loaded %s\n", resolved);
+    else
+        fprintf(stderr, "[LOAD] failed/truncated %s\n", resolved);
+    return ok;
+}
+
+static uint8_t runner_ram_byte(uint32_t addr)
+{
+    uint16_t off = (uint16_t)(addr & 0xFFFFu);
+    uint16_t word = g_clownmdemu.state.m68k.ram[off / 2u];
+    return (off & 1u) ? (uint8_t)(word & 0xFFu) : (uint8_t)(word >> 8);
+}
+
+static int runner_dump_ram_file(const char *path)
+{
+    char full_path[512];
+    const char *resolved = resolve_runner_path(path, full_path, sizeof(full_path));
+    FILE *df = fopen(resolved, "wb");
+    if (!df) {
+        fprintf(stderr, "[RAMDUMP] failed to open %s\n", resolved);
+        return 0;
+    }
+
+    uint8_t bytes[0x10000];
+    for (uint32_t i = 0; i < 0x10000u; i++)
+        bytes[i] = runner_ram_byte(i);
+
+    size_t wrote = fwrite(bytes, 1, sizeof(bytes), df);
+    int ok = (wrote == sizeof(bytes)) && !ferror(df);
+    fclose(df);
+
+    if (ok)
+        fprintf(stderr, "[RAMDUMP] wrote %s\n", resolved);
+    else
+        fprintf(stderr, "[RAMDUMP] failed while writing %s\n", resolved);
+    return ok;
+}
+
+static int runner_write_screenshot_file(const char *path)
+{
+    char full_path[512];
+    const char *resolved = resolve_runner_path(path, full_path, sizeof(full_path));
+    int ok = png_write_argb(resolved, s_framebuf,
+                            s_screen_width, s_screen_height,
+                            MAX_SCREEN_WIDTH) == 0;
+    if (ok)
+        fprintf(stderr, "[SCREENSHOT] wrote %s\n", resolved);
+    else
+        fprintf(stderr, "[SCREENSHOT] failed to write %s\n", resolved);
+    return ok;
+}
+
 /* =========================================================================
  * Frame logging (main-loop version, works in ALL build modes)
  * ========================================================================= */
@@ -467,9 +595,16 @@ static void write_framelog(uint32_t frame)
      * FrameRecord ring + per-game fill_frame_record() for game-
      * specific debug data. */
     uint32_t player = g_game_layout.player_object_addr;
+    uint32_t rdb_func = 0;
+#if SONIC_REVERSE_DEBUG && ENABLE_RECOMPILED_CODE
+    rdb_func = g_rdb_current_func;
+#endif
+
     fprintf(s_framelog_file,
             "F%03u mode=%02X vbl=%02X cnt=%04X scrl=%04X plc=%04X "
-            "fcnt=%08X obj0=%02X/%02X ypos=%04X yvel=%04X rtn=%02X log=%02X/%02X phys=%02X/%02X st=%02X lk=%02X\n",
+            "fcnt=%08X obj0=%02X/%02X xpos=%04X ypos=%04X xvel=%04X yvel=%04X inrt=%04X "
+            "rtn=%02X log=%02X/%02X phys=%02X/%02X st=%02X lk=%02X "
+            "pc=%06X tc=%02X/%02X x=%04X tgt=%04X dur=%02X bg=%02X/%02X left=%02X/%02X bottom=%02X/%02X tf=%02X\n",
             frame,
             EMU_BYTE(g_game_layout.game_mode_addr),
             EMU_BYTE(g_game_layout.vint_routine_addr),
@@ -477,15 +612,25 @@ static void write_framelog(uint32_t frame)
             EMU_WORD(0xF700), EMU_WORD(0xF680),
             EMU_LONG(g_game_layout.vint_runcount_addr),
             EMU_BYTE(player + 0x00), EMU_BYTE(player + 0x01),
+            EMU_WORD(player + 0x08),  /* player X position */
             EMU_WORD(player + 0x0C),  /* player Y position */
+            EMU_WORD(player + 0x10),  /* player X velocity */
             EMU_WORD(player + 0x12),  /* player Y velocity */
+            EMU_WORD(player + 0x14),  /* player inertia */
             EMU_BYTE(player + 0x24),  /* player routine     */
             EMU_BYTE(0xF602),  /* P1 held (logical) — S1-shaped */
             EMU_BYTE(0xF603),  /* P1 pressed (logical) */
             EMU_BYTE(0xF604),  /* P1 held (physical) */
             EMU_BYTE(0xF605),  /* P1 pressed (physical) */
             EMU_BYTE(player + 0x22),  /* player status */
-            EMU_BYTE(g_game_layout.vint_routine_addr));
+            EMU_BYTE(g_game_layout.vint_routine_addr),
+            rdb_func,
+            EMU_BYTE(0xB080), EMU_BYTE(0xB0A4),
+            EMU_WORD(0xB088), EMU_WORD(0xB0B0), EMU_BYTE(0xB09E),
+            EMU_BYTE(0xB140), EMU_BYTE(0xB164),
+            EMU_BYTE(0xB1C0), EMU_BYTE(0xB1E4),
+            EMU_BYTE(0xB180), EMU_BYTE(0xB1A4),
+            EMU_BYTE(0xF623));
     fflush(s_framelog_file);
 
     #undef EMU_BYTE
@@ -690,7 +835,7 @@ int main(int argc, char *argv[])
     }
 
     SDL_Window *window = SDL_CreateWindow(
-        "Sonic the Hedgehog",
+        g_game_spec.display_name ? g_game_spec.display_name : "Sonic the Hedgehog",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         640, 448,   /* 2× scale: 320×224 → 640×448 */
         SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
@@ -850,7 +995,8 @@ int main(int argc, char *argv[])
      * Spec format: "0xFFF001,0xFFF002,0xFFF009[@FRAMES]".  Output file name
      * mirrors the TCP convention so the comparator picks it up unchanged. */
     if (mem_write_log_spec) {
-        uint32_t addrs[32];
+        uint32_t addrs_lo[32];
+        uint32_t addrs_hi[32];
         int n_addrs = 0;
         int frames = 0;
         char buf[256];
@@ -860,7 +1006,11 @@ int main(int argc, char *argv[])
         if (at) { *at = '\0'; frames = atoi(at + 1); }
         char *tok = strtok(buf, ",");
         while (tok && n_addrs < 32) {
-            addrs[n_addrs++] = (uint32_t)strtoul(tok, NULL, 0);
+            char *dash = strchr(tok, '-');
+            addrs_lo[n_addrs] = (uint32_t)strtoul(tok, NULL, 0);
+            addrs_hi[n_addrs] = dash ? (uint32_t)strtoul(dash + 1, NULL, 0)
+                                     : addrs_lo[n_addrs];
+            n_addrs++;
             tok = strtok(NULL, ",");
         }
         const char *path =
@@ -869,7 +1019,7 @@ int main(int argc, char *argv[])
 #else
             exe_relative("mem_write_log_oracle.log");
 #endif
-        if (!cmd_server_mem_write_log_start(addrs, n_addrs, frames, path))
+        if (!cmd_server_mem_write_log_start_ranges(addrs_lo, addrs_hi, n_addrs, frames, path))
             fprintf(stderr, "[MEM-WRITE-LOG] failed to arm (spec=%s)\n", mem_write_log_spec);
     }
 
@@ -951,37 +1101,10 @@ int main(int argc, char *argv[])
 #else
                         snprintf(slot_name, sizeof(slot_name), "interp_save_%d.bin", slot);
 #endif
-                        if (is_save) {
-                            FILE *sf = fopen(exe_relative(slot_name), "wb");
-                            if (sf) {
-                                fwrite(&g_clownmdemu, 1, sizeof(g_clownmdemu), sf);
-#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
-                                { extern void glue_save_state(FILE *);
-                                  glue_save_state(sf); }
-#endif
-                                fclose(sf);
-                                fprintf(stderr, "[SAVE] Slot %d saved\n", slot);
-                            }
-                        } else {
-                            FILE *sf = fopen(exe_relative(slot_name), "rb");
-                            if (sf) {
-                                const ClownMDEmu_Callbacks *cb = g_clownmdemu.callbacks;
-                                const cc_u16l *cart = g_clownmdemu.cartridge_buffer;
-                                cc_u32l cart_len = g_clownmdemu.cartridge_buffer_length;
-                                fread(&g_clownmdemu, 1, sizeof(g_clownmdemu), sf);
-                                g_clownmdemu.callbacks = cb;
-                                g_clownmdemu.cartridge_buffer = cart;
-                                g_clownmdemu.cartridge_buffer_length = cart_len;
-#if ENABLE_RECOMPILED_CODE || HYBRID_RECOMPILED_CODE
-                                { extern void glue_load_state(FILE *);
-                                  glue_load_state(sf); }
-#endif
-                                fclose(sf);
-                                fprintf(stderr, "[LOAD] Slot %d loaded\n", slot);
-                            } else {
-                                fprintf(stderr, "[LOAD] Slot %d empty\n", slot);
-                            }
-                        }
+                        if (is_save)
+                            runner_save_state_file(slot_name);
+                        else
+                            runner_load_state_file(slot_name);
                     }
                 }
 #if HYBRID_RECOMPILED_CODE
@@ -1159,7 +1282,22 @@ int main(int argc, char *argv[])
         if (input_script_active()) {
             extern uint8_t  m68k_read8 (uint32_t);
             extern uint16_t m68k_read16(uint32_t);
-            input_script_tick(frame_num, m68k_read8, m68k_read16);
+            extern void     m68k_write8 (uint32_t, uint8_t);
+            extern void     m68k_write16(uint32_t, uint16_t);
+            extern void     m68k_write32(uint32_t, uint32_t);
+            input_script_tick(frame_num, m68k_read8, m68k_read16,
+                              m68k_write8, m68k_write16, m68k_write32);
+            {
+                char state_path[260];
+                if (input_script_take_save_state(state_path, sizeof(state_path)))
+                    runner_save_state_file(state_path);
+                if (input_script_take_load_state(state_path, sizeof(state_path)))
+                    runner_load_state_file(state_path);
+                if (input_script_take_ram_dump(state_path, sizeof(state_path)))
+                    runner_dump_ram_file(state_path);
+                if (input_script_take_screenshot(state_path, sizeof(state_path)))
+                    runner_write_screenshot_file(state_path);
+            }
             if (input_script_should_exit()) {
                 fprintf(stderr, "[input_script] exiting per script directive (code=%d)\n",
                         input_script_exit_code());

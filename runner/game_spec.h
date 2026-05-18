@@ -74,6 +74,19 @@ typedef struct GameSpec {
     void      (*call_vblank)(void);
     void      (*call_hblank)(void);
 
+    /* Save-state resume loop PC. Native save-state loads restart the
+     * host game fiber here after restoring RAM/CPU state, because the
+     * host C stack itself is not portable save-state data. This should
+     * be a stable post-init per-frame loop for the state shape normally
+     * saved by the game. 0 preserves the old fiber continuation
+     * behavior. */
+    uint32_t    resume_main_loop_pc;
+
+    /* Outer game-mode dispatcher PC. If the save-state resume loop
+     * returns because the game changed modes, the restarted host fiber
+     * continues here so normal mode dispatch takes over. */
+    uint32_t    dispatch_main_loop_pc;
+
     /* Optional per-yield periodic. Sonic 1 calls a UpdateMusic-like
      * routine (func_001642) while the game thread is parked at
      * WaitForVBlank. NULL = nothing to do. */
