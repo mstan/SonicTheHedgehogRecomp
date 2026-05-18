@@ -18,6 +18,10 @@ void glue_signal_vblank(void);
  * (level 4).  Currently a hint only; game thread polls g_vblank_pending. */
 void glue_signal_hblank(void);
 
+/* Called by the native Clown68000 stub when clownmdemu raises an IRQ that
+ * the recompiled runtime must service on the saved 68K state. */
+void glue_handle_interrupt(cc_u16f level);
+
 /* Called by stub_clown68000 to hand us the read/write callbacks that
  * clownmdemu set up for the current Clown68000_DoCycles call. */
 void glue_set_callbacks(const void *callbacks);

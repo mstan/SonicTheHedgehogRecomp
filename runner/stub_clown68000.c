@@ -56,8 +56,11 @@ void Clown68000_DoCycles(Clown68000_State *state,
 
 void Clown68000_Interrupt(Clown68000_State *state, cc_u16f level)
 {
-    /* Don't run handlers inside Iterate — VDP is mid-render and the
-     * dual cycle counters conflict. Handlers run at the yield point. */
+    /* VBlank is driven by the generated cycle-threshold path. HBlank still
+     * belongs to clownmdemu's scanline scheduler: Sonic 2's split-screen
+     * paths depend on IRQ4 clearing Hint_flag during active display. */
+    if (level == 4)
+        glue_handle_interrupt(level);
+
     (void)state;
-    (void)level;
 }
