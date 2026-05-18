@@ -511,6 +511,7 @@ void glue_handle_interrupt(cc_u16f level)
         s_in_vblank_service = 1;
         g_rte_pending = 0;
         g_rte_pending_ptr = &s_rte_dummy;
+        g_rte_pending = 0;
         /* Pin clownmdemu's VDP "currently in VBlank" flag for the
          * duration of the handler. By the time we reach this point in
          * Iterate, the VDP simulator has already advanced past
@@ -549,6 +550,7 @@ void glue_handle_interrupt(cc_u16f level)
         s_in_vblank_service = 1;
         g_rte_pending = 0;
         g_rte_pending_ptr = &s_rte_dummy;
+        g_rte_pending = 0;
         if (g_game_spec.call_hblank) g_game_spec.call_hblank();
         g_rte_pending_ptr = &s_rte_real;
         g_rte_pending = 0;
@@ -849,6 +851,7 @@ static void fire_vblank_handler_once(void)
     s_in_vblank_service = 1;
     g_rte_pending = 0;
     g_rte_pending_ptr = &s_rte_dummy;
+    g_rte_pending = 0;
     uint32_t acc_saved = g_cycle_accumulator;
     /* Pin VDP VBlank flag while the handler runs — see glue_run_irq
      * for rationale. Sonic 2's V_Int reads $C00004 expecting bit 3
