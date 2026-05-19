@@ -19,9 +19,15 @@ set(CMAKE_C_STANDARD 11)
 #
 # Default debug-server ports differ per target (4378 native / 4379 oracle)
 # so both can run simultaneously for side-by-side ring-buffer comparison.
+#
+# Runner code is shared with Sonic 2 and lives in the submodule at
+# segagenesisrecomp/runner/. Per-game files (sonic1_spec.c, sonic_extras.c,
+# sonic1_hybrid_table.c) live alongside the Sonic 1 generated TUs in
+# segagenesisrecomp/sonicthehedgehog/.
 # ---------------------------------------------------------------------------
 
 set(RECOMP_ROOT "${CMAKE_SOURCE_DIR}/segagenesisrecomp")
+set(RUNNER_ROOT "${RECOMP_ROOT}/runner")
 
 option(SONIC_REVERSE_DEBUG
     "Enable Tier-1 reverse-debugger hooks (sgrdb_write*, ring buffer, rdb_* TCP cmds). \
@@ -29,11 +35,11 @@ Requires a regen with GenesisRecomp --reverse-debug; mixing flagged/unflagged \
 generated C against the other runner variant is a link error by design."
     OFF)
 
-include("${RECOMP_ROOT}/runner/clownmdemu_patches.cmake")
+include("${RUNNER_ROOT}/clownmdemu_patches.cmake")
 add_subdirectory("${RECOMP_ROOT}/clownmdemu-core" clownmdemu-core)
 
 list(APPEND CMAKE_PREFIX_PATH
-    "${RECOMP_ROOT}/runner/external/SDL2/SDL2-2.28.5/cmake")
+    "${RUNNER_ROOT}/external/SDL2/SDL2-2.28.5/cmake")
 find_package(SDL2 REQUIRED)
 
 # ---------------------------------------------------------------------------
@@ -41,35 +47,35 @@ find_package(SDL2 REQUIRED)
 # ---------------------------------------------------------------------------
 
 set(SONIC_SHARED_SOURCES
-    runner/main.c
-    runner/audio.c
-    runner/cmd_server.c
-    runner/frame_snapshots.c
-    runner/sonic_extras.c
-    runner/sonic1_spec.c
-    runner/hybrid_global.c
-    runner/glue.c
-    runner/crash_report.c
-    runner/input_script.c
-    runner/audio/event_queue.c
-    runner/audio/ym2612.c
-    runner/audio/sn76489.c
-    runner/audio/mixer.c
-    runner/audio/observability.c
+    "${RUNNER_ROOT}/main.c"
+    "${RUNNER_ROOT}/audio.c"
+    "${RUNNER_ROOT}/cmd_server.c"
+    "${RUNNER_ROOT}/frame_snapshots.c"
+    "${RUNNER_ROOT}/hybrid_global.c"
+    "${RUNNER_ROOT}/glue.c"
+    "${RUNNER_ROOT}/crash_report.c"
+    "${RUNNER_ROOT}/input_script.c"
+    "${RUNNER_ROOT}/audio/event_queue.c"
+    "${RUNNER_ROOT}/audio/ym2612.c"
+    "${RUNNER_ROOT}/audio/sn76489.c"
+    "${RUNNER_ROOT}/audio/mixer.c"
+    "${RUNNER_ROOT}/audio/observability.c"
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_full.c"
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_dispatch.c"
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_layout.c"
+    "${RECOMP_ROOT}/sonicthehedgehog/sonic1_spec.c"
+    "${RECOMP_ROOT}/sonicthehedgehog/sonic_extras.c"
     "${RECOMP_ROOT}/sonicthehedgehog/extras.c"
 )
 
 if(SONIC_REVERSE_DEBUG)
-    list(APPEND SONIC_SHARED_SOURCES runner/reverse_debug.c)
+    list(APPEND SONIC_SHARED_SOURCES "${RUNNER_ROOT}/reverse_debug.c")
     message(STATUS "SONIC_REVERSE_DEBUG=ON — regen with GenesisRecomp --reverse-debug")
 endif()
 
 set(SONIC_SHARED_INCLUDES
-    runner/
-    "${RECOMP_ROOT}/runner/include"
+    "${RUNNER_ROOT}"
+    "${RUNNER_ROOT}/include"
     "${RECOMP_ROOT}/sonicthehedgehog"
     "${RECOMP_ROOT}/clownmdemu-core/source"
     "${RECOMP_ROOT}/clownmdemu-core/libraries/clowncommon"
@@ -91,7 +97,7 @@ function(_sonic_finalize_target tgt)
     if(WIN32)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${RECOMP_ROOT}/runner/external/SDL2/SDL2-2.28.5/lib/x64/SDL2.dll"
+                "${RUNNER_ROOT}/external/SDL2/SDL2-2.28.5/lib/x64/SDL2.dll"
                 "$<TARGET_FILE_DIR:${tgt}>"
             COMMENT "Copying SDL2.dll for ${tgt}")
         # Annotation CSV used by crash_report.c for symbol resolution.
@@ -109,7 +115,7 @@ endfunction()
 
 add_executable(SonicTheHedgehogRecomp
     ${SONIC_SHARED_SOURCES}
-    runner/stub_clown68000.c
+    "${RUNNER_ROOT}/stub_clown68000.c"
 )
 target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
     INCLUDE_GENERATED_CODE=1
@@ -124,15 +130,15 @@ _sonic_finalize_target(SonicTheHedgehogRecomp)
 # ---------------------------------------------------------------------------
 
 set(SONIC_ORACLE_EXTRA_SOURCES
-    runner/hybrid.c
-    runner/sonic1_hybrid_table.c    # per-game (Sonic 1's verified-clean overrides)
-    runner/hybrid_jmp.c
+    "${RUNNER_ROOT}/hybrid.c"
+    "${RECOMP_ROOT}/sonicthehedgehog/sonic1_hybrid_table.c"  # per-game (Sonic 1's verified-clean overrides)
+    "${RUNNER_ROOT}/hybrid_jmp.c"
 )
 if(SONIC_REVERSE_DEBUG)
     # Tier 3: per-instruction capture on the oracle side. Oracle-only
     # because native uses stub_clown68000.c and never runs the
     # interpreter.
-    list(APPEND SONIC_ORACLE_EXTRA_SOURCES runner/oracle_trace.c)
+    list(APPEND SONIC_ORACLE_EXTRA_SOURCES "${RUNNER_ROOT}/oracle_trace.c")
 endif()
 
 add_executable(SonicTheHedgehogRecomp_oracle
