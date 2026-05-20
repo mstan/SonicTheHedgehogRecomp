@@ -1,0 +1,20 @@
+# Sonic 1 smoke: boot through Sega + title screen, enter GHZ Act 1,
+# run right for ~2800 frames. Mirrors Sonic 2's smoke_enter_level_run_right
+# scenario for parallel visual regression coverage.
+#
+# Game_Mode ($FFF600) transitions:
+#   0x00 -> Sega screen
+#   0x04 -> title
+#   0x0C -> level play (top bit 0x80 is set briefly during the transition)
+#
+# Single START press at title is enough — Sonic 1 doesn't have Sonic 2's
+# intro-animation skip step.
+
+WAIT 480
+PRESS START 2
+WAIT_RAM8 FFF600 8C
+WAIT_RAM8 FFF600 0C
+WAIT 30
+HOLD RIGHT
+WAIT 2800
+EXIT 0

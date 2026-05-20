@@ -1,0 +1,237 @@
+{
+  "tool": "zone_smoke.py",
+  "version": 1,
+  "game": "sonic1",
+  "input_script": "smoke_run_right_ghz.input",
+  "hash_frames": 60,
+  "fbhashes": [
+    {
+      "frame": 60,
+      "hash": "0x54FC6B19E7A358B5"
+    },
+    {
+      "frame": 120,
+      "hash": "0x2B64C0A12074F4D1"
+    },
+    {
+      "frame": 180,
+      "hash": "0xA94452B61742BE01"
+    },
+    {
+      "frame": 240,
+      "hash": "0x790DCA274A7ABBDD"
+    },
+    {
+      "frame": 300,
+      "hash": "0x5520AA57F3CD843D"
+    },
+    {
+      "frame": 360,
+      "hash": "0x7BC52AFCDE184525"
+    },
+    {
+      "frame": 420,
+      "hash": "0x4DCC4D6BE25240E1"
+    },
+    {
+      "frame": 480,
+      "hash": "0xF25793A2E294E511"
+    },
+    {
+      "frame": 540,
+      "hash": "0xAD44AB71B87CC315"
+    },
+    {
+      "frame": 600,
+      "hash": "0x89A39E8269243115"
+    },
+    {
+      "frame": 660,
+      "hash": "0x1EB6D1326409259D"
+    },
+    {
+      "frame": 720,
+      "hash": "0x91A24719ACA86C61"
+    },
+    {
+      "frame": 780,
+      "hash": "0xDC7B05599AE9C6A9"
+    },
+    {
+      "frame": 840,
+      "hash": "0xFE8CA00F64054AC1"
+    },
+    {
+      "frame": 900,
+      "hash": "0xBBDBB62D666A788D"
+    },
+    {
+      "frame": 960,
+      "hash": "0x3048E02AF3EDE3C1"
+    },
+    {
+      "frame": 1020,
+      "hash": "0x8042BF03B25B0D7D"
+    },
+    {
+      "frame": 1080,
+      "hash": "0x6C19D3A90EAB303D"
+    },
+    {
+      "frame": 1140,
+      "hash": "0x25FE9D810445E7E1"
+    },
+    {
+      "frame": 1200,
+      "hash": "0x3A9B6BA216CAE151"
+    },
+    {
+      "frame": 1260,
+      "hash": "0x03236C09CE865119"
+    },
+    {
+      "frame": 1320,
+      "hash": "0xF9D1C501044FD4BD"
+    },
+    {
+      "frame": 1380,
+      "hash": "0x0567BA015AAF7141"
+    },
+    {
+      "frame": 1440,
+      "hash": "0x04CA4F8B3B809975"
+    },
+    {
+      "frame": 1500,
+      "hash": "0xAD44AB71B87CC315"
+    },
+    {
+      "frame": 1560,
+      "hash": "0xEA5F3B9F1031B921"
+    },
+    {
+      "frame": 1620,
+      "hash": "0x9256A93549176735"
+    },
+    {
+      "frame": 1680,
+      "hash": "0x5BFC89C91FA86919"
+    },
+    {
+      "frame": 1740,
+      "hash": "0xC89BAC546061F9A1"
+    },
+    {
+      "frame": 1800,
+      "hash": "0x9663A753368BA4A5"
+    },
+    {
+      "frame": 1860,
+      "hash": "0xA4B899FDE3EE3C39"
+    },
+    {
+      "frame": 1920,
+      "hash": "0x025530C353571249"
+    },
+    {
+      "frame": 1980,
+      "hash": "0xD2451E035D582CB9"
+    },
+    {
+      "frame": 2040,
+      "hash": "0xD2528FDC3C68336D"
+    },
+    {
+      "frame": 2100,
+      "hash": "0x2631C4382F196F5D"
+    },
+    {
+      "frame": 2160,
+      "hash": "0x025530C353571249"
+    },
+    {
+      "frame": 2220,
+      "hash": "0xD2451E035D582CB9"
+    },
+    {
+      "frame": 2280,
+      "hash": "0xD2528FDC3C68336D"
+    },
+    {
+      "frame": 2340,
+      "hash": "0x2631C4382F196F5D"
+    },
+    {
+      "frame": 2400,
+      "hash": "0x883C4808638E0C61"
+    },
+    {
+      "frame": 2460,
+      "hash": "0x066E73AC38E45129"
+    },
+    {
+      "frame": 2520,
+      "hash": "0x0D58DBC9C1B5D0A5"
+    },
+    {
+      "frame": 2580,
+      "hash": "0x64A6D2CE881534CD"
+    },
+    {
+      "frame": 2640,
+      "hash": "0x542A9C1BF29FCC25"
+    },
+    {
+      "frame": 2700,
+      "hash": "0x2B64C0A12074F4D1"
+    },
+    {
+      "frame": 2760,
+      "hash": "0x63CF21CECD64AA61"
+    },
+    {
+      "frame": 2820,
+      "hash": "0xE434A6A035CF3171"
+    },
+    {
+      "frame": 2880,
+      "hash": "0x16A1EE888B4E64A9"
+    },
+    {
+      "frame": 2940,
+      "hash": "0x3410D821A7C37B59"
+    },
+    {
+      "frame": 3000,
+      "hash": "0xA9EC60ACFFE42FCD"
+    },
+    {
+      "frame": 3060,
+      "hash": "0x8A34B311B4E8CE55"
+    },
+    {
+      "frame": 3120,
+      "hash": "0x3E0778506437C315"
+    },
+    {
+      "frame": 3180,
+      "hash": "0x796AD7AA69A569C1"
+    },
+    {
+      "frame": 3240,
+      "hash": "0x9664CFBA0B5F4825"
+    },
+    {
+      "frame": 3300,
+      "hash": "0x6C19D3A90EAB303D"
+    },
+    {
+      "frame": 3360,
+      "hash": "0x2640C444150A8269"
+    },
+    {
+      "frame": 3420,
+      "hash": "0x03DD6B3054F69A19"
+    }
+  ]
+}
