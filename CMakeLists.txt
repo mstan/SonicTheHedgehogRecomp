@@ -55,6 +55,7 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/glue.c"
     "${RUNNER_ROOT}/crash_report.c"
     "${RUNNER_ROOT}/input_script.c"
+    "${RUNNER_ROOT}/gamepad.c"
     "${RUNNER_ROOT}/audio/event_queue.c"
     "${RUNNER_ROOT}/audio/ym2612.c"
     "${RUNNER_ROOT}/audio/sn76489.c"
