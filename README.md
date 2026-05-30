@@ -33,15 +33,20 @@ Green Hill Zone (Acts 1–3) is fully completable. Later zones are partially fun
 
 The [recompiler](https://github.com/mstan/segagenesisrecomp) analyzes a Sonic 1 ROM binary and emits native C functions for every 68K subroutine — 530+ functions total. These generated functions use the same memory layout and register state as the original 68K code, but execute as compiled x64 instead of interpreted instructions.
 
-This runner hosts that generated code inside clownmdemu, which provides VDP rendering (graphics), Z80/FM/PSG (audio), and I/O (controllers). The generated 68K code runs on a Windows Fiber that interleaves with VDP scanline rendering via a cooperative yield model.
+This runner hosts that generated code inside clownmdemu, which provides VDP rendering (graphics), Z80/FM/PSG (audio), and I/O (controllers). The generated 68K code runs on a cooperative fiber that interleaves with VDP scanline rendering via a yield model — backed by Win32 Fibers on Windows and by `ucontext` on macOS/Linux (see `segagenesisrecomp/runner/fiber_compat.{h,c}`).
+
+The runner builds and runs natively on Windows (MSVC), macOS (Apple Silicon & Intel), and Linux. SDL2 provides windowing, rendering, audio, and `SDL_GameController` gamepad support on every platform.
 
 A TCP debug server (port 4378) provides live game state inspection, time-series Sonic state queries, VRAM inspection, and scriptable input injection for automated testing.
 
 ## Prerequisites
 
-- Visual Studio 2022 (MSVC)
-- CMake 3.16+
-- SDL2 2.28+ (bundled)
+- A C compiler:
+  - **Windows:** Visual Studio 2022 (MSVC)
+  - **macOS:** Apple Clang (Xcode Command Line Tools)
+  - **Linux:** Clang or GCC
+- CMake 3.16+ (plus [Ninja](https://ninja-build.org/) on macOS/Linux)
+- SDL2 2.28+ — bundled on Windows; `brew install sdl2` on macOS; `libsdl2-dev` (or distro equivalent) on Linux
 - A Sonic the Hedgehog (Genesis) ROM file (.bin/.md/.gen/.smd)
 
 ## Build and Run
@@ -58,6 +63,27 @@ cmake --build build --config Release
 build\Release\SonicTheHedgehogRecomp.exe
 # Or specify ROM directly:
 build\Release\SonicTheHedgehogRecomp.exe path\to\sonic.bin
+```
+
+#### macOS / Linux
+
+Builds natively on Apple Silicon and Intel macOS, and on Linux. SDL2 comes
+from Homebrew (macOS) or your distro (Linux) rather than the bundled Windows
+package; CMake finds it automatically.
+
+```bash
+# macOS prerequisites
+brew install cmake ninja sdl2
+# Debian/Ubuntu prerequisites
+# sudo apt install build-essential cmake ninja-build libsdl2-dev
+
+git clone --recursive https://github.com/mstan/SonicTheHedgehogRecomp.git
+cd SonicTheHedgehogRecomp
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+ninja -C build SonicTheHedgehogRecomp
+
+# Launch — a ROM path is required (no file picker on macOS/Linux)
+./build/SonicTheHedgehogRecomp "path/to/Sonic the Hedgehog.bin"
 ```
 
 ### Interpreter Build (for function discovery)
@@ -82,9 +108,14 @@ cmake --build build --config Release
 | C | C button |
 | Enter | Start |
 | Tab (hold) | Turbo mode |
+| F11 / Alt+Enter / Cmd+F | Toggle fullscreen |
 | Shift+F1-F9 | Save state |
 | F1-F9 | Load state |
 | Escape | Quit |
+
+A gamepad (Xbox, PlayStation, or any SDL-recognized controller) is supported
+on all platforms via `SDL_GameController` — D-pad/stick to move, face buttons
+mapped to A/B/C, Back for turbo, shoulder buttons for quick save/load.
 
 ## Discovering and Adding New Functions
 
