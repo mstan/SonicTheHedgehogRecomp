@@ -46,6 +46,8 @@ A TCP debug server (port 4378) provides live game state inspection, time-series 
 
 ## Build and Run
 
+> **No prebuilt binaries are distributed — build from source below and supply your own ROM.**
+
 ### Native Build (recompiled code drives the game)
 
 ```bash

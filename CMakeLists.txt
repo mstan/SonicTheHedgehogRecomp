@@ -35,7 +35,8 @@ Requires a regen with GenesisRecomp --reverse-debug; mixing flagged/unflagged \
 generated C against the other runner variant is a link error by design."
     OFF)
 
-include("${RUNNER_ROOT}/clownmdemu_patches.cmake")
+# clownmdemu-core is the mstan fork; our changes are committed in it directly
+# (no build-time patch step — see THIRD-PARTY-LICENSES.md).
 add_subdirectory("${RECOMP_ROOT}/clownmdemu-core" clownmdemu-core)
 
 list(APPEND CMAKE_PREFIX_PATH
