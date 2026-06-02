@@ -12,7 +12,7 @@ Green Hill Zone (Acts 1–3) is fully completable. Later zones are partially fun
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Rendering (VDP, sprites, tilemaps, scroll) | ✅ Works | Sprite art, flowers, animated tiles all correct |
+| Rendering (VDP, sprites, tilemaps, scroll) | ✅ Works | Sprite art, tilemaps, animated tiles all correct |
 | SEGA logo + voice sample | ✅ Works | |
 | Title screen / menus | ✅ Works | |
 | Boot sequence transitions | ✅ Works | SEGA → title → level load all functional |
