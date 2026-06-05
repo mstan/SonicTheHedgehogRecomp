@@ -44,6 +44,22 @@ list(APPEND CMAKE_PREFIX_PATH
 find_package(SDL2 REQUIRED)
 
 # ---------------------------------------------------------------------------
+# YM2612 FM = vendored ymfm (Aaron Giles, BSD-3) behind the stable ym2612_*
+# API (runner/audio/ym2612.h). Replaced clownmdemu's FM (AGPL) 2026-06-05 as
+# part of the AGPL-free runtime initiative — see segagenesisrecomp/LICENSING.md
+# (teardown item #2). enable_language(CXX) because ymfm is C++.
+# ---------------------------------------------------------------------------
+enable_language(CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(FM_SOURCES
+    "${RUNNER_ROOT}/audio/ym2612_ymfm.cpp"
+    "${RUNNER_ROOT}/external/ymfm/src/ymfm_opn.cpp"
+    "${RUNNER_ROOT}/external/ymfm/src/ymfm_ssg.cpp"
+    "${RUNNER_ROOT}/external/ymfm/src/ymfm_adpcm.cpp"
+    "${RUNNER_ROOT}/external/ymfm/src/ymfm_pcm.cpp"
+)
+
+# ---------------------------------------------------------------------------
 # Shared sources / includes / link libs
 # ---------------------------------------------------------------------------
 
@@ -57,8 +73,13 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/crash_report.c"
     "${RUNNER_ROOT}/input_script.c"
     "${RUNNER_ROOT}/gamepad.c"
+    # AGPL-free Z80 core (superzazu, MIT). These definitions override
+    # clownz80-interpreter.lib via MSVC first-wins linking (same trick as
+    # stub_clown68000.c) so clownz80's AGPL interpreter is never linked.
+    "${RUNNER_ROOT}/z80_superzazu.c"
+    "${RUNNER_ROOT}/external/superzazu/z80.c"
     "${RUNNER_ROOT}/audio/event_queue.c"
-    "${RUNNER_ROOT}/audio/ym2612.c"
+    ${FM_SOURCES}
     "${RUNNER_ROOT}/audio/sn76489.c"
     "${RUNNER_ROOT}/audio/mixer.c"
     "${RUNNER_ROOT}/audio/observability.c"
@@ -78,6 +99,9 @@ endif()
 set(SONIC_SHARED_INCLUDES
     "${RUNNER_ROOT}"
     "${RUNNER_ROOT}/include"
+    "${RUNNER_ROOT}/external/ymfm/src"
+    "${RUNNER_ROOT}/external/superzazu"
+    "${RECOMP_ROOT}/clownmdemu-core/libraries/clownz80/source"
     "${RECOMP_ROOT}/sonicthehedgehog"
     "${RECOMP_ROOT}/clownmdemu-core/source"
     "${RECOMP_ROOT}/clownmdemu-core/libraries/clowncommon"
