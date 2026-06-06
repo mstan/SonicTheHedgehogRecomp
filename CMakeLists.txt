@@ -75,6 +75,20 @@ if(PERMISSIVE_VDP)
     message(STATUS "PERMISSIVE_VDP=ON — clean-room VDP shadow build")
 endif()
 
+# Own backend: clean-room VDP + bus + Z80 scheduler replace clownmdemu's
+# Iterate/bus entirely (AGPL-free runtime, teardown #4/#5). Default OFF; brought
+# up incrementally. clownmdemu-core is still linked during bring-up and dropped
+# once validated (#10).
+option(OWN_BACKEND "Use the clean-room own backend (VDP+bus+Z80) instead of clownmdemu." OFF)
+if(OWN_BACKEND)
+    list(APPEND VDP_SOURCES
+        "${RUNNER_ROOT}/video/genesis_vdp.c"
+        "${RUNNER_ROOT}/video/genesis_bus.c"
+        "${RUNNER_ROOT}/video/genesis_machine.c")
+    add_compile_definitions(OWN_BACKEND=1)
+    message(STATUS "OWN_BACKEND=ON — clean-room own backend (bring-up)")
+endif()
+
 # ---------------------------------------------------------------------------
 # Shared sources / includes / link libs
 # ---------------------------------------------------------------------------
