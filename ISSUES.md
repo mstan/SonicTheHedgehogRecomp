@@ -1,5 +1,42 @@
 # Known issues
 
+## Own backend — V-int off-by-one at the title transition (attract only)
+
+**Symptom:** On the OWN_BACKEND build, A/B against the clownmdemu oracle
+(same recompiled 68K, same attract demo, `--framelog` diff) shows the
+own-backend V-int runcount (`fcnt`) tracking the oracle perfectly through
+the Sega screen (offset 0, F000–F150), then dropping **exactly one** V-int
+at the title transition (~F177) and staying locked at −1 thereafter. That
+one-frame nudge sends the *attract sequence* down a different branch
+(own runs `GM_Demo $08`, oracle `GM_Level $0C`) and the title screen
+lingers noticeably longer (~511 vs ~337 frames) before the demo starts.
+
+**Consequence:** None for interactive play — it's a one-time 1/60 s skew on
+the idle title/attract screens; gameplay, feel, animation, and sprite
+rendering are unaffected (you drive Sonic via input, not the demo). It only
+shows up if you sit on the title and watch the built-in attract demo.
+
+**Likely cause:** No pending-V-int latch. On hardware a V-int raised while
+the CPU has interrupts masked (`move #$2700,sr`, which Sonic does around
+screen transitions) stays *pending* and fires the instant interrupts
+re-enable. `glue_own_interrupt()` samples the mask **once** at the vblank
+scanline and **drops** the V-int if masked at that instant, so one V-int is
+lost during the masked title transition. (clownmdemu samples at a different
+phase and catches it.) The ~174-frame attract title-length gap is larger
+than one dropped V-int alone explains, so there is likely a second small
+attract-specific factor (title demo-timer / input-idle check on our bus)
+not yet isolated.
+
+**Status:** Deferred — does not affect gameplay. Revisit if attract-mode
+fidelity matters.
+
+**Fix sketch (for bit-exactness):** add a pending-V-int latch in
+`machine_run_frame` + `glue_own_interrupt`: when the vblank scanline hits
+with interrupts masked, mark V-int pending and deliver it on the next
+scanline boundary where the mask drops, instead of discarding it. Then
+re-run the `--framelog` A/B (now backend-aware, reads `g_ram` under
+OWN_BACKEND) and confirm `fcnt` offset stays 0.
+
 ## Audio — occasional residual boops
 
 **Symptom:** Extremely infrequent brief audio artifacts ("boops") during
