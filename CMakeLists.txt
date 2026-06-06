@@ -60,6 +60,22 @@ set(FM_SOURCES
 )
 
 # ---------------------------------------------------------------------------
+# Clean-room VDP (genesis_vdp) — AGPL-free runtime teardown item #4. While
+# PERMISSIVE_VDP is ON it runs as a SHADOW (mirrors VDP-port writes, substitutes
+# its rendered scanlines for display) so the renderer can be validated against
+# clownmdemu before clownmdemu's VDP is dropped. Default OFF. See LICENSING.md.
+# ---------------------------------------------------------------------------
+option(PERMISSIVE_VDP "Shadow the clean-room genesis_vdp for validation." OFF)
+set(VDP_SOURCES "")
+if(PERMISSIVE_VDP)
+    list(APPEND VDP_SOURCES
+        "${RUNNER_ROOT}/video/genesis_vdp.c"
+        "${RUNNER_ROOT}/video/vdp_integration.c")
+    add_compile_definitions(PERMISSIVE_VDP=1)
+    message(STATUS "PERMISSIVE_VDP=ON — clean-room VDP shadow build")
+endif()
+
+# ---------------------------------------------------------------------------
 # Shared sources / includes / link libs
 # ---------------------------------------------------------------------------
 
@@ -83,6 +99,7 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/audio/sn76489.c"
     "${RUNNER_ROOT}/audio/mixer.c"
     "${RUNNER_ROOT}/audio/observability.c"
+    ${VDP_SOURCES}
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_full.c"
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_dispatch.c"
     "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_layout.c"
@@ -101,6 +118,7 @@ set(SONIC_SHARED_INCLUDES
     "${RUNNER_ROOT}/include"
     "${RUNNER_ROOT}/external/ymfm/src"
     "${RUNNER_ROOT}/external/superzazu"
+    "${RUNNER_ROOT}/video"
     "${RECOMP_ROOT}/clownmdemu-core/libraries/clownz80/source"
     "${RECOMP_ROOT}/sonicthehedgehog"
     "${RECOMP_ROOT}/clownmdemu-core/source"
