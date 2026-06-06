@@ -140,7 +140,15 @@ set(SONIC_SHARED_INCLUDES
     "${RECOMP_ROOT}/clownmdemu-core/libraries/clown68000/source/interpreter"
 )
 
-set(SONIC_SHARED_LIBS clownmdemu-core SDL2::SDL2 SDL2::SDL2main)
+set(SONIC_SHARED_LIBS SDL2::SDL2 SDL2::SDL2main)
+# clownmdemu-core (AGPL) is linked ONLY for the clownmdemu/oracle backend. The
+# own backend links ZERO clownmdemu code (teardown #4/#5/#10) — validated: the
+# OWN_BACKEND build links clean with the lib dropped and boots to GHZ. Tying the
+# link to !OWN_BACKEND makes that the build invariant (and avoids the runner's
+# own-backend trace-hook defs clashing with the fork's).
+if(NOT OWN_BACKEND)
+    list(PREPEND SONIC_SHARED_LIBS clownmdemu-core)
+endif()
 if(WIN32)
     list(APPEND SONIC_SHARED_LIBS ws2_32 comdlg32)
 endif()
