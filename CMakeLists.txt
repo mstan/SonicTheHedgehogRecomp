@@ -26,7 +26,17 @@ set(CMAKE_C_STANDARD 11)
 # segagenesisrecomp/sonicthehedgehog/.
 # ---------------------------------------------------------------------------
 
-set(RECOMP_ROOT "${CMAKE_SOURCE_DIR}/segagenesisrecomp")
+# Engine root. Public layout: the committed `segagenesisrecomp` submodule
+# (clone --recursive is self-contained). Local-dev override: if a gitignored
+# `engine-local` symlink -> ../segagenesisrecomp is present, prefer it so every
+# game repo shares ONE engine checkout. Create it with scripts/link-engine.*.
+if(EXISTS "${CMAKE_SOURCE_DIR}/engine-local")
+    set(RECOMP_ROOT "${CMAKE_SOURCE_DIR}/engine-local")
+    message(STATUS "engine: local-dev override (engine-local/ -> shared checkout)")
+else()
+    set(RECOMP_ROOT "${CMAKE_SOURCE_DIR}/segagenesisrecomp")
+    message(STATUS "engine: committed segagenesisrecomp/ submodule")
+endif()
 set(RUNNER_ROOT "${RECOMP_ROOT}/runner")
 
 option(SONIC_REVERSE_DEBUG

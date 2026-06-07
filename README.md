@@ -53,22 +53,34 @@ A TCP debug server (port 4378) provides live game state inspection, time-series 
 
 > **No prebuilt binaries are distributed — build from source below and supply your own ROM.**
 
-### Engine checkout (one-time, shared by all game projects)
+### Get the source
 
 The recompiler engine ([segagenesisrecomp](https://github.com/mstan/segagenesisrecomp))
-lives in a single canonical checkout at the workspace root, shared by every
-game project (Sonic 1/2/3/…). Clone it once next to this repo, then link it in.
-The link is gitignored, so no project "owns" the engine:
+is a git submodule, so a recursive clone is fully self-contained:
 
 ```bash
-# Layout:  <workspace>/segagenesisrecomp        (shared engine, recursive clone)
-#          <workspace>/SonicTheHedgehogRecomp
-git clone --recursive https://github.com/mstan/segagenesisrecomp.git
-git clone https://github.com/mstan/SonicTheHedgehogRecomp.git
+git clone --recursive https://github.com/mstan/SonicTheHedgehogRecomp.git
 cd SonicTheHedgehogRecomp
-scripts/link-engine.sh        # macOS/Linux — creates a symlink
-scripts\link-engine.bat       # Windows     — creates a directory junction (mklink /J)
+# (cloned without --recursive? run: git submodule update --init --recursive)
 ```
+
+<details>
+<summary><b>Local dev across multiple games (optional)</b></summary>
+
+If you hack on Sonic 1/2/3 together, share ONE engine checkout instead of a
+per-repo submodule copy. Clone the engine once at the workspace root and link
+it in — CMake prefers the gitignored `engine-local` symlink when present,
+otherwise it falls back to the submodule:
+
+```bash
+# <workspace>/segagenesisrecomp        (shared engine, recursive clone — once)
+# <workspace>/SonicTheHedgehogRecomp
+git clone --recursive https://github.com/mstan/segagenesisrecomp.git
+cd SonicTheHedgehogRecomp
+scripts/link-engine.sh        # macOS/Linux — symlink  engine-local -> ../segagenesisrecomp
+scripts\link-engine.bat       # Windows     — junction (mklink /J)
+```
+</details>
 
 ### Native Build (recompiled code drives the game)
 
