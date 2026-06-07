@@ -98,6 +98,7 @@ set(OWN_BACKEND_SOURCES
 set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/main.c"
     "${RUNNER_ROOT}/audio.c"
+    "${RUNNER_ROOT}/chip_trace.c"   # dev-only [CHIP-TRACE] shared FM/PSG stream ring (strip before commit)
     "${RUNNER_ROOT}/cmd_server.c"
     "${RUNNER_ROOT}/frame_snapshots.c"
     "${RUNNER_ROOT}/hybrid_global.c"
