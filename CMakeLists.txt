@@ -39,9 +39,37 @@ generated C against the other runner variant is a link error by design."
 # (no build-time patch step — see THIRD-PARTY-LICENSES.md).
 add_subdirectory("${RECOMP_ROOT}/clownmdemu-core" clownmdemu-core)
 
-list(APPEND CMAKE_PREFIX_PATH
-    "${RUNNER_ROOT}/external/SDL2/SDL2-2.28.5/cmake")
+# SDL2 discovery. Windows uses the bundled VC devel package; macOS/Linux
+# use the system/Homebrew SDL2 (on Apple Silicon that's /opt/homebrew).
+if(WIN32)
+    list(APPEND CMAKE_PREFIX_PATH
+        "${RUNNER_ROOT}/external/SDL2/SDL2-2.28.5/cmake")
+elseif(APPLE)
+    find_program(BREW_EXECUTABLE brew)
+    if(BREW_EXECUTABLE)
+        execute_process(COMMAND "${BREW_EXECUTABLE}" --prefix sdl2
+            OUTPUT_VARIABLE _brew_sdl2_prefix
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET RESULT_VARIABLE _brew_sdl2_rc)
+        if(_brew_sdl2_rc EQUAL 0 AND _brew_sdl2_prefix)
+            list(APPEND CMAKE_PREFIX_PATH "${_brew_sdl2_prefix}")
+        endif()
+    endif()
+endif()
 find_package(SDL2 REQUIRED)
+
+# The runner includes SDL as <SDL2/SDL.h> (the layout of the bundled Windows
+# devel package, whose include root holds an SDL2/ subdir). Homebrew's
+# SDL2::SDL2 instead points the include dir *at* .../include/SDL2, so add its
+# parent so <SDL2/SDL.h> resolves the same way on every platform.
+set(SDL2_PARENT_INCLUDE_DIRS "")
+foreach(_inc IN LISTS SDL2_INCLUDE_DIRS)
+    get_filename_component(_inc_name "${_inc}" NAME)
+    if(_inc_name STREQUAL "SDL2")
+        get_filename_component(_inc_parent "${_inc}" DIRECTORY)
+        list(APPEND SDL2_PARENT_INCLUDE_DIRS "${_inc_parent}")
+    endif()
+endforeach()
 
 # ---------------------------------------------------------------------------
 # Shared sources / includes / link libs
@@ -54,6 +82,7 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/frame_snapshots.c"
     "${RUNNER_ROOT}/hybrid_global.c"
     "${RUNNER_ROOT}/glue.c"
+    "${RUNNER_ROOT}/fiber_compat.c"
     "${RUNNER_ROOT}/crash_report.c"
     "${RUNNER_ROOT}/input_script.c"
     "${RUNNER_ROOT}/gamepad.c"
@@ -82,6 +111,7 @@ set(SONIC_SHARED_INCLUDES
     "${RECOMP_ROOT}/clownmdemu-core/source"
     "${RECOMP_ROOT}/clownmdemu-core/libraries/clowncommon"
     "${RECOMP_ROOT}/clownmdemu-core/libraries/clown68000/source/interpreter"
+    ${SDL2_PARENT_INCLUDE_DIRS}
 )
 
 set(SONIC_SHARED_LIBS clownmdemu-core SDL2::SDL2 SDL2::SDL2main)
@@ -97,18 +127,19 @@ function(_sonic_finalize_target tgt)
         target_link_options(${tgt} PRIVATE /MAP)
     endif()
     if(WIN32)
+        # SDL2 is a DLL on Windows; macOS/Linux link the shared lib via rpath.
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${RUNNER_ROOT}/external/SDL2/SDL2-2.28.5/lib/x64/SDL2.dll"
                 "$<TARGET_FILE_DIR:${tgt}>"
             COMMENT "Copying SDL2.dll for ${tgt}")
-        # Annotation CSV used by crash_report.c for symbol resolution.
-        add_custom_command(TARGET ${tgt} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${RECOMP_ROOT}/sonicthehedgehog/annotations_from_disasm.csv"
-                "$<TARGET_FILE_DIR:${tgt}>/annotations_from_disasm.csv"
-            COMMENT "Copying Sonic 1 annotations for crash-report symbol resolution")
     endif()
+    # Annotation CSV used by crash_report.c for symbol resolution (all platforms).
+    add_custom_command(TARGET ${tgt} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${RECOMP_ROOT}/sonicthehedgehog/annotations_from_disasm.csv"
+            "$<TARGET_FILE_DIR:${tgt}>/annotations_from_disasm.csv"
+        COMMENT "Copying Sonic 1 annotations for crash-report symbol resolution")
 endfunction()
 
 # ---------------------------------------------------------------------------

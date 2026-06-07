@@ -33,33 +33,64 @@ Green Hill Zone (Acts 1–3) is fully completable. Later zones are partially fun
 
 The [recompiler](https://github.com/mstan/segagenesisrecomp) analyzes a Sonic 1 ROM binary and emits native C functions for every 68K subroutine — 530+ functions total. These generated functions use the same memory layout and register state as the original 68K code, but execute as compiled x64 instead of interpreted instructions.
 
-This runner hosts that generated code inside clownmdemu, which provides VDP rendering (graphics), Z80/FM/PSG (audio), and I/O (controllers). The generated 68K code runs on a Windows Fiber that interleaves with VDP scanline rendering via a cooperative yield model.
+This runner hosts that generated code inside clownmdemu, which provides VDP rendering (graphics), Z80/FM/PSG (audio), and I/O (controllers). The generated 68K code runs on a cooperative fiber that interleaves with VDP scanline rendering via a yield model — backed by Win32 Fibers on Windows and by `ucontext` on macOS/Linux (see `segagenesisrecomp/runner/fiber_compat.{h,c}`).
+
+The runner builds and runs natively on Windows (MSVC), macOS (Apple Silicon & Intel), and Linux. SDL2 provides windowing, rendering, audio, and `SDL_GameController` gamepad support on every platform.
 
 A TCP debug server (port 4378) provides live game state inspection, time-series Sonic state queries, VRAM inspection, and scriptable input injection for automated testing.
 
 ## Prerequisites
 
-- Visual Studio 2022 (MSVC)
-- CMake 3.16+
-- SDL2 2.28+ (bundled)
+- A C compiler:
+  - **Windows:** Visual Studio 2022 (MSVC)
+  - **macOS:** Apple Clang (Xcode Command Line Tools)
+  - **Linux:** Clang or GCC
+- CMake 3.16+ (plus [Ninja](https://ninja-build.org/) on macOS/Linux)
+- SDL2 2.28+ — bundled on Windows; `brew install sdl2` on macOS; `libsdl2-dev` (or distro equivalent) on Linux
 - A Sonic the Hedgehog (Genesis) ROM file (.bin/.md/.gen/.smd)
 
 ## Build and Run
 
 > **No prebuilt binaries are distributed — build from source below and supply your own ROM.**
 
-### Native Build (recompiled code drives the game)
+### Engine checkout (one-time, shared by all game projects)
+
+The recompiler engine ([segagenesisrecomp](https://github.com/mstan/segagenesisrecomp))
+lives in a single canonical checkout at the workspace root, shared by every
+game project (Sonic 1/2/3/…). Clone it once next to this repo, then link it in.
+The link is gitignored, so no project "owns" the engine:
 
 ```bash
-git clone --recursive https://github.com/mstan/SonicTheHedgehogRecomp.git
+# Layout:  <workspace>/segagenesisrecomp        (shared engine, recursive clone)
+#          <workspace>/SonicTheHedgehogRecomp
+git clone --recursive https://github.com/mstan/segagenesisrecomp.git
+git clone https://github.com/mstan/SonicTheHedgehogRecomp.git
 cd SonicTheHedgehogRecomp
+scripts/link-engine.sh        # macOS/Linux — creates a symlink
+scripts\link-engine.bat       # Windows     — creates a directory junction (mklink /J)
+```
+
+### Native Build (recompiled code drives the game)
+
+**Windows (MSVC):**
+
+```bat
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DENABLE_RECOMPILED_CODE=ON
 cmake --build build --config Release
 
 # Launch — file picker appears if no ROM argument given
 build\Release\SonicTheHedgehogRecomp.exe
-# Or specify ROM directly:
 build\Release\SonicTheHedgehogRecomp.exe path\to\sonic.bin
+```
+
+**macOS / Linux (Ninja + Clang/GCC):**
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+ninja -C build SonicTheHedgehogRecomp
+
+# Launch — a ROM path is required (no file picker on macOS/Linux)
+./build/SonicTheHedgehogRecomp "path/to/Sonic the Hedgehog.bin"
 ```
 
 ### Interpreter Build (for function discovery)
