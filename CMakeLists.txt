@@ -103,6 +103,7 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/frame_snapshots.c"
     "${RUNNER_ROOT}/hybrid_global.c"
     "${RUNNER_ROOT}/glue.c"
+    "${RUNNER_ROOT}/fiber_compat.c"   # cross-platform fiber shim (Win32 Fibers / POSIX ucontext) — glue.c depends on it
     "${RUNNER_ROOT}/crash_report.c"
     "${RUNNER_ROOT}/input_script.c"
     "${RUNNER_ROOT}/gamepad.c"
