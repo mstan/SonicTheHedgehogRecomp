@@ -37,6 +37,8 @@ option(SONIC_REVERSE_DEBUG
 Requires a regen with GenesisRecomp --reverse-debug; mixing flagged/unflagged \
 generated C against the other runner variant is a link error by design."
     OFF)
+option(GEN_DEV_TRACE
+    "Compile the dev chip/snd trace rings + dumps (NEVER in release builds)" OFF)
 
 # clownmdemu-core is the mstan fork; our changes are committed in it directly
 # (no build-time patch step — see THIRD-PARTY-LICENSES.md).
@@ -195,6 +197,7 @@ target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
     OWN_BACKEND=1                   # the own backend IS the Sonic 1 runtime (no clownmdemu link)
     DEFAULT_DEBUG_PORT=4378
     $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
+    $<$<BOOL:${GEN_DEV_TRACE}>:GEN_DEV_TRACE>
 )
 _sonic_finalize_target(SonicTheHedgehogRecomp SONIC_INCLUDES_NATIVE)
 
@@ -224,6 +227,7 @@ target_compile_definitions(SonicTheHedgehogRecomp_oracle PRIVATE
     SONIC_ORACLE_BUILD=1
     DEFAULT_DEBUG_PORT=4379
     $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
+    $<$<BOOL:${GEN_DEV_TRACE}>:GEN_DEV_TRACE>
 )
 _sonic_finalize_target(SonicTheHedgehogRecomp_oracle SONIC_INCLUDES_ORACLE)
 # The oracle runs clownmdemu's clown68000 interpreter + VDP/bus as ground truth,
