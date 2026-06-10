@@ -89,7 +89,8 @@ endif()
 set(OWN_BACKEND_SOURCES
     "${RUNNER_ROOT}/video/genesis_vdp.c"
     "${RUNNER_ROOT}/video/genesis_bus.c"
-    "${RUNNER_ROOT}/video/genesis_machine.c")
+    "${RUNNER_ROOT}/video/genesis_machine.c"
+    "${RUNNER_ROOT}/external/superzazu/z80.c")   # MIT Z80 core, embedded by genesis_machine
 
 # ---------------------------------------------------------------------------
 # Shared sources / includes / link libs
@@ -107,11 +108,6 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/crash_report.c"
     "${RUNNER_ROOT}/input_script.c"
     "${RUNNER_ROOT}/gamepad.c"
-    # AGPL-free Z80 core (superzazu, MIT). These definitions override
-    # clownz80-interpreter.lib via MSVC first-wins linking (same trick as
-    # stub_clown68000.c) so clownz80's AGPL interpreter is never linked.
-    "${RUNNER_ROOT}/z80_superzazu.c"
-    "${RUNNER_ROOT}/external/superzazu/z80.c"
     "${RUNNER_ROOT}/audio/event_queue.c"
     ${FM_SOURCES}
     "${RUNNER_ROOT}/audio/sn76489.c"
@@ -130,7 +126,20 @@ if(SONIC_REVERSE_DEBUG)
     message(STATUS "SONIC_REVERSE_DEBUG=ON — regen with GenesisRecomp --reverse-debug")
 endif()
 
-set(SONIC_SHARED_INCLUDES
+# Include paths. THE NATIVE LIST MUST CONTAIN NO clownmdemu-core PATHS —
+# that is the enforcement that no AGPL header can be compiled into a release
+# binary (clowncommon is ISC-permissive and vendored at
+# runner/external/clowncommon). The oracle keeps the full clownmdemu paths.
+set(SONIC_INCLUDES_NATIVE
+    "${RUNNER_ROOT}"
+    "${RUNNER_ROOT}/include"
+    "${RUNNER_ROOT}/external/ymfm/src"
+    "${RUNNER_ROOT}/external/superzazu"
+    "${RUNNER_ROOT}/external/clowncommon"
+    "${RUNNER_ROOT}/video"
+    "${RECOMP_ROOT}/sonicthehedgehog"
+)
+set(SONIC_INCLUDES_ORACLE
     "${RUNNER_ROOT}"
     "${RUNNER_ROOT}/include"
     "${RUNNER_ROOT}/external/ymfm/src"
@@ -150,8 +159,8 @@ endif()
 # clownmdemu-core (AGPL) is linked ONLY by the oracle target (see below). The
 # native target is the own backend and links zero clownmdemu code.
 
-function(_sonic_finalize_target tgt)
-    target_include_directories(${tgt} PRIVATE ${SONIC_SHARED_INCLUDES})
+function(_sonic_finalize_target tgt includes)
+    target_include_directories(${tgt} PRIVATE ${${includes}})
     target_link_libraries(${tgt} PRIVATE ${SONIC_SHARED_LIBS})
     if(MSVC)
         target_compile_options(${tgt} PRIVATE /W3 /WX- /utf-8 /wd4102 /wd4996)
@@ -179,7 +188,6 @@ endfunction()
 add_executable(SonicTheHedgehogRecomp
     ${SONIC_SHARED_SOURCES}
     ${OWN_BACKEND_SOURCES}          # clean-room VDP+bus+Z80 scheduler (native = own backend)
-    "${RUNNER_ROOT}/stub_clown68000.c"
 )
 target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
     INCLUDE_GENERATED_CODE=1
@@ -188,7 +196,7 @@ target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
     DEFAULT_DEBUG_PORT=4378
     $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
 )
-_sonic_finalize_target(SonicTheHedgehogRecomp)
+_sonic_finalize_target(SonicTheHedgehogRecomp SONIC_INCLUDES_NATIVE)
 
 # ---------------------------------------------------------------------------
 # Oracle target — clown68000 interpreter executes everything
@@ -217,7 +225,7 @@ target_compile_definitions(SonicTheHedgehogRecomp_oracle PRIVATE
     DEFAULT_DEBUG_PORT=4379
     $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
 )
-_sonic_finalize_target(SonicTheHedgehogRecomp_oracle)
+_sonic_finalize_target(SonicTheHedgehogRecomp_oracle SONIC_INCLUDES_ORACLE)
 # The oracle runs clownmdemu's clown68000 interpreter + VDP/bus as ground truth,
 # so it (and only it) links the AGPL core. Dev-only; never shipped.
 target_link_libraries(SonicTheHedgehogRecomp_oracle PRIVATE clownmdemu-core)
