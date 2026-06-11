@@ -4,7 +4,7 @@
 
 [![Gameplay Demo](https://img.youtube.com/vi/IINTsq1JBg8/maxresdefault.jpg)](https://youtu.be/IINTsq1JBg8)
 
-The game runner for the [Genesis 68K Static Recompiler](https://github.com/mstan/segagenesisrecomp). Takes 530+ statically recompiled C functions generated from a Sonic 1 ROM and runs them natively inside [clownmdemu](https://github.com/Clownacy/clownmdemu), an open-source Mega Drive emulator core.
+The game runner for the [Genesis 68K Static Recompiler](https://github.com/mstan/segagenesisrecomp). Takes 530+ statically recompiled C functions generated from a Sonic 1 ROM and runs them natively on the engine's clean-room backend (own VDP / bus / Z80 scheduling, ymfm FM synthesis). The AGPL [clownmdemu](https://github.com/Clownacy/clownmdemu) core is used only by unshipped development builds as a conformance oracle.
 
 ## Status
 
@@ -33,7 +33,7 @@ Green Hill Zone (Acts 1–3) is fully completable. Later zones are partially fun
 
 The [recompiler](https://github.com/mstan/segagenesisrecomp) analyzes a Sonic 1 ROM binary and emits native C functions for every 68K subroutine — 530+ functions total. These generated functions use the same memory layout and register state as the original 68K code, but execute as compiled x64 instead of interpreted instructions.
 
-This runner hosts that generated code inside clownmdemu, which provides VDP rendering (graphics), Z80/FM/PSG (audio), and I/O (controllers). The generated 68K code runs on a cooperative fiber that interleaves with VDP scanline rendering via a yield model — backed by Win32 Fibers on Windows and by `ucontext` on macOS/Linux (see `segagenesisrecomp/runner/fiber_compat.{h,c}`).
+This runner hosts that generated code on the engine's clean-room backend, which provides VDP rendering (graphics), Z80/FM/PSG (audio — ymfm + superzazu z80), and I/O (controllers). The generated 68K code runs on a cooperative fiber that interleaves with VDP scanline rendering via a yield model — backed by Win32 Fibers on Windows and by `ucontext` on macOS/Linux (see `segagenesisrecomp/runner/fiber_compat.{h,c}`).
 
 The runner builds and runs natively on Windows (MSVC), macOS (Apple Silicon & Intel), and Linux. SDL2 provides windowing, rendering, audio, and `SDL_GameController` gamepad support on every platform.
 
