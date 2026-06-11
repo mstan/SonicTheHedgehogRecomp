@@ -17,3 +17,6 @@ rdb_*.json
 # (../segagenesisrecomp). Not tracked here — it lives in its own repo.
 segagenesisrecomp
 build-*/
+
+# release zips are published as GitHub release assets, never committed
+release/*.zip
