@@ -39,6 +39,23 @@ generated C against the other runner variant is a link error by design."
     OFF)
 option(GEN_DEV_TRACE
     "Compile the dev chip/snd trace rings + dumps (NEVER in release builds)" OFF)
+# Prod-vs-debug TCP strip. ON (default) keeps the always-on dev tooling so the
+# normal dev workflow is unchanged: the cmd_server TCP listener + frame_snapshots
+# ring. OFF (release: tools/build-linux.sh --config prod) swaps cmd_server.c for
+# its no-op stub and drops frame_snapshots.c (referenced only by cmd_server), so
+# the shipped native binary opens no port and carries no query ring. Combined
+# with GEN_DEV_TRACE=OFF (which makes chip_trace.c self-stub) the release build
+# is fully tooling-free.
+option(GEN_ENABLE_TRACE
+    "Build the TCP cmd server + observability rings (frame_snapshots). OFF for release." ON)
+if(GEN_ENABLE_TRACE)
+    set(GEN_TRACE_SOURCES
+        "${RUNNER_ROOT}/cmd_server.c"
+        "${RUNNER_ROOT}/frame_snapshots.c")
+    add_compile_definitions(GEN_ENABLE_TRACE=1)
+else()
+    set(GEN_TRACE_SOURCES "${RUNNER_ROOT}/cmd_server_stub.c")
+endif()
 
 # clownmdemu-core is the mstan fork; our changes are committed in it directly
 # (no build-time patch step — see THIRD-PARTY-LICENSES.md).
@@ -129,9 +146,8 @@ set(OWN_BACKEND_SOURCES
 set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/main.c"
     "${RUNNER_ROOT}/audio.c"
-    "${RUNNER_ROOT}/chip_trace.c"   # dev-only [CHIP-TRACE] shared FM/PSG stream ring (strip before commit)
-    "${RUNNER_ROOT}/cmd_server.c"
-    "${RUNNER_ROOT}/frame_snapshots.c"
+    "${RUNNER_ROOT}/chip_trace.c"   # self-stubs unless GEN_DEV_TRACE=ON (no-op in release)
+    ${GEN_TRACE_SOURCES}            # cmd_server.c + frame_snapshots.c, or cmd_server_stub.c (GEN_ENABLE_TRACE=OFF)
     "${RUNNER_ROOT}/hybrid_global.c"
     "${RUNNER_ROOT}/glue.c"
     "${RUNNER_ROOT}/fiber_compat.c"   # cross-platform fiber shim (Win32 Fibers / POSIX ucontext) — glue.c depends on it
