@@ -1,5 +1,54 @@
 # Known issues
 
+## Widescreen (16:9) — brief stale/partial object sprites in the right margin (2026-06-16)
+
+**Symptom:** With `GENESIS_WIDESCREEN=1`, an *occasional, very brief* object-like
+artifact appears in the right-hand widescreen margin **ahead of** the camera —
+a sprite drawn partially or at a displaced position for a frame or two as it
+scrolls in. Worse for **wide, multi-piece objects** (e.g. Marble Zone's
+sinking-into-lava platforms). Reproduces in the **attract demos** (no input
+needed). 4:3 (default) is unaffected.
+
+**Root cause (strong hypothesis, not visually confirmed):** the **9-bit VDP
+sprite-X field wraps** at the widescreen right edge. At
+`GENESIS_WIDESCREEN_COLUMNS=8` the per-side margin is `extra=64px`, so the
+widened right edge sits at screen-relative X `320+64 = 384`, which the 68K
+encodes as VDP sprite X `384+128 = 512`. But sprite X is only 9 bits (max
+511): `_inc/BuildSprites.asm` masks every sprite piece with `andi.w #$1FF,d0`
+(all four `BuildSpr_Normal/FlipX/FlipY/FlipXY` paths), and the engine reads it
+back as `xword = vram_read_word(...) & 0x1FF` (`runner/video/genesis_vdp.c`
+`sprite_render_line`). So any piece whose intended sprite X reaches 512+ wraps
+to near 0 and renders off the **left** edge (clipped) instead of the right —
+leaving a wide object drawn only partially for the few frames its reference
+point sits in the wrap zone (`relX ≈ 384–416`) as it scrolls into view. The
+object-cull (`BuildSprites`) and tile-load widening are correct; this is purely
+the sprite-coordinate encoding hitting a hardware-width limit.
+
+**Evidence:** engine masks sprite X to 9 bits (`genesis_vdp.c:475`); 68K masks
+to `$1FF` at 4 sites; the symptom (brief, right-margin, worse for wide
+multi-piece sprites, demo-reproducible) matches the wrap geometry. The opposite
+direction (artifacts on the *left*) would also be consistent with the wrap —
+left-edge artifacts were not reported, only right.
+
+**Consequence:** Cosmetic and brief; only in 16:9. 4:3 is bit-identical (at 4:3
+no sprite X ever exceeds ~480, so the `$1FF`/`$3FF` mask choice is moot).
+
+**Candidate fix (~5 edits, unverified):** widen the sprite-X path to 10 bits so
+off-edge pieces *clip* (screen_x ≥ total) instead of wrapping:
+- disasm: `andi.w #$1FF,d0` → `andi.w #$3FF,d0` in `_inc/BuildSprites.asm`
+  (`BuildSpr_Normal`, `BuildSpr_FlipX`, `BuildSpr_FlipY`, `BuildSpr_FlipXY`);
+- engine: `& 0x1FF` → `& 0x3FF` for `xword` in `genesis_vdp.c` `sprite_render_line`.
+  This is safe in 4:3 (bit 9 is never set there, so the result is identical) and
+  only affects widescreen. NOTE: the same limit applies to **all** widescreen
+  games (S2/S3) since the sprite read is shared engine code — fix once in the
+  engine, plus per-game in each disasm's `BuildSprites`/`Render_Sprites`.
+- Alternative (incomplete): cap `extra ≤ 63` — avoids the reference-point wrap
+  but pieces extending past the edge still wrap, so not a full fix.
+
+**Status:** Deferred (2026-06-16, user choice — artifact is too brief to chase
+via screenshots and is cosmetic). Documented for follow-up; the fix looks small
+and well-scoped.
+
 ## Own backend — V-int off-by-one at the title transition (attract only)
 
 **Symptom:** On the OWN_BACKEND build, A/B against the clownmdemu oracle
