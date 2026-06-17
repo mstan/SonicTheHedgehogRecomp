@@ -154,6 +154,8 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/crash_report.c"
     "${RUNNER_ROOT}/input_script.c"
     "${RUNNER_ROOT}/gamepad.c"
+    "${RUNNER_ROOT}/input_map.c"      # per-player Genesis button bindings (kbd+pad, 3/6-btn)
+    "${RUNNER_ROOT}/app_config.c"     # settings.ini + rom.cfg load/save
     "${RUNNER_ROOT}/audio/event_queue.c"
     ${FM_SOURCES}
     "${RUNNER_ROOT}/audio/sn76489.c"
@@ -251,6 +253,13 @@ target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
     $<$<BOOL:${GEN_DEV_TRACE}>:GEN_DEV_TRACE>
 )
 _sonic_finalize_target(SonicTheHedgehogRecomp SONIC_INCLUDES_NATIVE)
+
+# RmlUi pre-boot launcher — native (shipped) target only. Adds the GUI sources,
+# the vendored RmlUi/FreeType static libs (all permissive), GENESIS_LAUNCHER=1,
+# and stages launcher/ assets next to the exe. The dev-only _oracle target below
+# deliberately does NOT get the launcher.
+include(${RUNNER_ROOT}/launcher/launcher.cmake)
+genesisrecomp_add_launcher(SonicTheHedgehogRecomp)
 
 # ---------------------------------------------------------------------------
 # Oracle target — clown68000 interpreter executes everything
