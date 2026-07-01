@@ -139,6 +139,14 @@ set(OWN_BACKEND_SOURCES
     "${RUNNER_ROOT}/video/genesis_machine.c"
     "${RUNNER_ROOT}/external/superzazu/z80.c")   # MIT Z80 core, embedded by genesis_machine
 
+# Tier-3 floor + differential co-sim: the clean-room 68000 interpreter and the
+# recompiler's decoder. Engine master's glue.c references m68k_interp_run_framed
+# unconditionally, so every target links these (game master predates the floor).
+set(NATIVE_FLOOR_SOURCES
+    "${RUNNER_ROOT}/m68k_interp.c"
+    "${RECOMP_ROOT}/recompiler/src/m68k_decoder.c"
+    "${RECOMP_ROOT}/recompiler/src/rom_parser.c")
+
 # ---------------------------------------------------------------------------
 # Shared sources / includes / link libs
 # ---------------------------------------------------------------------------
@@ -172,6 +180,7 @@ set(SONIC_SHARED_SOURCES
     "${RECOMP_ROOT}/sonicthehedgehog/sonic1_spec.c"
     "${RECOMP_ROOT}/sonicthehedgehog/sonic_extras.c"
     "${RECOMP_ROOT}/sonicthehedgehog/extras.c"
+    ${NATIVE_FLOOR_SOURCES}         # m68k_interp + decoder (engine-master glue.c needs it)
 )
 
 if(SONIC_REVERSE_DEBUG)
@@ -190,6 +199,7 @@ set(SONIC_INCLUDES_NATIVE
     "${RUNNER_ROOT}/external/superzazu"
     "${RUNNER_ROOT}/external/clowncommon"
     "${RUNNER_ROOT}/video"
+    "${RECOMP_ROOT}/recompiler/src"    # m68k_decoder.h / rom_parser.h (Tier-3 floor + cosim)
     "${RECOMP_ROOT}/sonicthehedgehog"
 )
 set(SONIC_INCLUDES_ORACLE
@@ -198,6 +208,7 @@ set(SONIC_INCLUDES_ORACLE
     "${RUNNER_ROOT}/external/ymfm/src"
     "${RUNNER_ROOT}/external/superzazu"
     "${RUNNER_ROOT}/video"
+    "${RECOMP_ROOT}/recompiler/src"    # m68k_decoder.h / rom_parser.h (floor symbol in glue.c)
     "${RECOMP_ROOT}/clownmdemu-core/libraries/clownz80/source"
     "${RECOMP_ROOT}/sonicthehedgehog"
     "${RECOMP_ROOT}/clownmdemu-core/source"
@@ -301,4 +312,59 @@ target_link_libraries(SonicTheHedgehogRecomp_oracle PRIVATE clownmdemu-core)
 option(BUILD_TESTS "Build L1 decoder test harness" OFF)
 if(BUILD_TESTS)
     add_subdirectory("${RECOMP_ROOT}/tests" tests)
+endif()
+
+# ---------------------------------------------------------------------------
+# Differential co-simulation target — dev-only, never shipped.
+#
+# SonicTheHedgehogRecomp_cosim.exe: the OWN-BACKEND recomp runtime plus the
+# #ifdef GENESIS_COSIM full-state hash module (cosim_state.c) + lockstep TCP
+# server (cosim.c). Two instances driven by tools/genesis_cosim.py compare full
+# architectural state at aligned checkpoints and halt at the first divergence.
+# GENESIS_FORCE_INTERP (env, added later) selects the m68k_interp backend for
+# pairing #1 (recomp-vs-interp). Links no clownmdemu.
+# ---------------------------------------------------------------------------
+option(GENESIS_BUILD_COSIM "Build the differential co-simulation target (dev-only)." OFF)
+if(GENESIS_BUILD_COSIM)
+    add_executable(SonicTheHedgehogRecomp_cosim
+        ${SONIC_SHARED_SOURCES}
+        ${OWN_BACKEND_SOURCES}
+        "${RUNNER_ROOT}/cosim.c"
+        "${RUNNER_ROOT}/cosim_state.c"
+        "${RUNNER_ROOT}/cosim_visible.c"                      # pairing #2 A-side (visible surface)
+        "${RUNNER_ROOT}/game_cycles.c"                        # cost-table lookup
+        "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_cycles.c"  # clown-measured costs
+    )
+    target_compile_definitions(SonicTheHedgehogRecomp_cosim PRIVATE
+        INCLUDE_GENERATED_CODE=1
+        ENABLE_RECOMPILED_CODE=1
+        OWN_BACKEND=1
+        GENESIS_COSIM=1
+        DEFAULT_DEBUG_PORT=4390
+    )
+    _sonic_finalize_target(SonicTheHedgehogRecomp_cosim SONIC_INCLUDES_NATIVE)
+    # No launcher (headless/deterministic); the coordinator drives it over TCP.
+    message(STATUS "GENESIS_BUILD_COSIM=ON — differential co-sim target enabled")
+
+    # ----- Pairing #2: ORACLE cosim (clownmdemu, guest-visible-surface) -----
+    # The independent full-machine oracle. Uses cosim_visible.c (NOT cosim_state.c,
+    # which reads own-backend globals). Hashes the guest-visible surface only.
+    add_executable(SonicTheHedgehogRecomp_oracle_cosim
+        ${SONIC_SHARED_SOURCES}
+        ${SONIC_ORACLE_EXTRA_SOURCES}
+        "${RUNNER_ROOT}/cosim.c"
+        "${RUNNER_ROOT}/cosim_visible.c"
+        "${RUNNER_ROOT}/game_cycles.c"                              # m68k_interp cost lookup
+        "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_cycles.c"
+    )
+    target_compile_definitions(SonicTheHedgehogRecomp_oracle_cosim PRIVATE
+        INCLUDE_GENERATED_CODE=1
+        HYBRID_RECOMPILED_CODE=1
+        SONIC_ORACLE_BUILD=1
+        GENESIS_COSIM=1
+        DEFAULT_DEBUG_PORT=4392
+    )
+    _sonic_finalize_target(SonicTheHedgehogRecomp_oracle_cosim SONIC_INCLUDES_ORACLE)
+    target_link_libraries(SonicTheHedgehogRecomp_oracle_cosim PRIVATE clownmdemu-core)
+    message(STATUS "  + oracle cosim target (pairing #2) enabled")
 endif()
