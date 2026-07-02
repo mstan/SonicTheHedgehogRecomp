@@ -332,6 +332,7 @@ if(GENESIS_BUILD_COSIM)
         "${RUNNER_ROOT}/cosim.c"
         "${RUNNER_ROOT}/cosim_state.c"
         "${RUNNER_ROOT}/cosim_visible.c"                      # pairing #2 A-side (visible surface)
+        "${RUNNER_ROOT}/cosim_cycles.c"                       # cross-backend work-cycle ruler
         "${RUNNER_ROOT}/game_cycles.c"                        # cost-table lookup
         "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_cycles.c"  # clown-measured costs
     )
@@ -354,6 +355,7 @@ if(GENESIS_BUILD_COSIM)
         ${SONIC_ORACLE_EXTRA_SOURCES}
         "${RUNNER_ROOT}/cosim.c"
         "${RUNNER_ROOT}/cosim_visible.c"
+        "${RUNNER_ROOT}/cosim_cycles.c"                             # cross-backend work-cycle ruler
         "${RUNNER_ROOT}/game_cycles.c"                              # m68k_interp cost lookup
         "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_cycles.c"
     )
