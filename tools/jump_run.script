@@ -1,0 +1,25 @@
+# S1 jump-SFX exercise: boot -> title -> Start -> GHZ1 -> run right + 8 jumps.
+# No EXIT directive: the runner's --max-frames handles clean shutdown so the
+# WAV header gets finalized.
+WAIT 720
+PRESS START 2
+WAIT 400
+HOLD RIGHT
+WAIT 150
+PRESS C 12
+WAIT 90
+PRESS C 12
+WAIT 90
+PRESS C 12
+WAIT 90
+PRESS C 12
+WAIT 120
+PRESS C 12
+WAIT 120
+PRESS C 12
+WAIT 120
+PRESS C 12
+WAIT 120
+PRESS C 12
+WAIT 300
+RELEASE
