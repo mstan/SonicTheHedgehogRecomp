@@ -151,6 +151,11 @@ set(NATIVE_FLOOR_SOURCES
 # Shared sources / includes / link libs
 # ---------------------------------------------------------------------------
 
+include("${RECOMP_ROOT}/cmake/GenesisRecompGenerated.cmake")
+genesisrecomp_add_generated_sources(
+    SONIC_GENERATED_SOURCES sonic sonicthehedgehog sonic.bin
+    REVERSE_DEBUG "${SONIC_REVERSE_DEBUG}")
+
 set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/main.c"
     "${RUNNER_ROOT}/audio.c"
@@ -174,9 +179,7 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/audio/audio_shadow.c"   # envelope-correlation verifier
     "${RUNNER_ROOT}/audio/fm_shadow.cpp"    # parallel ymfm chip (cleaner highs / ym3438 ladder-off)
     "${RUNNER_ROOT}/video/color_lut.c"      # present-time 9-bit CRT/composite LUT
-    "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_full.c"
-    "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_dispatch.c"
-    "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_layout.c"
+    ${SONIC_GENERATED_SOURCES}
     "${RECOMP_ROOT}/sonicthehedgehog/sonic1_spec.c"
     "${RECOMP_ROOT}/sonicthehedgehog/sonic_extras.c"
     "${RECOMP_ROOT}/sonicthehedgehog/extras.c"
@@ -255,6 +258,7 @@ add_executable(SonicTheHedgehogRecomp
     ${SONIC_SHARED_SOURCES}
     ${OWN_BACKEND_SOURCES}          # clean-room VDP+bus+Z80 scheduler (native = own backend)
 )
+add_dependencies(SonicTheHedgehogRecomp ${SONIC_GENERATED_SOURCES_TARGET})
 target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
     INCLUDE_GENERATED_CODE=1
     ENABLE_RECOMPILED_CODE=1
@@ -292,6 +296,7 @@ add_executable(SonicTheHedgehogRecomp_oracle
     ${SONIC_SHARED_SOURCES}
     ${SONIC_ORACLE_EXTRA_SOURCES}
 )
+add_dependencies(SonicTheHedgehogRecomp_oracle ${SONIC_GENERATED_SOURCES_TARGET})
 target_compile_definitions(SonicTheHedgehogRecomp_oracle PRIVATE
     INCLUDE_GENERATED_CODE=1
     HYBRID_RECOMPILED_CODE=1
@@ -311,6 +316,7 @@ target_link_libraries(SonicTheHedgehogRecomp_oracle PRIVATE clownmdemu-core)
 
 option(BUILD_TESTS "Build L1 decoder test harness" OFF)
 if(BUILD_TESTS)
+    set(GENESIS_SONIC_GENERATED_DIR "${SONIC_GENERATED_SOURCES_DIR}")
     add_subdirectory("${RECOMP_ROOT}/tests" tests)
 endif()
 
@@ -334,14 +340,16 @@ if(GENESIS_BUILD_COSIM)
         "${RUNNER_ROOT}/cosim_visible.c"                      # pairing #2 A-side (visible surface)
         "${RUNNER_ROOT}/cosim_cycles.c"                       # cross-backend work-cycle ruler
         "${RUNNER_ROOT}/game_cycles.c"                        # cost-table lookup
-        "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_cycles.c"  # clown-measured costs
+        "${SONIC_GENERATED_SOURCES_CYCLES}"                  # clown-measured costs
     )
+    add_dependencies(SonicTheHedgehogRecomp_cosim ${SONIC_GENERATED_SOURCES_TARGET})
     target_compile_definitions(SonicTheHedgehogRecomp_cosim PRIVATE
         INCLUDE_GENERATED_CODE=1
         ENABLE_RECOMPILED_CODE=1
         OWN_BACKEND=1
         GENESIS_COSIM=1
         DEFAULT_DEBUG_PORT=4390
+        $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
     )
     _sonic_finalize_target(SonicTheHedgehogRecomp_cosim SONIC_INCLUDES_NATIVE)
     # No launcher (headless/deterministic); the coordinator drives it over TCP.
@@ -357,14 +365,16 @@ if(GENESIS_BUILD_COSIM)
         "${RUNNER_ROOT}/cosim_visible.c"
         "${RUNNER_ROOT}/cosim_cycles.c"                             # cross-backend work-cycle ruler
         "${RUNNER_ROOT}/game_cycles.c"                              # m68k_interp cost lookup
-        "${RECOMP_ROOT}/sonicthehedgehog/generated/sonic_cycles.c"
+        "${SONIC_GENERATED_SOURCES_CYCLES}"
     )
+    add_dependencies(SonicTheHedgehogRecomp_oracle_cosim ${SONIC_GENERATED_SOURCES_TARGET})
     target_compile_definitions(SonicTheHedgehogRecomp_oracle_cosim PRIVATE
         INCLUDE_GENERATED_CODE=1
         HYBRID_RECOMPILED_CODE=1
         SONIC_ORACLE_BUILD=1
         GENESIS_COSIM=1
         DEFAULT_DEBUG_PORT=4392
+        $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
     )
     _sonic_finalize_target(SonicTheHedgehogRecomp_oracle_cosim SONIC_INCLUDES_ORACLE)
     target_link_libraries(SonicTheHedgehogRecomp_oracle_cosim PRIVATE clownmdemu-core)
