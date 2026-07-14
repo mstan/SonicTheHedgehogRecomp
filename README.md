@@ -72,14 +72,18 @@ scripts\link-engine.bat       # Windows     — creates a directory junction (mk
 
 ### Native Build (recompiled code drives the game)
 
+Before configuring, copy your ROM to
+`segagenesisrecomp/sonicthehedgehog/sonic.bin`. Generated C is not checked in;
+CMake builds the current recompiler and regenerates it from this ROM whenever
+the ROM, config, discovery data, or recompiler changes.
+
 **Windows (MSVC):**
 
 ```bat
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DENABLE_RECOMPILED_CODE=ON
 cmake --build build --config Release
 
-# Launch — file picker appears if no ROM argument given
-build\Release\SonicTheHedgehogRecomp.exe
+# Launch — pass the ROM path, or omit it to use the Windows file picker
 build\Release\SonicTheHedgehogRecomp.exe path\to\sonic.bin
 ```
 
