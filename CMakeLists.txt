@@ -269,12 +269,14 @@ target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
 )
 _sonic_finalize_target(SonicTheHedgehogRecomp SONIC_INCLUDES_NATIVE)
 
-# RmlUi pre-boot launcher — native (shipped) target only. Adds the GUI sources,
-# the vendored RmlUi/FreeType static libs (all permissive), GENESIS_LAUNCHER=1,
-# and stages launcher/ assets next to the exe. The dev-only _oracle target below
+# Shared recomp-ui (Dear ImGui) pre-boot launcher — native (shipped) target
+# only. Adds the launcher sources + vendored ImGui (all permissive), defines
+# RECOMP_LAUNCHER (which un-gates the seam in the runner's main.c), links the
+# system GL, and stages assets/ next to the exe. Replaces the old RmlUi launcher
+# (launcher.cmake / GENESIS_LAUNCHER). The dev-only _oracle target below
 # deliberately does NOT get the launcher.
-include(${RUNNER_ROOT}/launcher/launcher.cmake)
-genesisrecomp_add_launcher(SonicTheHedgehogRecomp)
+include(${CMAKE_SOURCE_DIR}/recomp-ui/recomp_ui.cmake)
+recomp_target_launcher_ui(SonicTheHedgehogRecomp BOXART ${CMAKE_SOURCE_DIR}/boxart.tga)
 
 # ---------------------------------------------------------------------------
 # Oracle target — clown68000 interpreter executes everything
