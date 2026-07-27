@@ -58,8 +58,14 @@ else()
 endif()
 
 # clownmdemu-core is the mstan fork; our changes are committed in it directly
-# (no build-time patch step — see THIRD-PARTY-LICENSES.md).
-add_subdirectory("${RECOMP_ROOT}/clownmdemu-core" clownmdemu-core)
+# (no build-time patch step — see THIRD-PARTY-LICENSES.md). It is an OPT-IN
+# submodule: AGPL, private fork, and needed by nothing that ships. Only the
+# dev-only _oracle / _oracle_cosim targets below use it.
+include("${RECOMP_ROOT}/cmake/GenesisOracle.cmake")
+genesis_oracle_resolve("${RECOMP_ROOT}")
+if(GENESIS_ORACLE)
+    add_subdirectory("${RECOMP_ROOT}/clownmdemu-core" clownmdemu-core)
+endif()
 
 # SDL2 discovery. Windows uses the bundled VC devel package; macOS/Linux
 # use the system/Homebrew SDL2 (on Apple Silicon that's /opt/homebrew).
@@ -278,8 +284,11 @@ include(${CMAKE_SOURCE_DIR}/recomp-ui/recomp_ui.cmake)
 recomp_target_launcher_ui(SonicTheHedgehogRecomp BOXART ${CMAKE_SOURCE_DIR}/boxart.tga)
 
 # ---------------------------------------------------------------------------
-# Oracle target — clown68000 interpreter executes everything
+# Oracle target — clown68000 interpreter executes everything.
+# Dev-only and AGPL-linked, so it is built only when the opt-in
+# clownmdemu-core submodule is present (see cmake/GenesisOracle.cmake).
 # ---------------------------------------------------------------------------
+if(GENESIS_ORACLE)
 
 set(SONIC_ORACLE_EXTRA_SOURCES
     "${RUNNER_ROOT}/hybrid.c"
@@ -311,6 +320,8 @@ _sonic_finalize_target(SonicTheHedgehogRecomp_oracle SONIC_INCLUDES_ORACLE)
 # so it (and only it) links the AGPL core. Dev-only; never shipped.
 target_link_libraries(SonicTheHedgehogRecomp_oracle PRIVATE clownmdemu-core)
 
+endif() # GENESIS_ORACLE
+
 # ---------------------------------------------------------------------------
 # Framework tests (L1 decoder harness). Opt-in via -DBUILD_TESTS=ON.
 # ---------------------------------------------------------------------------
@@ -341,7 +352,7 @@ if(GENESIS_BUILD_COSIM)
         "${RUNNER_ROOT}/cosim_visible.c"                      # pairing #2 A-side (visible surface)
         "${RUNNER_ROOT}/cosim_cycles.c"                       # cross-backend work-cycle ruler
         "${RUNNER_ROOT}/game_cycles.c"                        # cost-table lookup
-        "${SONIC_GENERATED_SOURCES_CYCLES}"                  # clown-measured costs
+        "${SONIC_GENERATED_SOURCES_CYCLES}"                  # model-stamped costs
     )
     add_dependencies(SonicTheHedgehogRecomp_cosim ${SONIC_GENERATED_SOURCES_TARGET})
     target_compile_definitions(SonicTheHedgehogRecomp_cosim PRIVATE
@@ -359,6 +370,10 @@ if(GENESIS_BUILD_COSIM)
     # ----- Pairing #2: ORACLE cosim (clownmdemu, guest-visible-surface) -----
     # The independent full-machine oracle. Uses cosim_visible.c (NOT cosim_state.c,
     # which reads own-backend globals). Hashes the guest-visible surface only.
+    # Needs the opt-in clownmdemu-core submodule; pairing #1 above does not.
+    if(NOT GENESIS_ORACLE)
+        message(STATUS "  - oracle cosim (pairing #2) skipped: oracle off")
+    else()
     add_executable(SonicTheHedgehogRecomp_oracle_cosim
         ${SONIC_SHARED_SOURCES}
         ${SONIC_ORACLE_EXTRA_SOURCES}
@@ -380,4 +395,5 @@ if(GENESIS_BUILD_COSIM)
     _sonic_finalize_target(SonicTheHedgehogRecomp_oracle_cosim SONIC_INCLUDES_ORACLE)
     target_link_libraries(SonicTheHedgehogRecomp_oracle_cosim PRIVATE clownmdemu-core)
     message(STATUS "  + oracle cosim target (pairing #2) enabled")
+    endif() # GENESIS_ORACLE
 endif()
