@@ -70,6 +70,10 @@ scripts/link-engine.sh        # macOS/Linux — creates a symlink
 scripts\link-engine.bat       # Windows     — creates a directory junction (mklink /J)
 ```
 
+`Skipping submodule 'clownmdemu-core'` in the engine clone's output is expected
+and correct. That core is AGPL and dev-only; nothing you build needs it, and
+CMake skips the dev-only `_oracle` targets automatically when it is absent.
+
 ### Native Build (recompiled code drives the game)
 
 Before configuring, copy your ROM to
