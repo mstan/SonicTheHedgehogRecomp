@@ -21,7 +21,15 @@ set(CMAKE_C_STANDARD 11)
 # segagenesisrecomp/sonicthehedgehog/.
 # ---------------------------------------------------------------------------
 
-set(RECOMP_ROOT "${CMAKE_SOURCE_DIR}/segagenesisrecomp")
+set(GENESIS_RECOMP_ROOT "" CACHE PATH
+    "Optional shared Genesis framework checkout (defaults to the submodule)")
+if(GENESIS_RECOMP_ROOT)
+    set(RECOMP_ROOT "${GENESIS_RECOMP_ROOT}")
+    message(STATUS "engine: explicit GENESIS_RECOMP_ROOT override")
+else()
+    set(RECOMP_ROOT "${CMAKE_SOURCE_DIR}/segagenesisrecomp")
+    message(STATUS "engine: committed segagenesisrecomp submodule")
+endif()
 set(RUNNER_ROOT "${RECOMP_ROOT}/runner")
 
 option(SONIC_REVERSE_DEBUG
