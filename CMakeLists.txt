@@ -6,26 +6,18 @@ set(CMAKE_C_STANDARD 11)
 # ---------------------------------------------------------------------------
 # Twin-build: a single configure produces BOTH binaries.
 #
-#   SonicTheHedgehogRecomp.exe         — native: recompiled 68K + the clean-room
-#                                        OWN BACKEND (VDP+bus+Z80 scheduler).
-#                                        Links ZERO clownmdemu — AGPL-free, this
-#                                        is what ships.
-#   SonicTheHedgehogRecomp_oracle.exe  — oracle: full clown68000 interpreter +
-#                                        clownmdemu VDP/bus, the verification
-#                                        ground truth. Links clownmdemu-core
-#                                        (AGPL); dev-only, never shipped.
+# Single build: SonicTheHedgehogRecomp.exe — recompiled 68K on the clean-room
+# OWN BACKEND (VDP + bus + Z80 scheduler). There is one backend and it is ours;
+# no emulator core is compiled or linked anywhere in this project.
 #
-# Only the oracle links clownmdemu-core. The native target adds stub_clown68000.c
-# (Clown68000_DoCycles/Reset/Interrupt as harmless no-ops; nothing calls them now
-# that the lib is unlinked). The oracle omits the stubs, so the real interpreter
-# from clown68000-interpreter.lib is pulled in.
-#
-# Default debug-server ports differ per target (4378 native / 4379 oracle)
-# so both can run simultaneously for side-by-side ring-buffer comparison.
+# The paired _oracle target is gone. It ran the AGPL clown68000 interpreter as
+# a verification reference, went stale, and forced a private submodule into
+# every clone. The surviving cross-check is the cosim harness below, which
+# diffs the recompiled code against our own Tier-3 interpreter.
 #
 # Runner code is shared with Sonic 2 and lives in the submodule at
-# segagenesisrecomp/runner/. Per-game files (sonic1_spec.c, sonic_extras.c,
-# sonic1_hybrid_table.c) live alongside the Sonic 1 generated TUs in
+# segagenesisrecomp/runner/. Per-game files (sonic1_spec.c, sonic_extras.c)
+# live alongside the Sonic 1 generated TUs in
 # segagenesisrecomp/sonicthehedgehog/.
 # ---------------------------------------------------------------------------
 
@@ -55,16 +47,6 @@ if(GEN_ENABLE_TRACE)
     add_compile_definitions(GEN_ENABLE_TRACE=1)
 else()
     set(GEN_TRACE_SOURCES "${RUNNER_ROOT}/cmd_server_stub.c")
-endif()
-
-# clownmdemu-core is the mstan fork; our changes are committed in it directly
-# (no build-time patch step — see THIRD-PARTY-LICENSES.md). It is an OPT-IN
-# submodule: AGPL, private fork, and needed by nothing that ships. Only the
-# dev-only _oracle / _oracle_cosim targets below use it.
-include("${RECOMP_ROOT}/cmake/GenesisOracle.cmake")
-genesis_oracle_resolve("${RECOMP_ROOT}")
-if(GENESIS_ORACLE)
-    add_subdirectory("${RECOMP_ROOT}/clownmdemu-core" clownmdemu-core)
 endif()
 
 # SDL2 discovery. Windows uses the bundled VC devel package; macOS/Linux
@@ -134,11 +116,8 @@ endif()
 # Backend split (teardown #4/#5/#10, validated on Sonic 1):
 #   - Native target  = the clean-room own backend (VDP+bus+Z80 scheduler). It is
 #     THE Sonic 1 runtime — not a toggle — and links ZERO clownmdemu (AGPL-free).
-#   - Oracle target  = clownmdemu (clown68000 interpreter + clownmdemu VDP/bus),
-#     the dev-only verification reference; never shipped.
-# OWN_BACKEND is therefore defined intrinsically on the native target below, not
-# as a user option. (S2/S3 still build on clownmdemu until their own backend is
-# validated; the engine keeps the OWN_BACKEND conditional until they migrate.)
+# It is the only backend: the OWN_BACKEND conditionals were removed from the
+# runner once every game migrated, so there is nothing left to select.
 set(OWN_BACKEND_SOURCES
     "${RUNNER_ROOT}/video/genesis_vdp.c"
     "${RUNNER_ROOT}/video/genesis_bus.c"
@@ -167,7 +146,6 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/audio.c"
     "${RUNNER_ROOT}/chip_trace.c"   # self-stubs unless GEN_DEV_TRACE=ON (no-op in release)
     ${GEN_TRACE_SOURCES}            # cmd_server.c + frame_snapshots.c, or cmd_server_stub.c (GEN_ENABLE_TRACE=OFF)
-    "${RUNNER_ROOT}/hybrid_global.c"
     "${RUNNER_ROOT}/glue.c"
     "${RUNNER_ROOT}/fiber_compat.c"   # cross-platform fiber shim (Win32 Fibers / POSIX ucontext) — glue.c depends on it
     "${RUNNER_ROOT}/crash_report.c"
@@ -197,10 +175,8 @@ if(SONIC_REVERSE_DEBUG)
     message(STATUS "SONIC_REVERSE_DEBUG=ON — regen with GenesisRecomp --reverse-debug")
 endif()
 
-# Include paths. THE NATIVE LIST MUST CONTAIN NO clownmdemu-core PATHS —
-# that is the enforcement that no AGPL header can be compiled into a release
-# binary (clowncommon is ISC-permissive and vendored at
-# runner/external/clowncommon). The oracle keeps the full clownmdemu paths.
+# Include paths. clowncommon is ISC-permissive and vendored at
+# runner/external/clowncommon; nothing else third-party is on this list.
 set(SONIC_INCLUDES_NATIVE
     "${RUNNER_ROOT}"
     "${RUNNER_ROOT}/include"
@@ -211,27 +187,11 @@ set(SONIC_INCLUDES_NATIVE
     "${RECOMP_ROOT}/recompiler/src"    # m68k_decoder.h / rom_parser.h (Tier-3 floor + cosim)
     "${RECOMP_ROOT}/sonicthehedgehog"
 )
-set(SONIC_INCLUDES_ORACLE
-    "${RUNNER_ROOT}"
-    "${RUNNER_ROOT}/include"
-    "${RUNNER_ROOT}/external/ymfm/src"
-    "${RUNNER_ROOT}/external/superzazu"
-    "${RUNNER_ROOT}/video"
-    "${RECOMP_ROOT}/recompiler/src"    # m68k_decoder.h / rom_parser.h (floor symbol in glue.c)
-    "${RECOMP_ROOT}/clownmdemu-core/libraries/clownz80/source"
-    "${RECOMP_ROOT}/sonicthehedgehog"
-    "${RECOMP_ROOT}/clownmdemu-core/source"
-    "${RECOMP_ROOT}/clownmdemu-core/libraries/clowncommon"
-    "${RECOMP_ROOT}/clownmdemu-core/libraries/clown68000/source/interpreter"
-    ${SDL2_PARENT_INCLUDE_DIRS}
-)
 
 set(SONIC_SHARED_LIBS SDL2::SDL2 SDL2::SDL2main)
 if(WIN32)
     list(APPEND SONIC_SHARED_LIBS ws2_32 comdlg32)
 endif()
-# clownmdemu-core (AGPL) is linked ONLY by the oracle target (see below). The
-# native target is the own backend and links zero clownmdemu code.
 
 function(_sonic_finalize_target tgt includes)
     target_include_directories(${tgt} PRIVATE ${${includes}})
@@ -278,49 +238,10 @@ _sonic_finalize_target(SonicTheHedgehogRecomp SONIC_INCLUDES_NATIVE)
 # Shared recomp-ui (Dear ImGui) pre-boot launcher — native (shipped) target
 # only. Adds the launcher sources + vendored ImGui (all permissive), defines
 # RECOMP_LAUNCHER (which un-gates the seam in the runner's main.c), links the
-# system GL, and stages assets/ next to the exe. The dev-only _oracle target below
+# system GL, and stages assets/ next to the exe. The cosim target below
 # deliberately does NOT get the launcher.
 include(${CMAKE_SOURCE_DIR}/recomp-ui/recomp_ui.cmake)
 recomp_target_launcher_ui(SonicTheHedgehogRecomp BOXART ${CMAKE_SOURCE_DIR}/boxart.tga)
-
-# ---------------------------------------------------------------------------
-# Oracle target — clown68000 interpreter executes everything.
-# Dev-only and AGPL-linked, so it is built only when the opt-in
-# clownmdemu-core submodule is present (see cmake/GenesisOracle.cmake).
-# ---------------------------------------------------------------------------
-if(GENESIS_ORACLE)
-
-set(SONIC_ORACLE_EXTRA_SOURCES
-    "${RUNNER_ROOT}/hybrid.c"
-    "${RECOMP_ROOT}/sonicthehedgehog/sonic1_hybrid_table.c"  # per-game (Sonic 1's verified-clean overrides)
-    "${RUNNER_ROOT}/hybrid_jmp.c"
-)
-if(SONIC_REVERSE_DEBUG)
-    # Tier 3: per-instruction capture on the oracle side. Oracle-only
-    # because native uses stub_clown68000.c and never runs the
-    # interpreter.
-    list(APPEND SONIC_ORACLE_EXTRA_SOURCES "${RUNNER_ROOT}/oracle_trace.c")
-endif()
-
-add_executable(SonicTheHedgehogRecomp_oracle
-    ${SONIC_SHARED_SOURCES}
-    ${SONIC_ORACLE_EXTRA_SOURCES}
-)
-add_dependencies(SonicTheHedgehogRecomp_oracle ${SONIC_GENERATED_SOURCES_TARGET})
-target_compile_definitions(SonicTheHedgehogRecomp_oracle PRIVATE
-    INCLUDE_GENERATED_CODE=1
-    HYBRID_RECOMPILED_CODE=1
-    SONIC_ORACLE_BUILD=1
-    DEFAULT_DEBUG_PORT=4379
-    $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
-    $<$<BOOL:${GEN_DEV_TRACE}>:GEN_DEV_TRACE>
-)
-_sonic_finalize_target(SonicTheHedgehogRecomp_oracle SONIC_INCLUDES_ORACLE)
-# The oracle runs clownmdemu's clown68000 interpreter + VDP/bus as ground truth,
-# so it (and only it) links the AGPL core. Dev-only; never shipped.
-target_link_libraries(SonicTheHedgehogRecomp_oracle PRIVATE clownmdemu-core)
-
-endif() # GENESIS_ORACLE
 
 # ---------------------------------------------------------------------------
 # Framework tests (L1 decoder harness). Opt-in via -DBUILD_TESTS=ON.
@@ -349,7 +270,7 @@ if(GENESIS_BUILD_COSIM)
         ${OWN_BACKEND_SOURCES}
         "${RUNNER_ROOT}/cosim.c"
         "${RUNNER_ROOT}/cosim_state.c"
-        "${RUNNER_ROOT}/cosim_visible.c"                      # pairing #2 A-side (visible surface)
+        "${RUNNER_ROOT}/cosim_visible.c"                      # visible-surface hashes + memchunks localizer
         "${RUNNER_ROOT}/cosim_cycles.c"                       # cross-backend work-cycle ruler
         "${RUNNER_ROOT}/game_cycles.c"                        # cost-table lookup
         "${SONIC_GENERATED_SOURCES_CYCLES}"                  # model-stamped costs
@@ -367,33 +288,4 @@ if(GENESIS_BUILD_COSIM)
     # No launcher (headless/deterministic); the coordinator drives it over TCP.
     message(STATUS "GENESIS_BUILD_COSIM=ON — differential co-sim target enabled")
 
-    # ----- Pairing #2: ORACLE cosim (clownmdemu, guest-visible-surface) -----
-    # The independent full-machine oracle. Uses cosim_visible.c (NOT cosim_state.c,
-    # which reads own-backend globals). Hashes the guest-visible surface only.
-    # Needs the opt-in clownmdemu-core submodule; pairing #1 above does not.
-    if(NOT GENESIS_ORACLE)
-        message(STATUS "  - oracle cosim (pairing #2) skipped: oracle off")
-    else()
-    add_executable(SonicTheHedgehogRecomp_oracle_cosim
-        ${SONIC_SHARED_SOURCES}
-        ${SONIC_ORACLE_EXTRA_SOURCES}
-        "${RUNNER_ROOT}/cosim.c"
-        "${RUNNER_ROOT}/cosim_visible.c"
-        "${RUNNER_ROOT}/cosim_cycles.c"                             # cross-backend work-cycle ruler
-        "${RUNNER_ROOT}/game_cycles.c"                              # m68k_interp cost lookup
-        "${SONIC_GENERATED_SOURCES_CYCLES}"
-    )
-    add_dependencies(SonicTheHedgehogRecomp_oracle_cosim ${SONIC_GENERATED_SOURCES_TARGET})
-    target_compile_definitions(SonicTheHedgehogRecomp_oracle_cosim PRIVATE
-        INCLUDE_GENERATED_CODE=1
-        HYBRID_RECOMPILED_CODE=1
-        SONIC_ORACLE_BUILD=1
-        GENESIS_COSIM=1
-        DEFAULT_DEBUG_PORT=4392
-        $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
-    )
-    _sonic_finalize_target(SonicTheHedgehogRecomp_oracle_cosim SONIC_INCLUDES_ORACLE)
-    target_link_libraries(SonicTheHedgehogRecomp_oracle_cosim PRIVATE clownmdemu-core)
-    message(STATUS "  + oracle cosim target (pairing #2) enabled")
-    endif() # GENESIS_ORACLE
 endif()
