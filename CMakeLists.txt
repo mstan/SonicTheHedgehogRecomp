@@ -97,22 +97,6 @@ set(FM_SOURCES
     "${RUNNER_ROOT}/external/ymfm/src/ymfm_pcm.cpp"
 )
 
-# ---------------------------------------------------------------------------
-# Clean-room VDP (genesis_vdp) — AGPL-free runtime teardown item #4. While
-# PERMISSIVE_VDP is ON it runs as a SHADOW (mirrors VDP-port writes, substitutes
-# its rendered scanlines for display) so the renderer can be validated against
-# clownmdemu before clownmdemu's VDP is dropped. Default OFF. See LICENSING.md.
-# ---------------------------------------------------------------------------
-option(PERMISSIVE_VDP "Shadow the clean-room genesis_vdp for validation." OFF)
-set(VDP_SOURCES "")
-if(PERMISSIVE_VDP)
-    list(APPEND VDP_SOURCES
-        "${RUNNER_ROOT}/video/genesis_vdp.c"
-        "${RUNNER_ROOT}/video/vdp_integration.c")
-    add_compile_definitions(PERMISSIVE_VDP=1)
-    message(STATUS "PERMISSIVE_VDP=ON — clean-room VDP shadow build")
-endif()
-
 # Backend split (teardown #4/#5/#10, validated on Sonic 1):
 #   - Native target  = the clean-room own backend (VDP+bus+Z80 scheduler). It is
 #     THE Sonic 1 runtime — not a toggle — and links ZERO clownmdemu (AGPL-free).
