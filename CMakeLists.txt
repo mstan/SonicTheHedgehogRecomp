@@ -150,6 +150,7 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/audio/sn76489.c"
     "${RUNNER_ROOT}/audio/mixer.c"
     "${RUNNER_ROOT}/audio/observability.c"
+    "${RUNNER_ROOT}/cosim_state.c"  # pointer-free end-state hash for benchmarks + co-sim
     # Verified-enhancement shadow layer (opt-in via env, default OFF; links no
     # clownmdemu, safe to ship). See segagenesisrecomp/docs/SHADOW_ENHANCEMENTS.md.
     "${RUNNER_ROOT}/audio/audio_shadow.c"   # envelope-correlation verifier
@@ -180,7 +181,7 @@ set(SONIC_INCLUDES_NATIVE
     "${RECOMP_ROOT}/sonicthehedgehog"
 )
 
-set(SONIC_SHARED_LIBS SDL2::SDL2 SDL2::SDL2main)
+set(SONIC_SHARED_LIBS SDL2::SDL2main SDL2::SDL2)
 if(WIN32)
     list(APPEND SONIC_SHARED_LIBS ws2_32 comdlg32)
 endif()
@@ -261,7 +262,6 @@ if(GENESIS_BUILD_COSIM)
         ${SONIC_SHARED_SOURCES}
         ${OWN_BACKEND_SOURCES}
         "${RUNNER_ROOT}/cosim.c"
-        "${RUNNER_ROOT}/cosim_state.c"
         "${RUNNER_ROOT}/cosim_visible.c"                      # visible-surface hashes + memchunks localizer
         "${RUNNER_ROOT}/cosim_cycles.c"                       # cross-backend work-cycle ruler
         "${RUNNER_ROOT}/game_cycles.c"                        # cost-table lookup
