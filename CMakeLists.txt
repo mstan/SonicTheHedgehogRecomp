@@ -159,7 +159,6 @@ set(SONIC_SHARED_SOURCES
     ${SONIC_GENERATED_SOURCES}
     "${RECOMP_ROOT}/sonicthehedgehog/sonic1_spec.c"
     "${RECOMP_ROOT}/sonicthehedgehog/sonic_extras.c"
-    "${RECOMP_ROOT}/sonicthehedgehog/extras.c"
     ${NATIVE_FLOOR_SOURCES}         # m68k_interp + decoder (engine-master glue.c needs it)
 )
 
@@ -234,7 +233,8 @@ _sonic_finalize_target(SonicTheHedgehogRecomp SONIC_INCLUDES_NATIVE)
 # system GL, and stages assets/ next to the exe. The cosim target below
 # deliberately does NOT get the launcher.
 include(${CMAKE_SOURCE_DIR}/recomp-ui/recomp_ui.cmake)
-recomp_target_launcher_ui(SonicTheHedgehogRecomp BOXART ${CMAKE_SOURCE_DIR}/boxart.tga)
+recomp_target_launcher_ui(SonicTheHedgehogRecomp CONSOLE genesis
+    BOXART ${CMAKE_SOURCE_DIR}/boxart.tga)
 
 # ---------------------------------------------------------------------------
 # Framework tests (L1 decoder harness). Opt-in via -DBUILD_TESTS=ON.

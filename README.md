@@ -147,34 +147,18 @@ GENESIS_AUDIO_SHADOW=1 GENESIS_FM_LADDER=off GENESIS_SCREEN=crt ./SonicTheHedgeh
 
 Full design, verifier algorithm, and rationale: `segagenesisrecomp/docs/SHADOW_ENHANCEMENTS.md`.
 
-## Discovering and Adding New Functions
+## Function-discovery evidence
 
-When the native build encounters a function that wasn't statically compiled, it logs a **dispatch miss** to `dispatch_misses.log` and to stderr.
+The native runner writes unresolved dispatch entries to
+`dispatch_misses.toml`. The Tier-3 fallback similarly writes executed leads to
+`floor_coverage.toml`. Both are valid TOML discovery snippets using
+`[functions].extra`, but they are evidence rather than authority: verify every
+address against the disassembly and fix the appropriate `gen_disasm_*`
+extractor or checked-in discovery TOML before rebuilding. Never seed a runtime
+address blindly; see `segagenesisrecomp/PRINCIPLES.md` §16.
 
-### From Native Build (dispatch misses)
-
-Play the native build and explore areas where you see missing behavior. Dispatch misses are logged automatically.
-
-```bash
-# After playing, check what was missed:
-cat dispatch_misses.log
-```
-
-### From Interpreter Build (full coverage)
-
-The interpreter tracks every PC address the 68K executes. Play through any area and the interpreter logs every code path.
-
-1. Build and run the interpreter build (see above)
-2. Play through the target area
-3. Dump coverage via TCP: `python tools/tcp_cmd.py '{"id":1,"cmd":"coverage_dump"}'`
-4. Diff against the dispatch table: `python tools/diff_coverage.py`
-5. Add new entries to `game.cfg`, checking each against `blacklist.txt`
-6. Audit for bad splits: `python tools/audit_all_splits.py`
-7. Regenerate with the recompiler, rebuild
-
-### The Blacklist
-
-Some ROM addresses look like function entry points but are actually **interior labels** that split parent functions in half. The `blacklist.txt` file lists all known interior labels. The recompiler's `blacklist_file` directive in `game.cfg` enforces this at compile time.
+Interior-label misses are kept separate in `interior_label_misses.log` because
+they require a code-generation fix, not a new function entry.
 
 ## Debug Tools
 
