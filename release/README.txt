@@ -16,14 +16,30 @@ then run SonicTheHedgehogRecomp.exe.
 
 CONTROLS
 --------
-Arrow keys = D-pad, A/S/D = A/B/C, Enter = Start. Gamepads supported (SDL2).
+Arrow keys = D-pad, Z/X/C = A/B/C, Enter = Start. Gamepads supported (SDL2).
 Save states: Shift+F1..F9 save, F1..F9 load.
+Escape = runtime settings. F11 = fullscreen.
+
+WIDESCREEN MOD (OPT-IN)
+----------------------
+In the recomp-ui launcher or Escape menu, open Mods and enable Widescreen.
+Choose 16:9, 21:9, 32:9, or Adaptive. Adaptive follows the entire window,
+without a 32:9 limit. Settings are saved beside the executable.
+Disabled uses the original renderer. No ROM patch or external mod file is needed.
+
+The custom renderer expands scenery, ring/object activation, title and special
+stages; anchors the HUD to the screen; and preserves a full-width fade canvas.
+Green Hill's background parallax follows the expanded camera near stage edges.
+The jump-SFX extra "boop" correction applies in both native and wide modes.
 
 KNOWN ISSUES
 ------------
-- The jump sound effect can sound slightly off ("boop") compared to
-  original hardware; under investigation.
+- Widescreen is experimental: extreme widths can exhaust dynamic actor storage,
+  and earlier activation changes enemy timing. Later zones, bosses and
+  save-state rewinds need further validation. The mod is disabled in netplay.
 - A brief audio/video hitch can occur on the SEGA logo screen.
+- Labyrinth has an existing Burrobot control-flow issue, also reproduced in an
+  older native build. It is not fixed in this release.
 
 LICENSE
 -------

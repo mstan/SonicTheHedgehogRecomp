@@ -29,6 +29,17 @@ Green Hill Zone (Acts 1–3) is fully completable. Later zones are partially fun
 | Later zones | ⚠️ Partial | Functions discovered via interpreter coverage logging. Some objects missing |
 | Save states | ✅ Works | 9 slots (Shift+F1-F9 save, F1-F9 load) |
 
+## Experimental adaptive widescreen
+
+Enable **Mods → Widescreen** in the recomp-ui launcher or in-game Escape menu.
+Choose **16:9**, **21:9**, **32:9**, or **Adaptive** and resize/maximize the window.
+The mod is off by default and uses a separate custom scene renderer, with an
+edge-anchored HUD, expanded objects/rings, and wider title/special-stage scenery.
+Adaptive has no 32:9 cap; `--widescreen stage` remains a full-stage-width overview
+experiment for the command line. Settings persist next to the executable.
+The jump-SFX stop/unwind correction is included regardless of renderer mode.
+See [the experiment's modes, limits and validation](docs/EXPERIMENTAL_WIDESCREEN.md).
+
 ## How It Works
 
 The [recompiler](https://github.com/mstan/segagenesisrecomp) analyzes a Sonic 1 ROM binary and emits native C functions for every 68K subroutine — 530+ functions total. These generated functions use the same memory layout and register state as the original 68K code, but execute as compiled x64 instead of interpreted instructions.
