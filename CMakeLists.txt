@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(SonicTheHedgehogRecomp C)
+project(SonicTheHedgehogRecomp VERSION 0.7.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 
@@ -158,6 +158,7 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/video/color_lut.c"      # present-time 9-bit CRT/composite LUT
     ${SONIC_GENERATED_SOURCES}
     "${RECOMP_ROOT}/sonicthehedgehog/sonic1_spec.c"
+    "${RECOMP_ROOT}/sonicthehedgehog/sonic1_video.c"
     "${RECOMP_ROOT}/sonicthehedgehog/sonic_extras.c"
     ${NATIVE_FLOOR_SOURCES}         # m68k_interp + decoder (engine-master glue.c needs it)
 )
@@ -222,6 +223,7 @@ target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
     ENABLE_RECOMPILED_CODE=1
     OWN_BACKEND=1                   # the own backend IS the Sonic 1 runtime (no clownmdemu link)
     DEFAULT_DEBUG_PORT=4378
+    GENESIS_GAME_VERSION="${PROJECT_VERSION}"
     $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
     $<$<BOOL:${GEN_DEV_TRACE}>:GEN_DEV_TRACE>
 )
@@ -232,6 +234,9 @@ _sonic_finalize_target(SonicTheHedgehogRecomp SONIC_INCLUDES_NATIVE)
 # RECOMP_LAUNCHER (which un-gates the seam in the runner's main.c), links the
 # system GL, and stages assets/ next to the exe. The cosim target below
 # deliberately does NOT get the launcher.
+# The built-in custom renderer is offered through Mods (still disabled until
+# the player opts in). The shared launcher hides providers unless this is on.
+set(RECOMP_UI_ENABLE_MODS ON CACHE BOOL "Expose Sonic's opt-in built-in mods")
 include(${CMAKE_SOURCE_DIR}/recomp-ui/recomp_ui.cmake)
 recomp_target_launcher_ui(SonicTheHedgehogRecomp CONSOLE genesis
     BOXART ${CMAKE_SOURCE_DIR}/boxart.tga)
