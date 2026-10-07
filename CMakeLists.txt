@@ -128,6 +128,14 @@ set(NATIVE_FLOOR_SOURCES
 # Shared sources / includes / link libs
 # ---------------------------------------------------------------------------
 
+# Qualified on Windows x64 with the shared scalar renderer as the reference.
+# CACHE without FORCE preserves an explicit -DGENESIS_VDP_PLANE_IMPL=SCALAR.
+# Other platforms keep the framework's scalar default until measured there.
+if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND
+   CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64)$")
+    set(GENESIS_VDP_PLANE_IMPL "BATCHED" CACHE STRING
+        "VDP scanline renderer (SCALAR reference or BATCHED HLE)")
+endif()
 include("${RECOMP_ROOT}/cmake/GenesisRecompGenerated.cmake")
 genesisrecomp_add_generated_sources(
     SONIC_GENERATED_SOURCES sonic sonicthehedgehog sonic.bin
