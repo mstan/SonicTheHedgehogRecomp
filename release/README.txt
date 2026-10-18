@@ -38,8 +38,9 @@ KNOWN ISSUES
   and earlier activation changes enemy timing. Later zones, bosses and
   save-state rewinds need further validation. The mod is disabled in netplay.
 - A brief audio/video hitch can occur on the SEGA logo screen.
-- Labyrinth has an existing Burrobot control-flow issue, also reproduced in an
-  older native build. It is not fixed in this release.
+- v0.7.1 restores omitted Burrobot and Labyrinth moving-block handlers through
+  corrected disassembly table extraction. Assisted act-start, boss-approach
+  and special-stage coverage does not certify every route or boss victory.
 
 LICENSE
 -------
