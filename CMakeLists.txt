@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
-project(SonicTheHedgehogRecomp VERSION 0.7.1 LANGUAGES C)
+project(SonicTheHedgehogRecomp VERSION 0.7.2 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 
 # ---------------------------------------------------------------------------
 # Twin-build: a single configure produces BOTH binaries.
 #
-# Single build: SonicTheHedgehogRecomp.exe — recompiled 68K on the clean-room
+# Single build: SonicTheHedgehogRecomp.exe â€” recompiled 68K on the clean-room
 # OWN BACKEND (VDP + bus + Z80 scheduler). There is one backend and it is ours;
 # no emulator core is compiled or linked anywhere in this project.
 #
@@ -92,7 +92,7 @@ endforeach()
 # ---------------------------------------------------------------------------
 # YM2612 FM = vendored ymfm (Aaron Giles, BSD-3) behind the stable ym2612_*
 # API (runner/audio/ym2612.h). Replaced clownmdemu's FM (AGPL) 2026-06-05 as
-# part of the AGPL-free runtime initiative — see segagenesisrecomp/LICENSING.md
+# part of the AGPL-free runtime initiative â€” see segagenesisrecomp/LICENSING.md
 # (teardown item #2). enable_language(CXX) because ymfm is C++.
 # ---------------------------------------------------------------------------
 enable_language(CXX)
@@ -107,7 +107,7 @@ set(FM_SOURCES
 
 # Backend split (teardown #4/#5/#10, validated on Sonic 1):
 #   - Native target  = the clean-room own backend (VDP+bus+Z80 scheduler). It is
-#     THE Sonic 1 runtime — not a toggle — and links ZERO clownmdemu (AGPL-free).
+#     THE Sonic 1 runtime â€” not a toggle â€” and links ZERO clownmdemu (AGPL-free).
 # It is the only backend: the OWN_BACKEND conditionals were removed from the
 # runner once every game migrated, so there is nothing left to select.
 set(OWN_BACKEND_SOURCES
@@ -147,7 +147,7 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/chip_trace.c"   # self-stubs unless GEN_DEV_TRACE=ON (no-op in release)
     ${GEN_TRACE_SOURCES}            # cmd_server.c + frame_snapshots.c, or cmd_server_stub.c (GEN_ENABLE_TRACE=OFF)
     "${RUNNER_ROOT}/glue.c"
-    "${RUNNER_ROOT}/fiber_compat.c"   # cross-platform fiber shim (Win32 Fibers / POSIX ucontext) — glue.c depends on it
+    "${RUNNER_ROOT}/fiber_compat.c"   # cross-platform fiber shim (Win32 Fibers / POSIX ucontext) â€” glue.c depends on it
     "${RUNNER_ROOT}/crash_report.c"
     "${RUNNER_ROOT}/input_script.c"
     "${RUNNER_ROOT}/gamepad.c"
@@ -173,7 +173,7 @@ set(SONIC_SHARED_SOURCES
 
 if(SONIC_REVERSE_DEBUG)
     list(APPEND SONIC_SHARED_SOURCES "${RUNNER_ROOT}/reverse_debug.c")
-    message(STATUS "SONIC_REVERSE_DEBUG=ON — regen with GenesisRecomp --reverse-debug")
+    message(STATUS "SONIC_REVERSE_DEBUG=ON â€” regen with GenesisRecomp --reverse-debug")
 endif()
 
 # Include paths. clowncommon is ISC-permissive and vendored at
@@ -218,7 +218,7 @@ function(_sonic_finalize_target tgt includes)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# Native target — recompiled 68K drives the game
+# Native target â€” recompiled 68K drives the game
 # ---------------------------------------------------------------------------
 
 add_executable(SonicTheHedgehogRecomp
@@ -237,7 +237,7 @@ target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
 )
 _sonic_finalize_target(SonicTheHedgehogRecomp SONIC_INCLUDES_NATIVE)
 
-# Shared recomp-ui (Dear ImGui) pre-boot launcher — native (shipped) target
+# Shared recomp-ui (Dear ImGui) pre-boot launcher â€” native (shipped) target
 # only. Adds the launcher sources + vendored ImGui (all permissive), defines
 # RECOMP_LAUNCHER (which un-gates the seam in the runner's main.c), links the
 # system GL, and stages assets/ next to the exe. The cosim target below
@@ -265,7 +265,7 @@ if(BUILD_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
-# Differential co-simulation target — dev-only, never shipped.
+# Differential co-simulation target â€” dev-only, never shipped.
 #
 # SonicTheHedgehogRecomp_cosim.exe: the OWN-BACKEND recomp runtime plus the
 # #ifdef GENESIS_COSIM full-state hash module (cosim_state.c) + lockstep TCP
@@ -296,6 +296,6 @@ if(GENESIS_BUILD_COSIM)
     )
     _sonic_finalize_target(SonicTheHedgehogRecomp_cosim SONIC_INCLUDES_NATIVE)
     # No launcher (headless/deterministic); the coordinator drives it over TCP.
-    message(STATUS "GENESIS_BUILD_COSIM=ON — differential co-sim target enabled")
+    message(STATUS "GENESIS_BUILD_COSIM=ON â€” differential co-sim target enabled")
 
 endif()
