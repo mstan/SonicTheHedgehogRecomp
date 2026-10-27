@@ -158,7 +158,7 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/video/color_lut.c"      # present-time 9-bit CRT/composite LUT
     ${SONIC_GENERATED_SOURCES}
     "${RECOMP_ROOT}/sonicthehedgehog/sonic1_spec.c"
-    "${RECOMP_ROOT}/sonicthehedgehog/sonic1_video.c"
+    "${CMAKE_SOURCE_DIR}/game/sonic1_video.c"
     "${RECOMP_ROOT}/sonicthehedgehog/sonic_extras.c"
     ${NATIVE_FLOOR_SOURCES}         # m68k_interp + decoder (engine-master glue.c needs it)
 )
@@ -249,6 +249,11 @@ option(BUILD_TESTS "Build L1 decoder test harness" OFF)
 if(BUILD_TESTS)
     set(GENESIS_SONIC_GENERATED_DIR "${SONIC_GENERATED_SOURCES_DIR}")
     add_subdirectory("${RECOMP_ROOT}/tests" tests)
+    enable_testing()
+    add_executable(sonic1_game_video_test tests/runtime/sonic1_video_test.c game/sonic1_video.c)
+    target_include_directories(sonic1_game_video_test PRIVATE
+        "${RUNNER_ROOT}" "${RUNNER_ROOT}/include" "${CMAKE_SOURCE_DIR}/game")
+    add_test(NAME sonic1_game_video COMMAND sonic1_game_video_test)
 endif()
 
 # ---------------------------------------------------------------------------
