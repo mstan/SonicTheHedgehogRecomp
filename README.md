@@ -29,6 +29,13 @@ Green Hill Zone (Acts 1–3) is fully completable. Later zones are partially fun
 | Later zones | ⚠️ Partial | Functions discovered via interpreter coverage logging. Some objects missing |
 | Save states | ✅ Works | 9 slots (Shift+F1-F9 save, F1-F9 load) |
 
+Windows x64 builds default to the shared batched VDP renderer. The 6,000-frame
+Green Hill measurement gained 20.5% uncapped FPS and used 10.6% less process CPU
+time with rendering and audio synthesis retained. Focused renderer checks and
+the owner's normal-paced native and widescreen playtests passed. This result
+applies to Sonic 1 on Windows; it is not a performance claim for other games or
+ports. Build with `-DGENESIS_VDP_PLANE_IMPL=SCALAR` for the LLE reference.
+
 ## Experimental adaptive widescreen
 
 Enable **Mods → Widescreen** in the recomp-ui launcher or in-game Escape menu.
