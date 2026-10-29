@@ -661,4 +661,5 @@ void s1_video_command(int id, const char *json)
         s_display?s_display->count:0,s_display?s_display->scene:-1,s_spawned,s_pool_pressure,s_ring_collected);
     cmd_send_response(reply);
 }
-const GameVideo sonic1_video = { configure, enabled, width, scanline, NULL, scanline_lazy };
+/* Preserve existing eligibility while adopting independent engine ownership. */
+const GameVideo sonic1_video = { configure, enabled, width, scanline, NULL, scanline_lazy, enabled };
