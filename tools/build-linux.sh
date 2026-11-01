@@ -169,6 +169,9 @@ EOF
 
 $LINUXDEPLOY --appdir "$APPDIR" --executable "$BIN" \
     --desktop-file "$WORK/$SLUG.desktop" --icon-file "$WORK/$SLUG.png"
+mkdir -p "$APPDIR/usr/bin/docs" "$APPDIR/usr/bin/tools"
+cp "$(dirname "$BIN")/docs/PLAYER_FEEDBACK.md" "$APPDIR/usr/bin/docs/"
+cp "$(dirname "$BIN")/tools/replay_diagnostic.py" "$APPDIR/usr/bin/tools/"
 
 # Custom AppRun: bundle libs, read the controller natively on a Steam Deck, find
 # the ROM next to the .AppImage, run from the ROM's folder so saves land there.

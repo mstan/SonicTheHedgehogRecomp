@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(SonicTheHedgehogRecomp VERSION 0.7.3 LANGUAGES C)
+project(SonicTheHedgehogRecomp VERSION 0.7.4 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 
@@ -299,3 +299,9 @@ if(GENESIS_BUILD_COSIM)
     message(STATUS "GENESIS_BUILD_COSIM=ON â€” differential co-sim target enabled")
 
 endif()
+
+# Replay reports are supported in production and every native package.
+add_custom_command(TARGET SonicTheHedgehogRecomp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SonicTheHedgehogRecomp>/docs" "$<TARGET_FILE_DIR:SonicTheHedgehogRecomp>/tools"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${RECOMP_ROOT}/docs/PLAYER_FEEDBACK.md" "$<TARGET_FILE_DIR:SonicTheHedgehogRecomp>/docs/PLAYER_FEEDBACK.md"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${RECOMP_ROOT}/tools/replay_diagnostic.py" "$<TARGET_FILE_DIR:SonicTheHedgehogRecomp>/tools/replay_diagnostic.py")
