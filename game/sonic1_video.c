@@ -309,6 +309,30 @@ static void marble_present(unsigned priority,int camera,int left)
                     (int)p->x-camera,y-offset-ram16(0xF704),0,0);
     }
 }
+/* DLE_FZboss creates the boss at camera $22B0. At 32:9 its stationary
+ * cylinders are visible earlier. Use the ROM's initial pose and already
+ * loaded boss art until each native cylinder initializes; no early boss,
+ * collisions, random calls or guest object slots are introduced. */
+static void final_cylinders_present(unsigned priority,int camera,int left)
+{
+    int event=video_ram[0xF742];
+    if(priority!=3 || !gameplay() || ram16(0xFE10)!=0x502 || event<2 || event>4 ||
+       scene_read32(0xFFF680) || ram16(0xF6F8))return;
+    for(unsigned o=0xD000;o<0xF000;o+=64)
+        if(video_ram[o]==0x85 && video_ram[o+0x24]==2 && video_ram[o+0x34]>=6)return;
+    unsigned map=scene_read32(0x1A49A),gfx=scene_read16(0x1A494);
+    s_capture_slot=0;s_capture_space=4;
+    for(unsigned i=0;i<4;++i) {
+        int x=scene_read16(0x1A462+i*4),y=scene_read16(0x1A464+i*4);
+        if(x+32<=left || x-32>=left+s_requested_width)continue;
+        unsigned o;
+        for(o=0xD000;o<0xF000;o+=64)
+            if(video_ram[o]==0x84 && video_ram[o+0x28]==i*2 &&
+               video_ram[o+0x24]>=2 && scene_read32(0xFF0000u+o+4))break;
+        if(o<0xF000)continue;
+        add_mapping(map,0,gfx,i>=2?2:0,x-camera,y-ram16(0xF704),0,0);
+    }
+}
 static void spawn_scene(void)
 {
     load_placements(); adopt_rings(); s_loader_active=1;
@@ -436,7 +460,10 @@ static void capture_objects(void)
                 else if(!s_capture_readonly && s_visible_count<128)s_visible_objects[s_visible_count++]=o;
             }
         }
-        if(!s_capture_readonly)marble_present(pri,cam,left);
+        if(!s_capture_readonly) {
+            marble_present(pri,cam,left);
+            final_cylinders_present(pri,cam,left);
+        }
         if(!s_capture_readonly && pri==2 && gameplay() && !recorded_demo()) {
             s_capture_slot=0;s_capture_space=4;
             for(unsigned n=0;n<s_placement_count;++n) {

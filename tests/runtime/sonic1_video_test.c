@@ -399,6 +399,40 @@ int main(int argc,char **argv)
     word(g_ram,0xFE04,50);s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);
     sonic1_video.scanline(&v,8,native,320,out,796);CHECK(out[38]==0xFF0000FFu);
+    /* A scripted FZ boss is created at the original camera threshold, after
+     * the wide viewport can see its cylinders. Ready art can be previewed
+     * without allocating the boss early or changing any guest state. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;word(g_ram,0xFE10,0x502);g_ram[0xF742]=2;
+    for(int n=0;n<6;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,800);word(g_ram,0xFF10,800);
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-800);
+    v.cram[1]=0xE00;memset(v.vram+32,0x11,32);
+    word(g_rom,0x1A494,0x8001);g_rom[0x1A49A]=0;g_rom[0x1A49B]=0;
+    g_rom[0x1A49C]=0x10;g_rom[0x1A49D]=0;
+    word(g_rom,0x1000,2);g_rom[0x1002]=1;memset(g_rom+0x1003,0,5);
+    for(int n=0;n<4;++n){word(g_rom,0x1A462+n*4,5000);word(g_rom,0x1A464+n*4,8);}
+    word(g_rom,0x1A462,600);
+    memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
+    CHECK(out[38]==0xFF0000FFu);CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    /* The original initialized object replaces its preview exactly once. */
+    g_ram[0xD800]=0x84;g_ram[0xD801]=4;g_ram[0xD824]=2;
+    word(g_ram,0xD802,0x8001);m68k_write32(0xFFD804,0x1000);
+    word(g_ram,0xD808,600);word(g_ram,0xD80C,8);
+    word(g_ram,0xAC00+3*128,2);word(g_ram,0xAC02+3*128,0xD800);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
+    CHECK(out[38]==0xFF0000FFu);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":1"));
+    /* Once escape begins, removed cylinders must not be resurrected. */
+    memset(g_ram+0xD800,0,64);memset(g_ram+0xAC00,0,1024);
+    g_ram[0xD840]=0x85;g_ram[0xD864]=2;g_ram[0xD874]=6;g_ram[0xF742]=4;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
+    CHECK(out[38]==0xFF000000u);
     /* FM6 music resumes after the 1-UP without changing guest registers or
      * touching a song that restores DAC percussion instead. */
     g_ram[0xF160]=128;g_ram[0xF040]=0;cpu_before=g_cpu;
