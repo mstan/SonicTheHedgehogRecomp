@@ -32,6 +32,19 @@ stages; anchors the HUD to the screen; and preserves a full-width fade canvas.
 Green Hill's background parallax follows the expanded camera near stage edges.
 The jump-SFX extra "boop" correction applies in both native and wide modes.
 
+HIGH REFRESH RATE
+-----------------
+In Mods, choose High refresh rate: Off, 120 Hz, 144 Hz, or Display. Display
+follows the monitor refresh rate. Off is the default. This works with native
+output and widescreen: movement and camera positions interpolate while the
+original gameplay, audio and animation rates are preserved. Menus and special
+stages retain completed images.
+
+UNFILTERED AUDIO
+----------------
+The Audio menu has an optional Unfiltered audio switch, disabled by default.
+It bypasses native low-pass filters; enhanced FM retains its separate sound.
+
 KNOWN ISSUES
 ------------
 - Widescreen is experimental: extreme widths can exhaust dynamic actor storage,

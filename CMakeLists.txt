@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(SonicTheHedgehogRecomp VERSION 0.7.5 LANGUAGES C)
+project(SonicTheHedgehogRecomp VERSION 0.8.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 
