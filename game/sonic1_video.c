@@ -31,6 +31,7 @@ static const uint8_t *s_read_ram;
 static void interpolation_reset(void);
 static int interpolate_scroll(int line,int which,int current);
 static int interpolate_vs(int line,int which,int current);
+static int interpolate_background_correction(int line,int margin,int current);
 static void scene_mode_changed(int was_enabled);
 
 static uint16_t ram16(unsigned a)
@@ -47,7 +48,15 @@ static int gameplay(void)
     int mode = video_ram[0xF600] & 0x7F;
     /* Game mode changes BEFORE a fade finishes. Scene identity follows the
      * still-live player/layout until the incoming scene replaces them. */
-    return (mode == 8 || mode == 12 || mode == 16) && video_ram[0xD000] == 1;
+    int player=video_ram[0xD000];
+    return ((mode == 8 || mode == 12 || mode == 16 || mode == 24 || mode == 28 ||
+             (mode == 0 && ram16(0xFFF0) == 1)) && player == 1) ||
+           ((mode == 24 || mode == 28) && player == 0x87);
+}
+static int recorded_demo(void)
+{
+    int mode=video_ram[0xF600]&0x7F;
+    return ram16(0xFFF0)!=0 || mode==24 || (mode==28 && video_ram[0xD000]==0x87);
 }
 static int stage_width(void)
 {
@@ -146,7 +155,7 @@ typedef struct {
     SceneSprite sprites[SCENE_SPRITES];
     unsigned count, serial;
     uint8_t sat[640];
-    int scene; /* 1 level, 2 special, 0 menu */
+    int scene; /* 1 level, 2 special, 3 title card, 0 menu */
     int16_t ox[SCENE_SLOTS],oy[SCENE_SLOTS];
     uint32_t identity[SCENE_SLOTS];
 } SceneFrame;
@@ -259,6 +268,47 @@ static int placement_alive(const Placement *p)
     }
     return 0;
 }
+/* Recorded demos keep native object activation. Reconstruct the harmless
+ * MZ platforms/pillars from their placements when the native loader has not
+ * instantiated them, or has already deleted them in a wide margin. This is
+ * pure presentation: no guest objects, collision state or cached timeline.
+ * Their motion follows LGrass_Types/Glass_Types in the original REV00 code. */
+static void marble_present(unsigned priority,int camera,int left)
+{
+    if(!recorded_demo() || !gameplay() || video_ram[0xFE10]!=2 ||
+       (priority!=3 && priority!=4 && priority!=5))return;
+    load_placements();s_capture_slot=0;s_capture_space=4;
+    for(unsigned i=0;i<s_placement_count;++i) {
+        const Placement *p=&s_placements[i];
+        if(p->x+64<left || (int)p->x-64>=left+s_requested_width)continue;
+        if(p->id!=0x2F && p->id!=0x30)continue;
+        if(placement_alive(p))continue;
+        unsigned type=p->subtype&7,frame=0,map,gfx;
+        int y=p->y&4095,offset=0;
+        if(p->id==0x2F) {
+            if(priority!=5 || (p->subtype>>4)>2 || type>5)continue;
+            frame=p->subtype>>4;map=0xB2D4;gfx=0xC000;
+            if(type>=1 && type<=4) {
+                static const unsigned oscillators[]={2,6,10,14};
+                static const int distances[]={32,48,64,96};
+                offset=video_ram[0xFE5E+oscillators[type-1]];
+                if(p->subtype&8)offset=distances[type-1]-offset;
+            }
+            /* Type 5 settles in <=32 ticks after Sonic leaves. By native
+             * deletion he is >400px away, so its unoccupied pose is rest. */
+        } else {
+            if(priority==5 || type>2)continue;
+            map=0xB5FA;gfx=0xC38E;frame=priority==3?1:0;
+            if(type) {
+                offset=video_ram[0xFE70];
+                if(type==2)offset=64-offset;
+                if(priority==3)offset=((64-offset)&255)/2+32;
+            }
+        }
+        add_mapping(map,frame,gfx,0,
+                    (int)p->x-camera,y-offset-ram16(0xF704),0,0);
+    }
+}
 static void spawn_scene(void)
 {
     load_placements(); adopt_rings(); s_loader_active=1;
@@ -353,20 +403,41 @@ static void capture_objects(void)
             s_capture_frame->ox[s_capture_slot]=(int16_t)ram16(o+8);
             s_capture_frame->oy[s_capture_slot]=(int16_t)ram16(o+12);
             s_capture_frame->identity[s_capture_slot]=((uint32_t)video_ram[o]<<24)|scene_read32(0xFF0000u+o+4);
-            int x,y,hud=video_ram[o]==0x21;
+            int x,y,hud=video_ram[o]==0x21?1:space?0:2;
             if(space) {
                 unsigned scroll=space==4?0xF700:space==8?0xF708:0xF718;
                 x=(int16_t)(ram16(o+8)-ram16(scroll));
                 y=(int16_t)(ram16(o+12)-ram16(scroll+4));
-                int radius=video_ram[o+0x19];
-                if(x+radius<left-cam || x-radius>=left-cam+s_requested_width)continue;
-                if(flags&16) { int h=video_ram[o+0x16];if(y+h<0 || y-h>=224)continue; }
-                else if(y<-32 || y>=256)continue;
-                if(!s_capture_readonly && s_visible_count<128)s_visible_objects[s_visible_count++]=o;
-            } else { x=(int16_t)ram16(o+8)-128; y=(int16_t)ram16(o+10)-128; }
+            } else {
+                x=(int16_t)ram16(o+8)-128;y=(int16_t)ram16(o+10)-128;
+                if(video_ram[o]==0x34) {
+                    /* Keep the ROM's arrival/hold/departure times and final
+                     * composition, but cover the actual canvas on the way
+                     * in/out instead of popping at the native 4:3 boundary. */
+                    int target=(int16_t)ram16(o+0x30)-128;
+                    x=target+(int)((int64_t)(x-target)*s_requested_width/320);
+                    if(!s_capture_frame->scene)s_capture_frame->scene=3;
+                }
+            }
+            unsigned first=s_capture_frame->count;
             add_mapping(scene_read32(0xFF0000u+o+4),video_ram[o+0x1A],ram16(o+2),flags,x,y,hud,(flags&32)!=0);
+            if(space) {
+                int visible=0,lo=left-cam,hi=lo+s_requested_width;
+                /* Composite actors do not consistently populate obActWid
+                 * (Final Zone's empty Eggmobile has zero). Cull their actual
+                 * mapped pieces, rather than popping the whole actor when
+                 * its reference point finally crosses the screen edge. */
+                for(unsigned n=first;n<s_capture_frame->count;++n) {
+                    const SceneSprite *p=&s_capture_frame->sprites[n];
+                    int w=(((p->size>>2)&3)+1)*8;
+                    if(p->x+w>lo && p->x<hi) {visible=1;break;}
+                }
+                if(!visible)s_capture_frame->count=first;
+                else if(!s_capture_readonly && s_visible_count<128)s_visible_objects[s_visible_count++]=o;
+            }
         }
-        if(!s_capture_readonly && pri==2 && gameplay()) {
+        if(!s_capture_readonly)marble_present(pri,cam,left);
+        if(!s_capture_readonly && pri==2 && gameplay() && !recorded_demo()) {
             s_capture_slot=0;s_capture_space=4;
             for(unsigned n=0;n<s_placement_count;++n) {
                 Placement *p=&s_placements[n]; if(p->id!=0x25)continue;
@@ -402,8 +473,8 @@ static void capture_special(void)
 }
 static void publish_sprites(void)
 {
-    for(unsigned n=0;n<s_visible_count;++n) {
-        unsigned o=s_visible_objects[n]; if(video_ram[o])write8(o+1,video_ram[o+1]|128);
+    for(unsigned n=0;!recorded_demo() && n<s_visible_count;++n) {
+        unsigned o=s_visible_objects[n]; if(g_ram[o])write8(o+1,g_ram[o+1]|128);
     }
     s_build.serial=++s_serial;memcpy(s_build.sat,g_ram+0xF800,640);
     SceneFrame *dst=&s_history[s_serial%3];
@@ -424,8 +495,20 @@ int s1_video_hook(uint32_t pc)
         s_placement_base=s_placement_count=0;s_loader_active=s_rings_adopted=0;
         memset(s_sparks,0,sizeof s_sparks);
     }
-    if(pc==0xD980 && gameplay() && (enabled() || s_loader_active)) { spawn_scene();return 1; }
+    if(pc==0xD980 && gameplay() && !recorded_demo() && (enabled() || s_loader_active)) { spawn_scene();return 1; }
     if(!enabled())return 0;
+    /* Recorded inputs depend on the original activation, ring and visibility
+     * timing. Expanding simulation changes moving-platform/enemy phases and
+     * breaks the route. Keep the ROM's simulation intact during demos; the
+     * host still composes the wider scenery and captured sprite mappings. */
+    if(recorded_demo()) {
+        switch(pc) {
+        case 0xD65E:capture_objects();break;
+        case 0xD746:case 0xD74E:case 0x1B286:case 0x1B28E:publish_sprites();break;
+        case 0x1B156:capture_special();break;
+        }
+        return 0;
+    }
     switch(pc) {
     case 0xD65E:capture_objects();return 0;
     case 0xD746:case 0xD74E:case 0x1B286:case 0x1B28E:publish_sprites();return 0;
@@ -494,10 +577,12 @@ static void draw_scene_sprites(const GVDP *v,int line,uint32_t *out,int width,
         if(s_interpolating && !s->hud)interpolation_sprite_delta(s,line,&dx,&dy);
         int y=s->y+dy;
         if(line<y || line>=y+ch*8)continue;
-        int base=s->x+(s->hud?0:origin)+dx,iy=line-y;
+        int base=s->x+(s->hud==1?0:s->hud==2?(width-320)/2:origin)+dx,iy=line-y;
         if(s->attr&0x1000)iy=ch*8-1-iy;
         for(int i=0;i<cw*8;++i) {
             int x=base+i;
+            if(s_display->scene==0 && s->hud==2 &&
+               (x<(width-320)/2 || x>=(width-320)/2+320))continue;
             if(x<0 || x>=width || (s_priority[x]&2))continue;
             int ix=(s->attr&0x800)?cw*8-1-i:i;
             uint16_t cell=(uint16_t)((s->attr&0xE000u)|
@@ -505,7 +590,7 @@ static void draw_scene_sprites(const GVDP *v,int line,uint32_t *out,int width,
             uint8_t p=pattern_pixel(v,cell,ix,iy);
             if(!p)continue;
             s_priority[x]|=2;
-            if(s->hud || (s->attr&0x8000) || !(s_priority[x]&1))out[x]=palette[p];
+            if(s->hud==1 || (s->attr&0x8000) || !(s_priority[x]&1))out[x]=palette[p];
         }
     }
 }
@@ -532,6 +617,26 @@ static int ghz_parallax(int camera,int y)
     int step=(camera-512-distant)*256/104;
     return distant+((step*(y-152))>>8);
 }
+static int background_parallax(int camera,int y)
+{
+    /* Reproject REV00 deformation through the clamped wide camera while
+     * retaining each live row's accumulated scroll offset. */
+    switch(video_ram[0xFE10]) {
+    case 0:case 6:return ghz_parallax(camera,y);
+    case 1:return camera/2;
+    case 2:return camera*3/4;
+    case 4:case 5:return camera/4;
+    case 3: {
+        int row=((y-192)&1023)/16;
+        if(row<28) {
+            int neg=-camera,step=((neg>>3)-neg)*16/28;
+            return camera-(step*row>>4);
+        }
+        return row<33?-((-camera)>>3):row<38?-((-camera)>>2):-((-camera)>>1);
+    }
+    default:return 0;
+    }
+}
 static void render_scanline(const GVDP *v, int line, const uint32_t *native, int nw,
                             uint32_t *out, int width,
                             GameVideoNativeRow native_row, void *native_ctx)
@@ -553,8 +658,17 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         s_title_world=0;
         if(video_ram[0xD040]==0x0E && video_ram[0xA440]) {
             unsigned base=(v->reg[4]&7u)<<13;
-            for(unsigned k=0;k<4096;k+=2)
-                if(vram16(v,base+k)&2047u) {s_title_world=1;break;}
+            for(unsigned k=0;k<4096;k+=2) {
+                unsigned tile=vram16(v,base+k)&2047u;
+                /* LevSelTextLoad replaces Plane B with the level-select
+                 * font (ArtTile_Level_Select_Font=$680), so nonempty text
+                 * cells do not mean the title scenery is still displayed. */
+                /* Restored title states can retain old scenery cells next
+                 * to the menu font. A live menu takes precedence over those
+                 * leftovers; otherwise the host hides its native text. */
+                if(tile>=0x680u) {s_title_world=0;break;}
+                if(tile)s_title_world=1;
+            }
         }
     }
     /* Display-off/fades fill the same full-width canvas, not black sidebars.
@@ -577,7 +691,7 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
     /* The next player object can exist while the title-card SAT is still
      * displayed. Do not expose the incoming level before its own display
      * list/planes reach VBlank. */
-    if(s_display && s_display->scene!=1)level=0;
+    if(s_title_world || (s_display && s_display->scene!=1))level=0;
     int camera=level?unwrap(-hs_a,ram16(0xFF10)):ram16(0xF700);
     int camera_y=unwrap(interpolate_vs(line,0,v->vsram[0]),ram16(0xFF14));
     if(line==0) {
@@ -587,19 +701,32 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
     }
     int origin=level?camera-s_left:(width-nw)/2;
     s_native_x=origin;
+    if(!level && !special && !s_title_world &&
+       !(s_display && s_display->scene==3)) {
+        /* Menu text/logo planes are a centered composition, not repeating
+         * scenery. Sampling them beyond 320px repeats stale tiles or text. */
+        for(int x=0;x<width;++x)out[x]=backdrop;
+        if (!native) native = native_row(native_ctx);
+        memcpy(out+origin,native,(size_t)nw*sizeof(uint32_t));
+        return;
+    }
     unsigned base_a=(v->reg[2]&56u)<<10,base_b=(v->reg[4]&7u)<<13;
     int wy=camera_y+line;
     int bg_world=(level || s_title_world) && !special;
-    int by=bg_world?unwrap(interpolate_vs(line,1,v->vsram[1]),ram16(0xFF1C))+line:line+(v->vsram[1]&1023);
+    /* Title VBlank writes its own VSRAM; FF1C still belongs to the last
+     * level. After MZ that stale reference unwraps row 14 to 1038, where
+     * the title layout is empty. Only level rows use the copied camera. */
+    int by=level?unwrap(interpolate_vs(line,1,v->vsram[1]),ram16(0xFF1C))+line:line+(v->vsram[1]&1023);
     int bg_width=0;
     if(bg_world) {
         int row=((by>>8)&7)*128;
         for(int col=0;col<64;++col)if(video_ram[0xA440+row+col])bg_width=(col+1)*256;
     }
     int bg_base=-origin-hs_b;
-    if(level && video_ram[0xFE10]==0) {
+    if(level) {
         int margin=(width-nw)/2;
-        bg_base=-margin-hs_b+ghz_parallax(s_left+margin,by)-ghz_parallax(camera,by);
+        int correction=background_parallax(s_left+margin,by)-background_parallax(camera,by);
+        bg_base=-margin-hs_b+interpolate_background_correction(line,margin,correction);
     }
     int background_x=bg_base;
     if(bg_width>0) {
@@ -641,7 +768,8 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
                  * current, and report excluded samples separately. */
                 int scroll=ram16(by<ram16(0xF7F0)?0xFF18:0xFF20)&~15;
                 int lo=scroll<16?0:scroll-16;
-                if(!video_ram[0xFE10] && (reference_bx<lo || reference_bx>=scroll+320))++s_bg_unstreamed;
+                if((video_ram[0xFE10]==0 || video_ram[0xFE10]==6) &&
+                   (reference_bx<lo || reference_bx>=scroll+320))++s_bg_unstreamed;
                 else {
                     /* Mapping diagnostic uses the original camera's sample;
                      * the displayed sample intentionally follows the new one. */
@@ -657,7 +785,8 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         ++background_x;
         if(bg_width>0 && background_x==bg_width)background_x=0;
     }
-    if(!level && !special) {
+    if(!level && !special && !(s_title_world && s_display) &&
+       !(s_display && s_display->scene==3)) {
         if (!native) native = native_row(native_ctx);
         /* Logos/copyright/menus remain centered at their original pixel
          * scale. The full-width background follows the live scene palette. */
@@ -743,6 +872,24 @@ static int interpolate_vs(int line,int which,int current)
 {
     return s_interpolating && line>=0 && line<IX_LINES?
         lerp(ix_previous()->vs[line][which],ix_current()->vs[line][which],128):current;
+}
+static int interpolate_background_correction(int line,int margin,int current)
+{
+    if(!s_interpolating || line<0 || line>=IX_LINES)return current;
+    const InterpFrame *frames[]={ix_previous(),ix_current()};
+    int correction[2];
+    for(int n=0;n<2;++n) {
+        const InterpFrame *f=frames[n];
+        int reference=(f->ram[0xFF10]<<8)|f->ram[0xFF11];
+        int camera=unwrap(-f->scroll[line][0],reference);
+        int left=view_left(unwrap(-f->scroll[0][0],reference),f->width);
+        int y=unwrap(f->vs[line][1],(f->ram[0xFF1C]<<8)|f->ram[0xFF1D])+line;
+        correction[n]=background_parallax(left+margin,y)-background_parallax(camera,y);
+    }
+    /* Interpolate the original integer correction with the same rounding
+     * as native B scroll. Recomputing parallax from an already-rounded
+     * fractional A camera makes a stationary clamped background jitter. */
+    return lerp(correction[0],correction[1],128);
 }
 static void interpolation_sprite_delta(const SceneSprite *sprite,int line,int *dx,int *dy)
 {

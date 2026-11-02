@@ -1,4 +1,5 @@
 #include "sonic1_video.h"
+#include "sonic1_audio.h"
 #include "genesis_runtime.h"
 #include "video/genesis_vdp.h"
 #include "video/genesis_dac.h"
@@ -17,11 +18,19 @@ void glue_poke8(uint32_t a,uint8_t v){m68k_write8(a,v);}
 void glue_poke16(uint32_t a,uint16_t v){m68k_write16(a,v);}
 void glue_poke32(uint32_t a,uint32_t v){m68k_write32(a,v);}
 static unsigned ring_calls;
-void recomp_call_addr(uint32_t a) { if(a==0x9C76)++ring_calls; }
+static unsigned fm_writes;
+void recomp_call_addr(uint32_t a) {
+    if(a==0x9C76)++ring_calls;
+    if(a==0x7272E && g_cpu.D[0]==0x2B && g_cpu.D[1]==0)++fm_writes;
+}
 static char reply[1024];
 void cmd_send_response(const char *json) { snprintf(reply,sizeof reply,"%s",json); }
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
 static void word(uint8_t *p, int a, int v) { p[a] = (uint8_t)(v >> 8); p[a+1] = (uint8_t)v; }
+static void upload_sat(GVDP *v)
+{
+    memcpy(v->vram+((v->reg[5]&127u)<<9),g_ram+0xF800,640);
+}
 static unsigned native_fetches;
 static const uint32_t *fetch_native(void *ctx)
 {
@@ -113,12 +122,31 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(out[0]==0xFFFF0000u);CHECK(out[795]==0xFFFF0000u);
     CHECK(!memcmp(out+238,native,sizeof native));
+    /* Title VBlank installs its own scroll directly, leaving the level's
+     * copied FF1C reference stale after MZ. It must not unwrap title Y=0
+     * into layout row 4 and turn the extended scene entirely blue. */
+    word(g_ram,0xFF1C,0x31A);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    CHECK(out[0]==0xFFFF0000u && out[795]==0xFFFF0000u);
+    word(g_ram,0xFF1C,0);
     g_ram[0xF600]=12;
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(out[0]==0xFFFF0000u);
     g_ram[0xF600]=4;word(v.vram,0xE000,0);
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(out[0]==0xFF000000u);
+    /* The real level-select Plane B is not empty: it contains font cells,
+     * which must not resurrect the title's world layout in either margin. */
+    word(v.vram,0xE000,0xE681);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    CHECK(out[0]==0xFF000000u && out[795]==0xFF000000u);
+    CHECK(!memcmp(out+238,native,sizeof native));
+    /* Real restored-title entry leaves 59 scenery cells alongside the font.
+     * Those remnants must not override an active level-select composition. */
+    word(v.vram,0xE000,0xA001);word(v.vram,0xE004,0xE681);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    CHECK(out[0]==0xFF000000u && out[795]==0xFF000000u);
+    CHECK(!memcmp(out+238,native,sizeof native));
     g_ram[0xD000]=1;g_ram[0xD040]=0;g_ram[0xA440]=0;
 
     /* Build a frame-aligned host list: one screen HUD and one world sprite
@@ -138,7 +166,7 @@ int main(int argc,char **argv)
     v.cram[2]=0xE00;memset(v.vram+64,0x22,32);
     CHECK(!s1_video_hook(0xD65E));CHECK(!s1_video_hook(0xD746));
     CHECK(g_ram[0xD801]&128); /* extended visibility reaches object behavior */
-    memcpy(v.vram+((v.reg[5]&127u)<<9),g_ram+0xF800,640);
+    upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,1593);
     CHECK(out[16]==0xFF0000FFu); /* left anchored HUD, not native_x+16 */
     CHECK(out[1356]==0xFF0000FFu); /* world sprite at 1200 - (-156) */
@@ -220,7 +248,7 @@ int main(int argc,char **argv)
     g_ram[32*128+50]=1;
     CHECK(!s1_video_hook(0xD65E));CHECK(!s1_video_hook(0xD746));
     CHECK(!s1_video_hook(0x1B156));CHECK(!s1_video_hook(0x1B286));
-    memcpy(v.vram+((v.reg[5]&127u)<<9),g_ram+0xF800,640);
+    upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,1593);
     sonic1_video.scanline(&v,112,native,320,out,1593);
     CHECK(out[1228]==0xFF0000FFu);
@@ -240,7 +268,7 @@ int main(int argc,char **argv)
     v.vsram[0]=v.vsram[1]=0;
     CHECK(sonic1_video.configure("32:9"));sonic1_video.width(796,224,320,224);
     s1_video_hook(0xD65E);s1_video_hook(0xD746);
-    memcpy(v.vram+((v.reg[5]&127u)<<9),g_ram+0xF800,640);
+    upload_sat(&v);
     word(v.vram,0xFC00,0);word(v.vram,0xFC02,0);
     sonic1_video.scanline(&v,0,native,320,out,796);
     uint32_t sky[32];memcpy(sky,out,sizeof sky);
@@ -248,6 +276,138 @@ int main(int argc,char **argv)
     word(v.vram,0xFC00,(uint16_t)-32);word(v.vram,0xFC02,(uint16_t)-12);
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(!memcmp(sky,out,sizeof sky));
+    /* Every zone's original parallax must follow the stationary wide camera
+     * at a stage boundary, including Scrap Brain / Final Zone and ending. */
+    const int bg_scrolls[]={12,16,24,32,8,8,12};
+    for(int zone=0;zone<7;++zone) {
+        g_ram[0xFE10]=(uint8_t)zone;
+        v.vsram[1]=zone==3?192:0;
+        word(g_ram,0xFF1C,v.vsram[1]);
+        word(g_ram,0xF700,0);word(g_ram,0xFF10,0);
+        word(v.vram,0xFC00,0);word(v.vram,0xFC02,0);
+        sonic1_video.scanline(&v,0,native,320,out,796);memcpy(sky,out,sizeof sky);
+        word(g_ram,0xF700,32);word(g_ram,0xFF10,32);
+        word(v.vram,0xFC00,(uint16_t)-32);word(v.vram,0xFC02,(uint16_t)-bg_scrolls[zone]);
+        sonic1_video.scanline(&v,0,native,320,out,796);
+        CHECK(!memcmp(sky,out,sizeof sky));
+    }
+    /* SLZ's fixed bands use ASR on a negative camera, so even its first
+     * pixel of movement advances the native background. Preserve that
+     * rounding or the clamped wide background jitters every 2/4/8 pixels. */
+    g_ram[0xFE10]=3;
+    const int slz_rows[]={28,33,38};
+    for(int band=0;band<3;++band) {
+        v.vsram[1]=192+slz_rows[band]*16;word(g_ram,0xFF1C,v.vsram[1]);
+        word(g_ram,0xF700,0);word(g_ram,0xFF10,0);
+        word(v.vram,0xFC00,0);word(v.vram,0xFC02,0);
+        sonic1_video.scanline(&v,0,native,320,out,796);memcpy(sky,out,sizeof sky);
+        word(g_ram,0xF700,1);word(g_ram,0xFF10,1);
+        word(v.vram,0xFC00,(uint16_t)-1);word(v.vram,0xFC02,(uint16_t)-1);
+        sonic1_video.scanline(&v,0,native,320,out,796);
+        CHECK(!memcmp(sky,out,sizeof sky));
+    }
+    g_ram[0xFE10]=0;v.vsram[1]=0;word(g_ram,0xFF1C,0);
+    word(g_ram,0xF700,32);word(g_ram,0xFF10,32);word(v.vram,0xFC00,(uint16_t)-32);
+    word(v.vram,0xFC02,(uint16_t)-12);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+
+    /* SEGA is selected before the demo's sixty-frame fade finishes. Keep
+     * rendering the outgoing level until its player/planes are replaced. */
+    uint32_t level_line[796];memcpy(level_line,out,sizeof level_line);
+    g_ram[0xF600]=0;word(g_ram,0xFFF0,1);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    CHECK(!memcmp(level_line,out,sizeof level_line));
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"scene\":1"));
+    /* The ending uses both normal Sonic and object $87, and retains its
+     * world through the outgoing credits fade. Scripted simulation stays
+     * original while the same full-width scene renderer remains active. */
+    g_ram[0xF600]=24;word(g_ram,0xFFF0,0);g_ram[0xFE10]=6;
+    for(int i=0;i<4;++i) {
+        g_ram[0xD000]=i==0 || i==3?1:0x87;g_ram[0xF600]=i>=2?28:24;
+        word(g_ram,0xFFF0,i==3?0xFFFF:0); /* credits demo -> credits fade */
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);
+        upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);
+        CHECK(!memcmp(level_line,out,sizeof level_line));
+        s1_video_command(1,NULL);CHECK(strstr(reply,"\"scene\":1"));
+    }
+    g_ram[0xD000]=1;g_ram[0xF600]=0;word(g_ram,0xFFF0,1);
+
+    /* Presentation must never alter the simulation of recorded demos:
+     * spawning/culling, native rings, CPU flags and on-screen bits stay ROM
+     * owned, including during the outgoing fade. */
+    memcpy(ram_before,g_ram,sizeof g_ram);M68KState cpu_before=g_cpu;
+    const unsigned demo_hooks[]={0xD8DA,0xD980,0xD87E,0xD8A6,0x9C36,0x1ADE4,0xD65E,0xD746};
+    for(unsigned i=0;i<sizeof demo_hooks/sizeof demo_hooks[0];++i)
+        CHECK(!s1_video_hook(demo_hooks[i]));
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+
+    /* A title card keeps its centered target when the world camera is
+     * clamped at spawn, and its moving position spans the widened canvas. */
+    word(g_ram,0xFFF0,0);g_ram[0xF600]=12;
+    memset(g_ram+0xD040,0,0x1FC0);memset(g_ram+0xAC00,0,1024);
+    word(g_ram,0xF700,0);word(g_ram,0xFF10,0);word(v.vram,0xFC00,0);
+    g_ram[0xD080]=0x34;word(g_ram,0xD082,0x8000);word(g_ram,0xD088,240);word(g_ram,0xD08A,128);
+    word(g_ram,0xD0B0,288);m68k_write32(0xD084,0x1000);
+    word(g_ram,0xAC00,2);word(g_ram,0xAC02,0xD080);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    CHECK(out[279]==0xFF0000FFu); /* 238 + 160 - 48*796/320 */
+    word(g_ram,0xD088,288);s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    CHECK(out[398]==0xFF0000FFu); /* centered target, independent of world origin */
+    /* A composite piece can already be visible while its zero-radius actor
+     * reference is outside the right edge (the FZ Eggmobile's pop-in). */
+    memset(g_ram+0xD040,0,0x1FC0);memset(g_ram+0xAC00,0,1024);
+    g_ram[0xD800]=0x85;g_ram[0xD801]=4;
+    word(g_ram,0xD802,0x8000);word(g_ram,0xD808,830);word(g_ram,0xD80C,0);
+    m68k_write32(0xD804,0x1000);g_rom[0x1007]=(uint8_t)-64;
+    word(g_ram,0xAC00,2);word(g_ram,0xAC02,0xD800);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    CHECK(out[766]==0xFF0000FFu);CHECK(g_ram[0xD801]&128);
+    /* MZ demos delete objects using native activation bounds. Their final
+     * wide-margin pieces remain visual only, with the original oscillator.
+     * Removing the guest slot/queue must not remove a still-visible piece. */
+    memset(g_ram+0xD040,0,0x1FC0);memset(g_ram+0xAC00,0,1024);
+    g_ram[0xF600]=8;word(g_ram,0xFFF0,1);g_ram[0xFE10]=2;
+    g_ram[0xA405]=1; /* keep this fixture away from the right stage clamp */
+    word(g_ram,0xFE04,100);word(g_ram,0xF700,800);word(g_ram,0xFF10,800);
+    word(v.vram,0xFC00,(uint16_t)-800);
+    word(g_rom,0x6B020,0x200);word(g_rom,0x6B200,600);word(g_rom,0x6B202,8);
+    g_rom[0x6B204]=0x2F;g_rom[0x6B205]=0;word(g_rom,0x6B206,0xFFFF);
+    word(g_rom,0xB2D4,2);g_rom[0xB2D6]=1;g_rom[0xB2D7]=0;g_rom[0xB2D8]=0;
+    word(g_rom,0xB2D9,0);g_rom[0xB2DB]=0;memset(v.vram,0x11,32);v.cram[33]=0xE00;
+    g_ram[0xD800]=0x2F;g_ram[0xD801]=4;word(g_ram,0xD802,0xC000);
+    word(g_ram,0xD808,600);word(g_ram,0xD80C,8);word(g_ram,0xD82C,8);
+    m68k_write32(0xD804,0xB2D4);word(g_ram,0xAC00+5*128,2);word(g_ram,0xAC02+5*128,0xD800);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,8,native,320,out,796);CHECK(out[38]==0xFF0000FFu);
+    memset(g_ram+0xD800,0,64);memset(g_ram+0xAC00,0,1024);word(g_ram,0xFE04,101);
+    memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,8,native,320,out,796);CHECK(out[38]==0xFF0000FFu);
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    /* Stateless previews retain the same valid geometry after load/rewind. */
+    word(g_ram,0xFE04,50);s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,8,native,320,out,796);CHECK(out[38]==0xFF0000FFu);
+    /* FM6 music resumes after the 1-UP without changing guest registers or
+     * touching a song that restores DAC percussion instead. */
+    g_ram[0xF160]=128;g_ram[0xF040]=0;cpu_before=g_cpu;
+    CHECK(!s1_audio_hook(0x72B24));CHECK(fm_writes==1);CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    g_ram[0xF040]=128;CHECK(!s1_audio_hook(0x72B24));CHECK(fm_writes==1);
+    g_ram[0xF040]=0;g_ram[0xF160]=0;CHECK(!s1_audio_hook(0x72B24));CHECK(fm_writes==1);
+    puts("Sonic 1 video/audio: geometry, terrain, sprites, demo previews, mode continuity and FM6 restore passed");
+
+    {
 
     /* FPS-only capture must not adopt rings/objects or change the normal
      * renderer's publication/counters. Fractional draws own their RAM/art. */
@@ -295,6 +455,35 @@ int main(int argc,char **argv)
     CHECK(fractional[0]==genesis_dac_cram_to_argb(10,GENESIS_DAC_NORMAL));
     sonic1_video.presentation_reset();CHECK(!sonic1_video.interpolate(.5,fractional,320,224));
     sonic1_video.presentation_configure(0);
+    /* At the GHZ left clamp, both completed frames have the same stationary
+     * world/background. A fractional frame must not introduce a one-pixel
+     * parallax excursion between those identical endpoints. */
+    CHECK(sonic1_video.configure("32:9"));sonic1_video.width(640,448,320,224);
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;
+    for(int n=0;n<5;++n){g_ram[0xA400+n]=1;g_ram[0xA440+n]=2;}
+    for(int n=0;n<256;++n)word(g_ram,0x200+n*2,1);
+    for(int n=0;n<4;++n)word(g_ram,0xB008+n*2,1+(n&1));
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;
+    memset(v.vram+32,0x11,32);memset(v.vram+64,0x22,32);
+    v.cram[1]=14;v.cram[2]=0xE00;
+    sonic1_video.presentation_configure(1);
+    uint32_t row[796],stationary[796];static uint32_t clamped[796*224];
+    for(int tick=0;tick<2;++tick) {
+        word(g_ram,0xFE04,4+tick);word(g_ram,0xF700,32+tick*8);word(g_ram,0xFF10,32+tick*8);
+        word(v.vram,0xFC00,-32-tick*8);word(v.vram,0xFC02,-12-tick*3);
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        for(int y=0;y<224;++y) {
+            sonic1_video.scanline(&v,y,native,320,row,796);
+            sonic1_video.presentation_capture(&v,y,row,796,320,NULL);
+        }
+    }
+    CHECK(sonic1_video.interpolate(0,clamped,796,224));memcpy(stationary,clamped,sizeof stationary);
+    CHECK(sonic1_video.interpolate(1,clamped,796,224));CHECK(!memcmp(stationary,clamped,sizeof stationary));
+    CHECK(sonic1_video.interpolate(.5,clamped,796,224));CHECK(!memcmp(stationary,clamped,sizeof stationary));
+    sonic1_video.presentation_reset();sonic1_video.presentation_configure(0);
     puts("Sonic 1 custom video: geometry, terrain, anchored HUD, wide sprites, culling, mode continuity and native opt-out and owned interpolation passed");
+    }
     return 0;
 }

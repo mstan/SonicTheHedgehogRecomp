@@ -15,10 +15,9 @@ set(CMAKE_C_STANDARD 11)
 # every clone. The surviving cross-check is the cosim harness below, which
 # diffs the recompiled code against our own Tier-3 interpreter.
 #
-# Runner code is shared with Sonic 2 and lives in the submodule at
-# segagenesisrecomp/runner/. Per-game files (sonic1_spec.c, sonic_extras.c)
-# live alongside the Sonic 1 generated TUs in
-# segagenesisrecomp/sonicthehedgehog/.
+# Runner code is shared with other titles in segagenesisrecomp/runner/.
+# The game owns its adapter and generation inputs under game/. The legacy
+# debug helpers sonic_extras.c remain in the engine checkout.
 # ---------------------------------------------------------------------------
 
 set(GENESIS_RECOMP_ROOT "" CACHE PATH
@@ -138,7 +137,7 @@ if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND
 endif()
 include("${RECOMP_ROOT}/cmake/GenesisRecompGenerated.cmake")
 genesisrecomp_add_generated_sources(
-    SONIC_GENERATED_SOURCES sonic sonicthehedgehog sonic.bin
+    SONIC_GENERATED_SOURCES sonic "${CMAKE_SOURCE_DIR}/game" sonic.bin
     REVERSE_DEBUG "${SONIC_REVERSE_DEBUG}")
 
 set(SONIC_SHARED_SOURCES
@@ -165,7 +164,8 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/audio/fm_shadow.cpp"    # parallel ymfm chip (cleaner highs / ym3438 ladder-off)
     "${RUNNER_ROOT}/video/color_lut.c"      # present-time 9-bit CRT/composite LUT
     ${SONIC_GENERATED_SOURCES}
-    "${RECOMP_ROOT}/sonicthehedgehog/sonic1_spec.c"
+    "${CMAKE_SOURCE_DIR}/game/sonic1_spec.c"
+    "${CMAKE_SOURCE_DIR}/game/sonic1_audio.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_video.c"
     "${RECOMP_ROOT}/sonicthehedgehog/sonic_extras.c"
     ${NATIVE_FLOOR_SOURCES}         # m68k_interp + decoder (engine-master glue.c needs it)
@@ -258,7 +258,7 @@ if(BUILD_TESTS)
     set(GENESIS_SONIC_GENERATED_DIR "${SONIC_GENERATED_SOURCES_DIR}")
     add_subdirectory("${RECOMP_ROOT}/tests" tests)
     enable_testing()
-    add_executable(sonic1_game_video_test tests/runtime/sonic1_video_test.c game/sonic1_video.c)
+    add_executable(sonic1_game_video_test tests/runtime/sonic1_video_test.c game/sonic1_video.c game/sonic1_audio.c)
     target_include_directories(sonic1_game_video_test PRIVATE
         "${RUNNER_ROOT}" "${RUNNER_ROOT}/include" "${CMAKE_SOURCE_DIR}/game")
     add_test(NAME sonic1_game_video COMMAND sonic1_game_video_test)
