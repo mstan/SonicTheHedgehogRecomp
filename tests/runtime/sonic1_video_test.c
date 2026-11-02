@@ -1,6 +1,7 @@
 #include "sonic1_video.h"
 #include "genesis_runtime.h"
 #include "video/genesis_vdp.h"
+#include "video/genesis_dac.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -231,6 +232,53 @@ int main(int argc,char **argv)
     word(v.vram,0xFC00,(uint16_t)-32);word(v.vram,0xFC02,(uint16_t)-12);
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(!memcmp(sky,out,sizeof sky));
-    puts("Sonic 1 custom video: geometry, terrain, anchored HUD, wide sprites, culling, mode continuity and native opt-out passed");
+
+    /* FPS-only capture must not adopt rings/objects or change the normal
+     * renderer's publication/counters. Fractional draws own their RAM/art. */
+    CHECK(sonic1_video.configure("off"));memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;g_ram[0xD001]=4;
+    for(int n=0;n<5;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xAC00,4);word(g_ram,0xAC02,0xD000);word(g_ram,0xAC04,0xD040);
+    g_ram[0xD040]=2;g_ram[0xD041]=8;word(g_ram,0xD042,1);m68k_write32(0xD044,0x1000);
+    m68k_write32(0xD004,0x1000);word(g_ram,0xD002,1);
+    word(g_rom,0x1000,2);g_rom[0x1002]=1;memset(g_rom+0x1003,0,5);
+    v.reg[1]=64;v.reg[5]=0x50;v.reg[12]=1;v.reg[13]=0x3F;v.cram[1]=14;
+    memset(v.vram+32,0x11,32);
+    static uint32_t fractional[320*224];
+    char canonical_before[1024];s1_video_command(1,NULL);snprintf(canonical_before,sizeof canonical_before,"%s",reply);
+    sonic1_video.presentation_configure(1);
+    CHECK(!sonic1_video.enabled() && !sonic1_video.width(1920,1080,320,224));
+    for(unsigned tick=1;tick<=2;++tick) {
+        word(g_ram,0xD008,100+(int)(tick-1)*8);word(g_ram,0xD00C,10);word(g_ram,0xFE04,(int)tick);
+        word(g_ram,0xD048,200+(int)(tick-1)*8);word(g_ram,0xD04C,10);word(g_ram,0xF708,(int)(tick-1)*8);
+        memcpy(ram_before,g_ram,sizeof ram_before);M68KState cpu_before=g_cpu;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);
+        CHECK(!memcmp(ram_before,g_ram,sizeof ram_before) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+        for(unsigned x=0;x<320;++x)native[x]=0xFF123400u+tick;
+        for(int y=0;y<224;++y)sonic1_video.presentation_capture(&v,y,native,320,320,NULL);
+    }
+    s1_video_command(1,NULL);CHECK(!strcmp(reply,canonical_before));
+    memset(g_ram,0xAA,sizeof g_ram);memset(v.vram+32,0x22,32);v.cram[1]=0xE00;
+    M68KState cpu_before=g_cpu;
+    CHECK(sonic1_video.interpolate(0,fractional,320,224) && fractional[0]==0xFF123401);
+    CHECK(sonic1_video.interpolate(1,fractional,320,224) && fractional[0]==0xFF123402);
+    CHECK(sonic1_video.interpolate(.5,fractional,320,224));
+    for(int x=100;x<116;++x)CHECK(fractional[10*320+x]==(x>=104 && x<112?0xFFFF0000u:0xFF000000u));
+    for(int x=196;x<212;++x)CHECK(fractional[10*320+x]==(x>=200 && x<208?0xFFFF0000u:0xFF000000u));
+    CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    for(unsigned n=0;n<sizeof g_ram;++n)CHECK(g_ram[n]==0xAA);
+    s1_video_command(1,NULL);CHECK(!strcmp(reply,canonical_before));
+    /* Ordinary vertical scrolling must also use the fractional VSRAM. */
+    memcpy(g_ram,ram_before,sizeof g_ram);word(g_ram,0xAC00,0);word(g_ram,0xFE04,3);
+    word(g_ram,0xFF14,8);v.vsram[0]=8;
+    for(int n=1;n<=8;++n)v.cram[n]=(uint16_t)((n&7)*2);
+    for(int y=0;y<8;++y)memset(v.vram+y*4,(y+1)*17,4);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    for(int y=0;y<224;++y)sonic1_video.presentation_capture(&v,y,native,320,320,NULL);
+    CHECK(sonic1_video.interpolate(.5,fractional,320,224));
+    CHECK(fractional[0]==genesis_dac_cram_to_argb(10,GENESIS_DAC_NORMAL));
+    sonic1_video.presentation_reset();CHECK(!sonic1_video.interpolate(.5,fractional,320,224));
+    sonic1_video.presentation_configure(0);
+    puts("Sonic 1 custom video: geometry, terrain, anchored HUD, wide sprites, culling, mode continuity and native opt-out and owned interpolation passed");
     return 0;
 }
