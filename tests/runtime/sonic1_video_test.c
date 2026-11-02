@@ -189,6 +189,20 @@ int main(int argc,char **argv)
         sonic1_video.scanline(&v,0,native,320,out,1593);
     }
     s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":2"));
+    /* Level-entry DMA can change unused SAT storage after the captured list.
+     * Only linked entries describe the displayed sprites. Tail differences
+     * must retain the wide composition; an active-entry change must not. */
+    unsigned sat_base=(v.reg[5]&127u)<<9;
+    v.vram[(sat_base+516)&65535u]^=1;
+    sonic1_video.scanline(&v,0,native,320,out,1593);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":2"));
+    v.vram[sat_base]^=1;
+    sonic1_video.scanline(&v,0,native,320,out,1593);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"scene\":-1"));
+    v.vram[sat_base]^=1;
+    sonic1_video.scanline(&v,0,native,320,out,1593);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":2"));
+    v.vram[(sat_base+516)&65535u]^=1;
     /* Mid-frame publications cannot overwrite the selected display list. */
     word(g_ram,0xD048,200);
     for(int n=0;n<3;++n) {s1_video_hook(0xD65E);s1_video_hook(0xD746);}
@@ -399,6 +413,32 @@ int main(int argc,char **argv)
     word(g_ram,0xFE04,50);s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);
     sonic1_video.scanline(&v,8,native,320,out,796);CHECK(out[38]==0xFF0000FFu);
+    /* Recorded SYZ fades show both unloaded margin Yadrins and initialized
+     * enemies that have not yet queued a sprite. They remain visual-only,
+     * hand over once queued, and never resurrect a destroyed enemy. */
+    memset(g_ram+0xD800,0,0x1800);memset(g_ram+0xAC00,0,1024);
+    g_ram[0xF600]=0x88;word(g_ram,0xFFF0,0xFFFF);word(g_ram,0xFE10,0x402);
+    word(g_rom,0x6B048,0x300);word(g_rom,0x6B300,600);word(g_rom,0x6B302,8);
+    g_rom[0x6B304]=0xD0;g_rom[0x6B305]=0;
+    word(g_rom,0x6B306,780);word(g_rom,0x6B308,8);g_rom[0x6B30A]=0x50;
+    word(g_rom,0x6B30C,65535);
+    g_rom[0xF84E]=0;g_rom[0xF84F]=0;word(g_rom,0xF850,0x1000);word(g_rom,0xF856,0x8001);
+    g_ram[0xD800]=0x50;g_ram[0xD801]=4;word(g_ram,0xD802,0x8001);
+    m68k_write32(0xD804,0x1000);word(g_ram,0xD808,780);word(g_ram,0xD80C,8);
+    g_ram[0xF76C]=0;s1_video_hook(0xD8DA);g_ram[0xF76C]=2;
+    memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":2"));
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    word(g_ram,0xAC00+4*128,2);word(g_ram,0xAC02+4*128,0xD800);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":2"));
+    g_ram[0xFC03]=128;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":1"));
     /* A scripted FZ boss is created at the original camera threshold, after
      * the wide viewport can see its cylinders. Ready art can be previewed
      * without allocating the boss early or changing any guest state. */

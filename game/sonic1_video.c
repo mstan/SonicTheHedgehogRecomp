@@ -259,15 +259,16 @@ static void adopt_rings(void)
             for (int k=0;k<64;k+=4) write32(o+(unsigned)k,0);
     s_rings_adopted=1;
 }
-static int placement_alive(const Placement *p)
+static unsigned placement_object(const Placement *p)
 {
     for (unsigned o=0xD800;o<0xF000;o+=64) {
         if (!video_ram[o]) continue;
-        if (p->state && video_ram[o+0x23]==p->state) return 1;
-        if (!p->state && video_ram[o]==p->id && ram16(o+8)==p->x) return 1;
+        if (p->state && video_ram[o+0x23]==p->state) return o;
+        if (!p->state && video_ram[o]==p->id && ram16(o+8)==p->x) return o;
     }
     return 0;
 }
+static int placement_alive(const Placement *p) { return placement_object(p)!=0; }
 /* Recorded demos keep native object activation. Reconstruct the harmless
  * MZ platforms/pillars from their placements when the native loader has not
  * instantiated them, or has already deleted them in a wide margin. This is
@@ -307,6 +308,36 @@ static void marble_present(unsigned priority,int camera,int left)
         }
         add_mapping(map,frame,gfx,0,
                     (int)p->x-camera,y-offset-ram16(0xF704),0,0);
+    }
+}
+/* SYZ recorded routes expose lamps and Yadrins outside native activation.
+ * Yadrin initialization also omits DisplaySprite until the next object tick,
+ * after the initial fade. Present their initial/initialized poses without
+ * advancing the enemy or changing the recorded route. */
+static void springyard_present(unsigned priority,int camera,int left)
+{
+    if(!recorded_demo() || !gameplay() || video_ram[0xFE10]!=4 ||
+       (priority!=4 && priority!=6))return;
+    load_placements();s_capture_slot=0;s_capture_space=4;
+    for(unsigned i=0;i<s_placement_count;++i) {
+        const Placement *p=&s_placements[i];
+        if((p->id!=0x50 || priority!=4) && (p->id!=0x12 || priority!=6))continue;
+        if(p->x+32<left || (int)p->x-32>=left+s_requested_width)continue;
+        unsigned o=placement_object(p),map,gfx,frame,flags;
+        int x=p->x,y=p->y&4095;
+        if(o) {
+            if(!(video_ram[0xF600]&128) || s_capture_frame->identity[1+(o-0xD000)/64])continue;
+            map=scene_read32(0xFF0000u+o+4);if(!map)continue;
+            gfx=ram16(o+2);frame=video_ram[o+0x1A];flags=video_ram[o+1];
+            x=ram16(o+8);y=ram16(o+12);
+        } else {
+            /* A destroyed remembered enemy must not reappear as scenery. */
+            if(p->state && (video_ram[0xFC02+p->state]&128))continue;
+            unsigned init=p->id==0x50?0xF84C:0xE922;
+            map=scene_read32(init+2);gfx=scene_read16(init+10);
+            frame=p->id==0x12?1:0;flags=(p->y>>14)&3;
+        }
+        add_mapping(map,frame,gfx,flags,x-camera,y-ram16(0xF704),0,0);
     }
 }
 /* DLE_FZboss creates the boss at camera $22B0. At 32:9 its stationary
@@ -462,6 +493,7 @@ static void capture_objects(void)
         }
         if(!s_capture_readonly) {
             marble_present(pri,cam,left);
+            springyard_present(pri,cam,left);
             final_cylinders_present(pri,cam,left);
         }
         if(!s_capture_readonly && pri==2 && gameplay() && !recorded_demo()) {
@@ -568,18 +600,32 @@ int s1_video_hook(uint32_t pc)
 
 static uint8_t *s_priority;
 static int s_priority_capacity;
+/* The VDP follows the SAT link chain, not every byte in its 640-byte storage.
+ * At level entry, unused tail bytes can differ after the last linked sprite.
+ * Reject changes to every active entry (including its link), while ignoring
+ * disconnected storage that cannot affect this displayed list. */
+static int sat_matches(const SceneFrame *frame,const GVDP *v,unsigned base)
+{
+    unsigned entry=0;
+    for(unsigned count=0;count<80;++count) {
+        unsigned offset=entry*8;
+        for(unsigned k=0;k<8;++k)
+            if(frame->sat[offset+k]!=v->vram[(base+offset+k)&65535u])return 0;
+        entry=frame->sat[offset+3]&127u;
+        if(!entry)return 1;
+        if(entry>=80)return 0;
+    }
+    return 0; /* malformed/cyclic lists are never associated speculatively */
+}
 static void select_scene(const GVDP *v)
 {
     s_display=NULL;
     unsigned sat=(v->reg[5]&127u)<<9;
-    /* DMA uploads all 640 bytes. Compare full bytes, not a lossy hash. */
+    /* Compare the exact linked entries of the installed display list. */
     for(unsigned n=0;n<3;++n) {
         const SceneFrame *p=&s_history[n];
         if(!p->serial || (s_display && p->serial<s_display->serial))continue;
-        int matches=1;
-        for(unsigned k=0;k<640;++k)
-            if(p->sat[k]!=v->vram[(sat+k)&65535u]) {matches=0;break;}
-        if(matches)s_display=p;
+        if(sat_matches(p,v,sat))s_display=p;
     }
     /* The game fiber can publish another list between scanlines. Keep the
      * selected display immutable until the next frame's VBlank selection. */
@@ -951,8 +997,7 @@ static const SceneFrame *native_scene(const GVDP *v)
     for(unsigned n=0;n<3;++n) {
         const SceneFrame *f=&s_native_history[n];
         if(!f->serial || (best && f->serial<=best->serial))continue;
-        unsigned k=0;while(k<640 && f->sat[k]==v->vram[(sat+k)&65535u])++k;
-        if(k==640)best=f;
+        if(sat_matches(f,v,sat))best=f;
     }
     return best;
 }
