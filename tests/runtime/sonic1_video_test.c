@@ -62,6 +62,22 @@ int main(int argc,char **argv)
         return strstr(reply,"\"terrain_errors\":0,") &&
                strstr(reply,"\"background_errors\":0,") ? 0:1;
     }
+    /* Preserve S1's qualified native policy while using the expanded engine
+     * callback table: FPS snapshots never take ownership of ordinary rows. */
+    CHECK(!sonic1_video.renderer_enabled && !sonic1_video.raster_enabled && !sonic1_video.scanline_presented);
+    CHECK(sonic1_video.presentation_configure && sonic1_video.presentation_capture &&
+          sonic1_video.interpolate && sonic1_video.presentation_reset);
+    CHECK(sonic1_video.configure("off"));
+    GameVideoFrame plan=game_video_prepare_frame(&sonic1_video,2560,720,320,224);
+    CHECK(plan.adapter==&sonic1_video && !plan.owner && !plan.viewport &&
+          game_video_output_width(&plan,320)==320);
+    sonic1_video.presentation_configure(1);
+    plan=game_video_prepare_frame(&sonic1_video,2560,720,320,224);
+    CHECK(!plan.owner && !plan.viewport && game_video_output_width(&plan,320)==320);
+    sonic1_video.presentation_configure(0);
+    CHECK(sonic1_video.configure("32:9"));
+    plan=game_video_prepare_frame(&sonic1_video,2560,720,320,224);
+    CHECK(plan.owner==&sonic1_video && plan.viewport && plan.width==796);
     CHECK(sonic1_video.configure("fit"));
     CHECK(sonic1_video.width(320,224,320,224) == 320);
     CHECK(sonic1_video.width(4000,500,320,224) == 1792);

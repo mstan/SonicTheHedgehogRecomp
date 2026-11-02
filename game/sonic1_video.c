@@ -842,4 +842,11 @@ static int interpolate(double phase,uint32_t *image,int stride,int height)
     return 1;
 }
 
-const GameVideo sonic1_video = { configure, enabled, width, scanline, NULL, scanline_lazy, NULL, NULL, interpolation_configure, presentation_capture, interpolate, interpolation_reset };
+const GameVideo sonic1_video = {
+    .configure=configure, .enabled=enabled, .width=width,
+    .scanline=scanline, .scanline_lazy=scanline_lazy,
+    /* Native Off keeps the shared VDP row owner. FPS capture is independent. */
+    .presentation_configure=interpolation_configure,
+    .presentation_capture=presentation_capture,
+    .interpolate=interpolate, .presentation_reset=interpolation_reset
+};
