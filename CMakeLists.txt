@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(SonicTheHedgehogRecomp VERSION 0.7.5 LANGUAGES C)
+project(SonicTheHedgehogRecomp VERSION 0.7.6 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 
@@ -138,7 +138,7 @@ if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND
 endif()
 include("${RECOMP_ROOT}/cmake/GenesisRecompGenerated.cmake")
 genesisrecomp_add_generated_sources(
-    SONIC_GENERATED_SOURCES sonic sonicthehedgehog sonic.bin
+    SONIC_GENERATED_SOURCES sonic "${CMAKE_SOURCE_DIR}/game" sonic.bin
     REVERSE_DEBUG "${SONIC_REVERSE_DEBUG}")
 
 set(SONIC_SHARED_SOURCES
@@ -165,7 +165,8 @@ set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/audio/fm_shadow.cpp"    # parallel ymfm chip (cleaner highs / ym3438 ladder-off)
     "${RUNNER_ROOT}/video/color_lut.c"      # present-time 9-bit CRT/composite LUT
     ${SONIC_GENERATED_SOURCES}
-    "${RECOMP_ROOT}/sonicthehedgehog/sonic1_spec.c"
+    "${CMAKE_SOURCE_DIR}/game/sonic1_spec.c"
+    "${CMAKE_SOURCE_DIR}/game/sonic1_audio.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_video.c"
     "${RECOMP_ROOT}/sonicthehedgehog/sonic_extras.c"
     ${NATIVE_FLOOR_SOURCES}         # m68k_interp + decoder (engine-master glue.c needs it)
@@ -258,7 +259,7 @@ if(BUILD_TESTS)
     set(GENESIS_SONIC_GENERATED_DIR "${SONIC_GENERATED_SOURCES_DIR}")
     add_subdirectory("${RECOMP_ROOT}/tests" tests)
     enable_testing()
-    add_executable(sonic1_game_video_test tests/runtime/sonic1_video_test.c game/sonic1_video.c)
+    add_executable(sonic1_game_video_test tests/runtime/sonic1_video_test.c game/sonic1_video.c game/sonic1_audio.c)
     target_include_directories(sonic1_game_video_test PRIVATE
         "${RUNNER_ROOT}" "${RUNNER_ROOT}/include" "${CMAKE_SOURCE_DIR}/game")
     add_test(NAME sonic1_game_video COMMAND sonic1_game_video_test)
