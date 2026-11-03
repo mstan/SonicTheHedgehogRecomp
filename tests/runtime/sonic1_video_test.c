@@ -575,6 +575,43 @@ int main(int argc,char **argv)
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
     CHECK(out[38]==0xFF000000u);
+    /* Ending animals hand off from a resting preview to their live sprite,
+     * then retain a draw-only tail after native deletion. No guest lifetime
+     * or visibility changes, and a consumed tail must not return. */
+    memset(g_ram,0,sizeof g_ram);memset(g_ram+0xAC00,0,1024);
+    g_ram[0xF600]=24;g_ram[0xD000]=1;word(g_ram,0xFE10,0x600);
+    for(int n=0;n<8;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,800);word(g_ram,0xFF10,800);
+    word(g_rom,0x6B060,0x400);word(g_rom,0x6B400,600);word(g_rom,0x6B402,8);
+    g_rom[0x6B404]=0x28;g_rom[0x6B405]=13;word(g_rom,0x6B406,65535);
+    g_rom[0x8FD6]=0;g_rom[0x8FD7]=0;word(g_rom,0x8FD8,0x1000);word(g_rom,0x8FFC,0x8001);
+    g_ram[0xF76C]=0;s1_video_hook(0xD8DA);g_ram[0xF76C]=2;
+    memcpy(ram_before,g_ram,sizeof g_ram);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":1"));
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    g_ram[0xD800]=0x28;g_ram[0xD801]=4;g_ram[0xD828]=13;g_ram[0xD824]=4;
+    word(g_ram,0xD802,0x8001);m68k_write32(0xD804,0x1000);
+    word(g_ram,0xD808,600);word(g_ram,0xD80C,8);
+    word(g_ram,0xAC00+6*128,2);word(g_ram,0xAC02+6*128,0xD800);
+    memcpy(ram_before,g_ram,sizeof g_ram);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":1"));
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    memset(g_ram+0xD800,0,64);memset(g_ram+0xAC00,0,1024);word(g_ram,0xFE04,1);
+    memcpy(ram_before,g_ram,sizeof g_ram);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":1"));
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    word(g_ram,0xF700,1600);word(g_ram,0xFE04,2);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    word(g_ram,0xF700,800);word(g_ram,0xFE04,3);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":0"));
     /* FM6 music resumes after the 1-UP without changing guest registers or
      * touching a song that restores DAC percussion instead. */
     g_ram[0xF160]=128;g_ram[0xF040]=0;cpu_before=g_cpu;
