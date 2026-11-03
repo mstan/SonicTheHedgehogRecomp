@@ -2,9 +2,9 @@
  *
  * Terrain addressing follows s1disasm GetBlockData ($6BD6):
  * eight interlaced FG/BG layout rows -> 256px chunks -> 16px blocks ->
- * live 8px VRAM patterns. Opt-in host scene hooks expand object visibility,
+ * live 8px VRAM patterns. Host scene hooks expand object visibility,
  * ring handling and sprite composition beyond the original hardware limits.
- * The native renderer and original instruction path remain the default.
+ * Widescreen Off retains the native renderer and original instruction path.
  */
 #include "sonic1_video.h"
 #include "genesis_runtime.h"
@@ -57,6 +57,17 @@ static int recorded_demo(void)
 {
     int mode=video_ram[0xF600]&0x7F;
     return ram16(0xFFF0)!=0 || mode==24 || (mode==28 && video_ram[0xD000]==0x87);
+}
+/* Scripted activation/timing stays native through title-card loading and
+ * departure as well as recorded demos. Avoid aspect-dependent guest work
+ * shifting ROM animation steps across VBlank. */
+static int native_activation(void)
+{
+    if(recorded_demo())return 1;
+    if(!gameplay())return 0;
+    if(video_ram[0xF600]&128)return 1;
+    for(unsigned o=0xD080;o<0xD200;o+=64)if(video_ram[o]==0x34)return 1;
+    return 0;
 }
 static int stage_width(void)
 {
@@ -137,6 +148,62 @@ static uint8_t pattern_pixel(const GVDP *v, uint16_t attr, int x, int y)
     int nibble = fx & 1 ? byte & 15 : byte >> 4;
     return nibble ? (uint8_t)(((attr >> 9) & 48) | nibble) : 0;
 }
+/* Wide sprites can enter view before their native PLC replaces title-card
+ * patterns. Decode the small immutable button/signpost assets separately;
+ * guest VRAM, PLC order and simulation clocks remain untouched. Format and
+ * XOR rows follow REV00 NemDec ($1440), not a second machine execution. */
+typedef struct { uint8_t pixels[4096];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
+static SpriteArt s_sprite_art[3];
+static unsigned art_bits(unsigned bit,unsigned count)
+{
+    unsigned value=0;
+    for(unsigned i=0;i<count;++i,++bit)value=(value<<1)|((g_rom[bit>>3]>>(7-(bit&7)))&1);
+    return value;
+}
+static int decode_sprite_art(SpriteArt *art,unsigned address)
+{
+    unsigned header=(g_rom[address]<<8)|g_rom[address+1],size=(header&32767u)*32;
+    unsigned p=address+2,palette=0;uint16_t table[256]={0};
+    if(!size || size>sizeof art->pixels)return 0;
+    while(p<address+4096 && p<0x80000u) {
+        unsigned code=g_rom[p++];if(code==255)break;
+        if(code&128){palette=code&15;continue;}
+        unsigned length=code&15;if(!length || length>8 || p>=0x80000u)return 0;
+        unsigned prefix=g_rom[p++],copies=1u<<(8-length);
+        if(prefix>=(1u<<length))return 0;
+        for(unsigned n=0;n<copies;++n)table[prefix*copies+n]=(uint16_t)((length<<8)|(code&112)|palette);
+    }
+    if(p>=0x80000u || g_rom[p-1]!=255)return 0;
+    memset(art->pixels,0,size);unsigned bit=p*8,made=0;
+    while(made<size*2) {
+        if(bit+13>0x80000u*8)return 0;
+        unsigned look=art_bits(bit,8),value,length;
+        if(look>=252){bit+=6;value=art_bits(bit,7);length=7;}
+        else {unsigned entry=table[look];length=entry>>8;if(!length)return 0;value=entry&255;}
+        bit+=length;
+        unsigned repeats=((value>>4)&7)+1,pixel=value&15;
+        for(unsigned n=0;n<repeats && made<size*2;++n,++made)
+            art->pixels[made>>1]|=(uint8_t)(pixel<<((made&1)?0:4));
+    }
+    if(header&32768u)for(unsigned n=4;n<size;++n)art->pixels[n]^=art->pixels[n-4];
+    art->size=size;art->hash=2166136261u;
+    for(unsigned n=0;n<size;++n)art->hash=(art->hash^art->pixels[n])*16777619u;
+    art->display_hash=2166136261u;
+    for(unsigned n=art->base==0x50F?128:0;n<size;++n)art->display_hash=(art->display_hash^art->pixels[n])*16777619u;
+    return 1;
+}
+static uint8_t sprite_pixel(const GVDP *v,unsigned asset,uint16_t attr,int x,int y)
+{
+    if(!asset || !enabled())return pattern_pixel(v,attr,x,y);
+    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408};
+    SpriteArt *art=&s_sprite_art[asset-1];
+    if(!art->ready){art->base=asset==1?0x680:asset==3?0x513:0x50F;art->ready=decode_sprite_art(art,addresses[asset-1])?1:2;}
+    int tile=(int)(attr&2047u)-(int)art->base;
+    if(art->ready!=1 || tile<0 || (unsigned)(tile+1)*32>art->size)return pattern_pixel(v,attr,x,y);
+    int fx=x&7,fy=y&7;if(attr&0x800)fx^=7;if(attr&0x1000)fy^=7;
+    unsigned byte=art->pixels[tile*32+fy*4+fx/2],pixel=fx&1?byte&15:byte>>4;
+    return pixel?(uint8_t)(((attr>>9)&48)|pixel):0;
+}
 static int plane_tiles(int bits) { return bits == 1 ? 64 : bits == 3 ? 128 : 32; }
 static uint16_t plane_attr(const GVDP *v, unsigned base, int x, int y)
 {
@@ -149,7 +216,7 @@ static uint16_t plane_attr(const GVDP *v, unsigned base, int x, int y)
  * ceiling, or 20-sprites-per-line ceiling. Native BuildSprites still executes
  * for the hardware pass and publishes a signature used to align our list
  * with the exact VBlank upload displayed by the VDP. */
-typedef struct { int x, y; uint16_t attr; uint8_t size, hud,slot,space; } SceneSprite;
+typedef struct { int x, y; uint16_t attr; uint8_t size, hud,slot,space,asset; } SceneSprite;
 enum { SCENE_SPRITES = 32768, SCENE_PLACEMENTS = 1024, SCENE_SLOTS=129 };
 typedef struct {
     SceneSprite sprites[SCENE_SPRITES];
@@ -230,6 +297,8 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
         if (y+dy>=224 || y+dy+((size&3)+1)*8<=0) continue;
         SceneSprite *s=&s_capture_frame->sprites[s_capture_frame->count++];
         s->x=x+dx; s->y=y+dy; s->attr=attr; s->size=(uint8_t)size; s->hud=(uint8_t)hud;s->slot=(uint8_t)s_capture_slot;s->space=(uint8_t)s_capture_space;
+        unsigned owner=s_capture_slot?video_ram[0xD000+(s_capture_slot-1)*64]:0;
+        s->asset=(uint8_t)(owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):0);
     }
 }
 static void load_placements(void)
@@ -276,7 +345,7 @@ static int placement_alive(const Placement *p) { return placement_object(p)!=0; 
  * Their motion follows LGrass_Types/Glass_Types in the original REV00 code. */
 static void marble_present(unsigned priority,int camera,int left)
 {
-    if(!recorded_demo() || !gameplay() || video_ram[0xFE10]!=2 ||
+    if(!native_activation() || !gameplay() || video_ram[0xFE10]!=2 ||
        (priority!=3 && priority!=4 && priority!=5))return;
     load_placements();s_capture_slot=0;s_capture_space=4;
     for(unsigned i=0;i<s_placement_count;++i) {
@@ -316,7 +385,7 @@ static void marble_present(unsigned priority,int camera,int left)
  * advancing the enemy or changing the recorded route. */
 static void springyard_present(unsigned priority,int camera,int left)
 {
-    if(!recorded_demo() || !gameplay() || video_ram[0xFE10]!=4 ||
+    if(!native_activation() || !gameplay() || video_ram[0xFE10]!=4 ||
        (priority!=4 && priority!=6))return;
     load_placements();s_capture_slot=0;s_capture_space=4;
     for(unsigned i=0;i<s_placement_count;++i) {
@@ -362,6 +431,26 @@ static void final_cylinders_present(unsigned priority,int camera,int left)
                video_ram[o+0x24]>=2 && scene_read32(0xFF0000u+o+4))break;
         if(o<0xF000)continue;
         add_mapping(map,0,gfx,i>=2?2:0,x-camera,y-ram16(0xF704),0,0);
+    }
+}
+/* Orb_Main initializes the head but only its satellites queue sprites in
+ * the first object pass. During the frozen level fade, show that already
+ * initialized head too. The next ordinary object pass owns it again. */
+static void initial_orbinauts_present(unsigned priority,int camera)
+{
+    if(!gameplay() || !(video_ram[0xF600]&128))return;
+    for(unsigned o=0xD800;o<0xF000;o+=64) {
+        if(video_ram[o]!=0x60 || video_ram[o+0x18]!=priority ||
+           (video_ram[o+0x24]!=2 && video_ram[o+0x24]!=4) ||
+           (video_ram[o+1]&12)!=4)continue;
+        unsigned slot=1+(o-0xD000)/64,map=scene_read32(0xFF0000u+o+4);
+        if(!map || s_capture_frame->identity[slot])continue;
+        s_capture_slot=slot;s_capture_space=4;
+        s_capture_frame->ox[slot]=(int16_t)ram16(o+8);
+        s_capture_frame->oy[slot]=(int16_t)ram16(o+12);
+        s_capture_frame->identity[slot]=0x60000000u|map;
+        add_mapping(map,video_ram[o+0x1A],ram16(o+2),video_ram[o+1],
+                    (int16_t)(ram16(o+8)-camera),(int16_t)(ram16(o+12)-ram16(0xF704)),0,0);
     }
 }
 static void spawn_scene(void)
@@ -495,8 +584,9 @@ static void capture_objects(void)
             marble_present(pri,cam,left);
             springyard_present(pri,cam,left);
             final_cylinders_present(pri,cam,left);
+            initial_orbinauts_present(pri,cam);
         }
-        if(!s_capture_readonly && pri==2 && gameplay() && !recorded_demo()) {
+        if(!s_capture_readonly && pri==2 && gameplay() && !native_activation()) {
             s_capture_slot=0;s_capture_space=4;
             for(unsigned n=0;n<s_placement_count;++n) {
                 Placement *p=&s_placements[n]; if(p->id!=0x25)continue;
@@ -532,7 +622,7 @@ static void capture_special(void)
 }
 static void publish_sprites(void)
 {
-    for(unsigned n=0;!recorded_demo() && n<s_visible_count;++n) {
+    for(unsigned n=0;!native_activation() && n<s_visible_count;++n) {
         unsigned o=s_visible_objects[n]; if(g_ram[o])write8(o+1,g_ram[o+1]|128);
     }
     s_build.serial=++s_serial;memcpy(s_build.sat,g_ram+0xF800,640);
@@ -554,13 +644,13 @@ int s1_video_hook(uint32_t pc)
         s_placement_base=s_placement_count=0;s_loader_active=s_rings_adopted=0;
         memset(s_sparks,0,sizeof s_sparks);
     }
-    if(pc==0xD980 && gameplay() && !recorded_demo() && (enabled() || s_loader_active)) { spawn_scene();return 1; }
+    if(pc==0xD980 && gameplay() && !native_activation() && (enabled() || s_loader_active)) { spawn_scene();return 1; }
     if(!enabled())return 0;
     /* Recorded inputs depend on the original activation, ring and visibility
      * timing. Expanding simulation changes moving-platform/enemy phases and
      * breaks the route. Keep the ROM's simulation intact during demos; the
      * host still composes the wider scenery and captured sprite mappings. */
-    if(recorded_demo()) {
+    if(native_activation()) {
         switch(pc) {
         case 0xD65E:capture_objects();break;
         case 0xD746:case 0xD74E:case 0x1B286:case 0x1B28E:publish_sprites();break;
@@ -660,7 +750,7 @@ static void draw_scene_sprites(const GVDP *v,int line,uint32_t *out,int width,
             int ix=(s->attr&0x800)?cw*8-1-i:i;
             uint16_t cell=(uint16_t)((s->attr&0xE000u)|
                 (((s->attr&2047u)+(unsigned)(ix/8*ch+iy/8))&2047u));
-            uint8_t p=pattern_pixel(v,cell,ix,iy);
+            uint8_t p=sprite_pixel(v,s->asset,cell,ix,iy);
             if(!p)continue;
             s_priority[x]|=2;
             if(s->hud==1 || (s->attr&0x8000) || !(s_priority[x]&1))out[x]=palette[p];
@@ -795,6 +885,11 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         int row=((by>>8)&7)*128;
         for(int col=0;col<64;++col)if(video_ram[0xA440+row+col])bg_width=(col+1)*256;
     }
+    /* Deform_GHZ's title perspective-water band starts at BG row $98.
+     * Its scroll crosses X=0 and the hardware repeats a 512px nametable.
+     * Wrapping those samples across the full level selects unrelated far-end
+     * water chunks, exposing seams in the extended margins. */
+    if(s_title_world && by>=0x98)bg_width=512;
     int bg_base=-origin-hs_b;
     if(level) {
         int margin=(width-nw)/2;
@@ -895,10 +990,12 @@ void s1_video_command(int id, const char *json)
         "{\"id\":%d,\"enabled\":%d,\"width\":%d,\"view_left\":%d,\"camera\":%d,"
         "\"native_x\":%d,\"stage_width\":%d,\"frames\":%u,\"fallback_frames\":%u,"
         "\"terrain_checks\":%u,\"terrain_errors\":%u,\"background_checks\":%u,\"background_errors\":%u,\"background_unstreamed\":%u,"
-        "\"sprites\":%u,\"scene\":%d,\"spawned\":%u,\"pool_pressure\":%u,\"host_rings_collected\":%u}",
+        "\"sprites\":%u,\"scene\":%d,\"spawned\":%u,\"pool_pressure\":%u,\"host_rings_collected\":%u,"
+        "\"signpost_art_hash\":\"%08x\",\"button_art_hash\":\"%08x\",\"mz_button_art_hash\":\"%08x\",\"button_art_display_hash\":\"%08x\"}",
         id, enabled(), s_width, s_left, s_camera, s_native_x, s_stage_width,
         s_frames, s_fallbacks, s_terrain_checks, s_terrain_errors,s_bg_checks,s_bg_errors,s_bg_unstreamed,
-        s_display?s_display->count:0,s_display?s_display->scene:-1,s_spawned,s_pool_pressure,s_ring_collected);
+        s_display?s_display->count:0,s_display?s_display->scene:-1,s_spawned,s_pool_pressure,s_ring_collected,
+        s_sprite_art[0].hash,s_sprite_art[1].hash,s_sprite_art[2].hash,s_sprite_art[1].display_hash);
     cmd_send_response(reply);
 }
 

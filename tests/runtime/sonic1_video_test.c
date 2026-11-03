@@ -128,6 +128,18 @@ int main(int argc,char **argv)
     word(g_ram,0xFF1C,0x31A);
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(out[0]==0xFFFF0000u && out[795]==0xFFFF0000u);
+    /* Title perspective water wraps the original 512px nametable, not the
+     * entire level layout. Negative samples in the left margin must not
+     * come from a different chunk at the far end of that level. */
+    g_ram[0xA441]=1;g_ram[0xA442]=2;
+    for(int n=0;n<256;++n)word(g_ram,512+n*2,1);
+    for(int n=0;n<4;++n)word(g_ram,0xB008+n*2,2);
+    memset(v.vram+64,0x22,32);v.cram[2]=0xE00;word(v.vram,0xFC02,94);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,200,native,320,out,796);
+    CHECK(out[200]==0xFFFF0000u);
+    g_ram[0xA441]=g_ram[0xA442]=0;memset(g_ram+512,0,512);
+    memset(g_ram+0xB008,0,8);word(v.vram,0xFC02,0);
     word(g_ram,0xFF1C,0);
     g_ram[0xF600]=12;
     sonic1_video.scanline(&v,0,native,320,out,796);
@@ -358,6 +370,16 @@ int main(int argc,char **argv)
         CHECK(!s1_video_hook(demo_hooks[i]));
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
 
+    /* A normal level also keeps original activation while its card holds
+     * or leaves, so aspect width cannot change the ROM animation timeline. */
+    word(g_ram,0xFFF0,0);g_ram[0xF600]=12;g_ram[0xD080]=0x34;
+    memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+    for(unsigned i=0;i<sizeof demo_hooks/sizeof demo_hooks[0];++i)
+        CHECK(!s1_video_hook(demo_hooks[i]));
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    g_ram[0xD080]=0;g_ram[0xF600]=0x8C;
+    CHECK(!s1_video_hook(0xD980));CHECK(!s1_video_hook(0xD87E));
+    g_ram[0xF600]=12;
     /* A title card keeps its centered target when the world camera is
      * clamped at spawn, and its moving position spans the widened canvas. */
     word(g_ram,0xFFF0,0);g_ram[0xF600]=12;
@@ -439,6 +461,28 @@ int main(int argc,char **argv)
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);
     s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":1"));
+    /* A head initialized without a queue entry stays visible through the
+     * fade; queuing it later must neither duplicate it nor mutate the guest. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);
+    g_ram[0xF600]=0x88;g_ram[0xD000]=1;word(g_ram,0xFFF0,0xFFFF);word(g_ram,0xFE10,0x302);
+    for(int n=0;n<6;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,800);word(g_ram,0xFF10,800);
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;
+    word(v.vram,0xFC00,-800);v.cram[1]=0xE00;memset(v.vram+32,0x11,32);
+    word(g_rom,0x1300,2);g_rom[0x1302]=1;g_rom[0x1303]=0;g_rom[0x1304]=0;word(g_rom,0x1305,0);g_rom[0x1307]=0;
+    g_ram[0xD800]=0x60;g_ram[0xD801]=4;g_ram[0xD818]=4;g_ram[0xD824]=4;
+    word(g_ram,0xD802,0x8001);m68k_write32(0xD804,0x1300);word(g_ram,0xD808,600);word(g_ram,0xD80C,8);
+    memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
+    CHECK(out[38]==0xFF0000FFu);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":1"));
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    word(g_ram,0xAC00+4*128,2);word(g_ram,0xAC02+4*128,0xD800);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":1"));
+    memset(g_ram+0xAC00,0,1024);g_ram[0xF600]=8;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":0"));
     /* A scripted FZ boss is created at the original camera threshold, after
      * the wide viewport can see its cylinders. Ready art can be previewed
      * without allocating the boss early or changing any guest state. */
@@ -479,6 +523,28 @@ int main(int argc,char **argv)
     CHECK(!s1_audio_hook(0x72B24));CHECK(fm_writes==1);CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
     g_ram[0xF040]=128;CHECK(!s1_audio_hook(0x72B24));CHECK(fm_writes==1);
     g_ram[0xF040]=0;g_ram[0xF160]=0;CHECK(!s1_audio_hook(0x72B24));CHECK(fm_writes==1);
+    /* Signpost art is available to wide presentation before its PLC, with
+     * the original XOR-row format and without changing guest state. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);
+    g_ram[0xF600]=8;g_ram[0xD000]=1;word(g_ram,0xFFF0,1);
+    for(int n=0;n<6;++n)g_ram[0xA400+n]=1;
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;
+    v.cram[1]=0xE00;v.cram[2]=14;memset(v.vram+0x680*32,0x22,32);
+    word(g_rom,0x3A53E,0x8001);g_rom[0x3A540]=255;memset(g_rom+0x3A541,0,16);
+    unsigned bit=0x3A541*8;
+    for(int row=0;row<8;++row)for(int n=12;n>=0;--n,++bit)
+        g_rom[bit>>3]|=(uint8_t)(((0x1FF1u>>n)&1)<<(7-(bit&7)));
+    word(g_rom,0x1200,16);g_rom[0x1210]=1;g_rom[0x1211]=0;g_rom[0x1212]=0;
+    word(g_rom,0x1213,0);g_rom[0x1215]=0;
+    g_ram[0xD800]=0x0D;g_ram[0xD801]=4;word(g_ram,0xD802,0x680);
+    m68k_write32(0xD804,0x1200);word(g_ram,0xD808,100);word(g_ram,0xD80C,10);
+    word(g_ram,0xAC00,2);word(g_ram,0xAC02,0xD800);
+    memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,10,native,320,out,796);CHECK(out[100]==0xFF0000FFu);
+    sonic1_video.scanline(&v,11,native,320,out,796);CHECK(out[100]==0xFF000000u);
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
     puts("Sonic 1 video/audio: geometry, terrain, sprites, demo previews, mode continuity and FM6 restore passed");
 
     {
