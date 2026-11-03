@@ -26,7 +26,6 @@ extern uint8_t g_ram[0x10000];
 static void s1_call_entry_point(void) { recomp_call_addr(0x000206u); }
 static void s1_call_vblank(void)      { recomp_call_addr(0x000B10u); }
 static void s1_call_hblank(void)      { recomp_call_addr(0x001126u); }
-static void s1_call_periodic(void)    { recomp_call_addr(0x001642u); }
 static int s1_instruction_hook(uint32_t pc)
 {
     s1_audio_hook(pc);
@@ -105,13 +104,6 @@ static void s1_on_post_reset(void) {
     g_ram[0xF009] = 0x80;
 }
 
-/*
- * Periodic hook: while the game thread is parked at WaitForVBlank
- * (func_0029A8) the runner calls this so music timing keeps
- * advancing. Sonic 1 routes it to func_001642 via the trampoline
- * declared above.
- */
-
 /* ---- Debug-server command adapters ---- */
 /* GameDebugCommand handlers take (id, json); handle_sonic_state
  * doesn't need the json so we wrap to match the spec signature. */
@@ -156,7 +148,6 @@ const GameSpec g_game_spec = {
     .save_resume_pc         = s1_save_resume_pc,   /* mode -> loop top (moment-in-time) */
     .call_resume            = s1_call_resume,
     .dispatch_main_loop_pc  = 0x000388u,
-    .call_periodic          = s1_call_periodic,
 
     .on_post_reset          = s1_on_post_reset,
     .on_frame_pre           = NULL,
