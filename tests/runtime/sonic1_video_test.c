@@ -188,6 +188,35 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,0,native,320,out,1593);
     CHECK(out[16]==0xFF0000FFu); /* left anchored HUD, not native_x+16 */
     CHECK(out[1356]==0xFF0000FFu); /* world sprite at 1200 - (-156) */
+    /* Palette0 world objects follow the displayed level fade, while the HUD
+     * and Sonic retain the original exception. Dry/water targets can differ. */
+    uint16_t saved_cram[64];memcpy(saved_cram,v.cram,sizeof saved_cram);
+    memset(g_ram+0xFB80,0,128);memset(g_ram+0xFA00,0,128);
+    memset(v.cram+16,0,48*sizeof v.cram[0]);v.cram[2]=0xEEE;
+    word(g_ram,0xFBAC,0xEEE);word(g_ram,0xF626,0x202F);g_ram[0xF600]=0x8C;
+    const uint16_t white_steps[]={0,0xE00,0xEE0,0xEEE};
+    for(unsigned n=0;n<4;++n) {
+        v.cram[22]=white_steps[n];
+        sonic1_video.scanline(&v,0,native,320,out,1593);
+        CHECK(out[1356]==genesis_dac_cram_to_argb(white_steps[n],GENESIS_DAC_NORMAL));
+        CHECK(out[16]==genesis_dac_cram_to_argb(0xEEE,GENESIS_DAC_NORMAL));
+    }
+    g_ram[0xFE10]=1;word(g_ram,0xFBA0,0xE);word(g_ram,0xFA2C,0xEEE);
+    v.cram[22]=0xE00;sonic1_video.scanline(&v,0,native,320,out,1593);
+    CHECK(out[1356]==genesis_dac_cram_to_argb(0xE00,GENESIS_DAC_NORMAL));
+    g_ram[0xD800]=1;s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,1593);
+    CHECK(out[1356]==genesis_dac_cram_to_argb(0xEEE,GENESIS_DAC_NORMAL));
+    g_ram[0xD800]=0x26;word(g_ram,0xD808,550);
+    CHECK(sonic1_video.configure("4:3"));sonic1_video.width(640,448,320,224);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,320);
+    CHECK(out[50]==genesis_dac_cram_to_argb(0xEEE,GENESIS_DAC_NORMAL));
+    g_ram[0xFE10]=0;word(g_ram,0xF626,0);g_ram[0xF600]=12;word(g_ram,0xD808,1200);
+    memset(g_ram+0xFB80,0,128);memset(g_ram+0xFA00,0,128);memcpy(v.cram,saved_cram,sizeof saved_cram);
+    CHECK(sonic1_video.configure("64:9"));sonic1_video.width(640,448,320,224);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,1593);
     /* A complete published gameplay row does not depend on the hardware
      * image. Unsupported modes and unpublished/menu scenes still fetch it. */
     {

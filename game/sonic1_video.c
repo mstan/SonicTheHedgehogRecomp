@@ -206,7 +206,7 @@ static int decode_sprite_art(SpriteArt *art,unsigned address)
 }
 static uint8_t sprite_pixel(const GVDP *v,unsigned asset,uint16_t attr,int x,int y)
 {
-    if(!asset || !enabled())return pattern_pixel(v,attr,x,y);
+    if(!asset || !enabled() || s_requested_width<=320)return pattern_pixel(v,attr,x,y);
     static const unsigned addresses[]={0x3A53E,0x3401A,0x32408};
     SpriteArt *art=&s_sprite_art[asset-1];
     if(!art->ready){art->base=asset==1?0x680:asset==3?0x513:0x50F;art->ready=decode_sprite_art(art,addresses[asset-1])?1:2;}
@@ -827,12 +827,51 @@ static void select_scene(const GVDP *v)
         s_display=&s_display_frame;
     }
 }
+/* REV00 FadeIn_AddColour fills blue, green, then red. Infer the displayed
+ * step from a white entry and verify the whole live palette, including the
+ * separate underwater target. This follows raster timing without a second
+ * fade clock or writes to the original palette. */
+static uint16_t fade_from_black(uint16_t colour,int steps)
+{
+    uint16_t result=0;
+    for(int shift=9;shift>=1;shift-=4) {
+        int channel=(colour>>shift)&7,amount=steps<channel?steps:channel;
+        result|=(uint16_t)(amount<<shift);steps-=amount;
+    }
+    return result;
+}
+static int world_fade_steps(const GVDP *v,int width)
+{
+    if(width<=320 || !(video_ram[0xF600]&128) || ram16(0xF626)!=0x202F)return -1;
+    const unsigned targets[]={0xFB80,0xFA00};
+    for(unsigned n=0;n<(video_ram[0xFE10]==1?2u:1u);++n) {
+        int steps=-1;
+        for(unsigned i=16;i<64;++i)if((ram16(targets[n]+i*2)&0xEEE)==0xEEE) {
+            unsigned white=v->cram[i]&0xEEE;
+            steps=((white>>9)&7)+((white>>5)&7)+((white>>1)&7);
+            if(fade_from_black(0xEEE,steps)!=white)steps=-1;
+            break;
+        }
+        if(steps<0)continue;
+        unsigned i;
+        for(i=16;i<64;++i)
+            if(fade_from_black(ram16(targets[n]+i*2),steps)!=(v->cram[i]&0xEEE))break;
+        if(i==64)return steps;
+    }
+    return -1;
+}
 static void draw_scene_sprites(const GVDP *v,int line,uint32_t *out,int width,
                                int origin,const uint32_t *palette)
 {
     if(!s_display)return;
+    int steps=s_display->scene==1?world_fade_steps(v,width):-1;
+    uint32_t world_palette[16];
+    if(steps>=0)for(unsigned i=0;i<16;++i)
+        world_palette[i]=genesis_dac_cram_to_argb(fade_from_black(v->cram[i],steps),GENESIS_DAC_NORMAL);
     for(unsigned n=0;n<s_display->count;++n) {
         const SceneSprite *s=&s_display->sprites[n];
+        unsigned owner=s->slot?s_display->identity[s->slot]>>24:0;
+        int fade_world=steps>=0 && s->space && !s->hud && owner!=1 && owner!=0x87;
         int cw=((s->size>>2)&3)+1,ch=(s->size&3)+1;
         int dx=0,dy=0;
         if(s_interpolating && !s->hud)interpolation_sprite_delta(s,line,&dx,&dy);
@@ -851,7 +890,8 @@ static void draw_scene_sprites(const GVDP *v,int line,uint32_t *out,int width,
             uint8_t p=sprite_pixel(v,s->asset,cell,ix,iy);
             if(!p)continue;
             s_priority[x]|=2;
-            if(s->hud==1 || (s->attr&0x8000) || !(s_priority[x]&1))out[x]=palette[p];
+            if(s->hud==1 || (s->attr&0x8000) || !(s_priority[x]&1))
+                out[x]=fade_world && p<16?world_palette[p]:palette[p];
         }
     }
 }
