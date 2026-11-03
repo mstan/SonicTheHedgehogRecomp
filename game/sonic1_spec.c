@@ -136,6 +136,7 @@ static const GameDebugCommand s1_commands[] = {
 const GameSpec g_game_spec = {
     .video                  = &sonic1_video,
     .video_default          = "fit",
+    .logical_players        = 1,
     .display_name           = "Sonic the Hedgehog",
     .short_name             = "Sonic1",
 

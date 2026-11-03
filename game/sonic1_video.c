@@ -43,6 +43,16 @@ static uint16_t vram16(const GVDP *v, unsigned a)
 {
     return (uint16_t)((v->vram[a & 0xFFFFu] << 8) | v->vram[(a + 1) & 0xFFFFu]);
 }
+static int results_world(void)
+{
+    int mode=video_ram[0xF600]&0x7F;
+    /* RingFlash deletes Sonic before the act-clear card begins. Keep the
+     * outgoing level through that gap and the later Special Stage fade;
+     * the incoming special-stage player/list takes ownership when installed. */
+    return !video_ram[0xD000] &&
+        ((mode==12 && video_ram[0xF7CD]) ||
+         ((mode==12 || mode==16 || mode==0) && video_ram[0xD5C0]==0x3A));
+}
 static int gameplay(void)
 {
     int mode = video_ram[0xF600] & 0x7F;
@@ -51,7 +61,7 @@ static int gameplay(void)
     int player=video_ram[0xD000];
     return ((mode == 8 || mode == 12 || mode == 16 || mode == 24 || mode == 28 ||
              (mode == 0 && ram16(0xFFF0) == 1)) && player == 1) ||
-           ((mode == 24 || mode == 28) && player == 0x87);
+           ((mode == 24 || mode == 28) && player == 0x87) || results_world();
 }
 static int recorded_demo(void)
 {
@@ -65,6 +75,7 @@ static int native_activation(void)
 {
     if(recorded_demo())return 1;
     if(!gameplay())return 0;
+    if(results_world())return 1; /* no player: presentation only, no host rings/activation */
     if(video_ram[0xF600]&128)return 1;
     for(unsigned o=0xD080;o<0xD200;o+=64)if(video_ram[o]==0x34)return 1;
     return 0;
@@ -581,8 +592,12 @@ static void capture_objects(void)
             }
         }
         if(!s_capture_readonly) {
-            marble_present(pri,cam,left);
-            springyard_present(pri,cam,left);
+            /* The result card can select the next act before fading the
+             * old layout. Retain its live actors, not next-act placements. */
+            if(!results_world()) {
+                marble_present(pri,cam,left);
+                springyard_present(pri,cam,left);
+            }
             final_cylinders_present(pri,cam,left);
             initial_orbinauts_present(pri,cam);
         }
@@ -953,11 +968,12 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         ++background_x;
         if(bg_width>0 && background_x==bg_width)background_x=0;
     }
-    if(!level && !special && !(s_title_world && s_display) &&
-       !(s_display && s_display->scene==3)) {
+    if(!level && !special && !(s_display && s_display->scene==3)) {
         if (!native) native = native_row(native_ctx);
-        /* Logos/copyright/menus remain centered at their original pixel
-         * scale. The full-width background follows the live scene palette. */
+        /* Keep the original title sprite mask as well as its logo/menu
+         * composition. Redrawing title sprites bypasses the X=0 SAT mask
+         * that hides Sonic's torso behind the emblem. Extend only the
+         * surrounding scenery, following the live scene palette. */
         if(origin>=0)memcpy(out+origin,native,(size_t)nw*sizeof(uint32_t));
     } else if(s_display) {
         draw_scene_sprites(v,line,out,width,origin,palette);

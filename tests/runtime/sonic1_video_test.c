@@ -122,6 +122,12 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(out[0]==0xFFFF0000u);CHECK(out[795]==0xFFFF0000u);
     CHECK(!memcmp(out+238,native,sizeof native));
+    /* The title's X=0 sprite mask hides Sonic's torso. Publishing a host
+     * list must not replace that hardware-composed center with unmasked
+     * title sprites; only the surrounding background needs extension. */
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    CHECK(!memcmp(out+238,native,sizeof native));
     /* Title VBlank installs its own scroll directly, leaving the level's
      * copied FF1C reference stale after MZ. It must not unwrap title Y=0
      * into layout row 4 and turn the extended scene entirely blue. */
@@ -346,6 +352,22 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(!memcmp(level_line,out,sizeof level_line));
     s1_video_command(1,NULL);CHECK(strstr(reply,"\"scene\":1"));
+    /* The giant ring removes Sonic before the signpost/results finish.
+     * The outgoing level still owns the canvas, including after the game
+     * selects Special Stage but before it installs that scene. */
+    word(g_ram,0xFFF0,0);g_ram[0xD000]=0;g_ram[0xF7CD]=1;
+    for(int phase=0;phase<3;++phase) {
+        g_ram[0xF600]=phase==2?16:12;g_ram[0xD5C0]=phase?0x3A:0;
+        memcpy(ram_before,g_ram,sizeof g_ram);M68KState cpu_before=g_cpu;
+        CHECK(!s1_video_hook(0xD980));
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);
+        CHECK(!memcmp(level_line,out,sizeof level_line));
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+        CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+        s1_video_command(1,NULL);CHECK(strstr(reply,"\"scene\":1"));
+    }
+    g_ram[0xD000]=1;g_ram[0xD5C0]=g_ram[0xF7CD]=0;
     /* The ending uses both normal Sonic and object $87, and retains its
      * world through the outgoing credits fade. Scripted simulation stays
      * original while the same full-width scene renderer remains active. */
