@@ -61,7 +61,7 @@ static int gameplay(void)
      * still-live player/layout until the incoming scene replaces them. */
     int player=video_ram[0xD000];
     return ((mode == 8 || mode == 12 || mode == 16 || mode == 24 || mode == 28 ||
-             (mode == 0 && ram16(0xFFF0) == 1)) && player == 1) ||
+             ((mode == 0 || mode == 4) && ram16(0xFFF0) == 1)) && player == 1) ||
            ((mode == 24 || mode == 28) && player == 0x87) || results_world();
 }
 static int recorded_demo(void)
@@ -966,7 +966,9 @@ static uint16_t fade_from_black(uint16_t colour,int steps)
 }
 static int world_fade_steps(const GVDP *v,int width)
 {
-    if(width<=320 || !(video_ram[0xF600]&128) || ram16(0xF626)!=0x202F)return -1;
+    unsigned range=ram16(0xF626);
+    if(width<=320 || !(video_ram[0xF600]&128) ||
+       (range!=0x202F && range!=0x003F))return -1;
     const unsigned targets[]={0xFB80,0xFA00};
     for(unsigned n=0;n<(video_ram[0xFE10]==1?2u:1u);++n) {
         int steps=-1;
@@ -980,22 +982,21 @@ static int world_fade_steps(const GVDP *v,int width)
         unsigned i;
         for(i=16;i<64;++i)
             if(fade_from_black(ram16(targets[n]+i*2),steps)!=(v->cram[i]&0xEEE))break;
-        if(i==64)return steps;
+        /* Before PalFadeIn_Alt selects $202F, the stage palettes are black
+         * while Sonic/HUD have already loaded palette0. Hide world art in
+         * that frozen loading interval, without double-fading a full fade. */
+        if(i==64 && (range==0x202F || steps==0))return steps;
     }
     return -1;
 }
 static void draw_scene_sprites(const GVDP *v,int line,uint32_t *out,int width,
-                               int origin,const uint32_t *palette)
+                               int origin,const uint32_t *palette,const uint32_t *world_palette)
 {
     if(!s_display)return;
-    int steps=s_display->scene==1?world_fade_steps(v,width):-1;
-    uint32_t world_palette[16];
-    if(steps>=0)for(unsigned i=0;i<16;++i)
-        world_palette[i]=genesis_dac_cram_to_argb(fade_from_black(v->cram[i],steps),GENESIS_DAC_NORMAL);
     for(unsigned n=0;n<s_display->count;++n) {
         const SceneSprite *s=&s_display->sprites[n];
         unsigned owner=s->slot?s_display->identity[s->slot]>>24:0;
-        int fade_world=steps>=0 && s->space && !s->hud && owner!=1 && owner!=0x87;
+        int fade_world=world_palette && s->space && !s->hud && owner!=1 && owner!=0x87;
         int cw=((s->size>>2)&3)+1,ch=(s->size&3)+1;
         int dx=0,dy=0;
         if(s_interpolating && !s->hud)interpolation_sprite_delta(s,line,&dx,&dy);
@@ -1117,6 +1118,10 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
      * displayed. Do not expose the incoming level before its own display
      * list/planes reach VBlank. */
     if(s_title_world || (s_display && s_display->scene!=1))level=0;
+    int world_steps=level?world_fade_steps(v,width):-1;
+    uint32_t world_palette[16];
+    if(world_steps>=0)for(unsigned i=0;i<16;++i)
+        world_palette[i]=genesis_dac_cram_to_argb(fade_from_black(v->cram[i],world_steps),GENESIS_DAC_NORMAL);
     int camera=level?unwrap(-hs_a,ram16(0xFF10)):ram16(0xF700);
     int camera_y=unwrap(interpolate_vs(line,0,v->vsram[0]),ram16(0xFF14));
     if(line==0) {
@@ -1147,11 +1152,11 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         int row=((by>>8)&7)*128;
         for(int col=0;col<64;++col)if(video_ram[0xA440+row+col])bg_width=(col+1)*256;
     }
-    /* Deform_GHZ's title perspective-water band starts at BG row $98.
-     * Its scroll crosses X=0 and the hardware repeats a 512px nametable.
-     * Wrapping those samples across the full level selects unrelated far-end
-     * water chunks, exposing seams in the extended margins. */
-    if(s_title_world && by>=0x98)bg_width=512;
+    /* The title streams water cells into its circular hardware nametable.
+     * Repeating the static level layout loses those updates at some scroll
+     * phases, creating a seam against the hardware-composed native center.
+     * Extend the same live nametable through the water margins. */
+    int title_water=s_title_world && by>=0x98;
     int bg_base=-origin-hs_b;
     if(level) {
         int margin=(width-nw)/2;
@@ -1172,8 +1177,8 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
             gtile_row_begin(&fg,v->vram,attr,level?wx:nx-hs_a,level?wy:line+(v->vsram[0]&1023));
         }
         if (!bg.remaining) {
-            uint16_t attr=bg_world?world_attr(background_x,by,1):plane_attr(v,base_b,bx,by);
-            gtile_row_begin(&bg,v->vram,attr,bg_world?background_x:bx,by);
+            uint16_t attr=bg_world && !title_water?world_attr(background_x,by,1):plane_attr(v,base_b,bx,by);
+            gtile_row_begin(&bg,v->vram,attr,bg_world && !title_water?background_x:bx,by);
         }
         uint16_t a=fg.attr,b=bg.attr;
         uint8_t ap=gtile_row_pixel(&fg),bp=gtile_row_pixel(&bg);
@@ -1183,7 +1188,7 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         if(!level && !special && (nx<0 || nx>=nw))ap=0;
         s_priority[x]=(uint8_t)(((a&0x8000)&&ap)||((b&0x8000)&&bp));
         uint8_t p=ap&&(a&0x8000)?ap:bp&&(b&0x8000)?bp:ap?ap:bp;
-        out[x]=p?palette[p]:backdrop;
+        out[x]=p?(world_steps>=0 && p<16?world_palette[p]:palette[p]):backdrop;
         if(!s_interpolating && nx>=0 && nx<nw && !(x&7)) {
             if(level) {
                 uint16_t expected=plane_attr(v,base_a,nx-hs_a,line+(v->vsram[0]&1023));
@@ -1206,7 +1211,8 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
                     int rx=reference_bx;
                     if(bg_width>0){rx%=bg_width;if(rx<0)rx+=bg_width;}
                     uint16_t expected=plane_attr(v,base_b,reference_bx,by);
-                    ++s_bg_checks;s_bg_errors+=attributes_differ(v,world_attr(rx,by,1),expected,reference_bx,by);
+                    uint16_t actual=title_water?plane_attr(v,base_b,reference_bx,by):world_attr(rx,by,1);
+                    ++s_bg_checks;s_bg_errors+=attributes_differ(v,actual,expected,reference_bx,by);
                 }
             }
         }
@@ -1223,7 +1229,7 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
          * surrounding scenery, following the live scene palette. */
         if(origin>=0)memcpy(out+origin,native,(size_t)nw*sizeof(uint32_t));
     } else if(s_display) {
-        draw_scene_sprites(v,line,out,width,origin,palette);
+        draw_scene_sprites(v,line,out,width,origin,palette,world_steps>=0?world_palette:NULL);
     } else {
         /* No matching DMA yet (e.g. load/fade): preserve the live native
          * scene while the host display list catches its next publication. */

@@ -134,16 +134,18 @@ int main(int argc,char **argv)
     word(g_ram,0xFF1C,0x31A);
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(out[0]==0xFFFF0000u && out[795]==0xFFFF0000u);
-    /* Title perspective water wraps the original 512px nametable, not the
-     * entire level layout. Negative samples in the left margin must not
-     * come from a different chunk at the far end of that level. */
+    /* Title water uses live streamed nametable cells, which can differ from
+     * both static chunks. The native center and extended margins must use
+     * the same updated water patterns at each scroll phase. */
     g_ram[0xA441]=1;g_ram[0xA442]=2;
     for(int n=0;n<256;++n)word(g_ram,512+n*2,1);
     for(int n=0;n<4;++n)word(g_ram,0xB008+n*2,2);
     memset(v.vram+64,0x22,32);v.cram[2]=0xE00;word(v.vram,0xFC02,94);
+    for(int n=0;n<64;++n)word(v.vram,0xE000+25*128+n*2,2);
     sonic1_video.scanline(&v,0,native,320,out,796);
     sonic1_video.scanline(&v,200,native,320,out,796);
-    CHECK(out[200]==0xFFFF0000u);
+    CHECK(out[200]==0xFF0000FFu);
+    memset(v.vram+0xE000+25*128,0,128);
     g_ram[0xA441]=g_ram[0xA442]=0;memset(g_ram+512,0,512);
     memset(g_ram+0xB008,0,8);word(v.vram,0xFC02,0);
     word(g_ram,0xFF1C,0);
@@ -200,7 +202,15 @@ int main(int argc,char **argv)
         sonic1_video.scanline(&v,0,native,320,out,1593);
         CHECK(out[1356]==genesis_dac_cram_to_argb(white_steps[n],GENESIS_DAC_NORMAL));
         CHECK(out[16]==genesis_dac_cram_to_argb(0xEEE,GENESIS_DAC_NORMAL));
+        /* Terrain can share palette0 too (GHZ's metallic foreground pieces).
+         * It belongs to the stage fade, independently of HUD/Sonic sprites. */
+        uint32_t terrain=out[800];
+        if(n==0)CHECK(terrain==0xFF000000u);
     }
+    word(g_ram,0xF626,0x003F);memset(v.cram+16,0,48*sizeof v.cram[0]);
+    sonic1_video.scanline(&v,0,native,320,out,1593);
+    CHECK(out[1356]==0xFF000000u && out[16]==genesis_dac_cram_to_argb(0xEEE,GENESIS_DAC_NORMAL));
+    word(g_ram,0xF626,0x202F);
     g_ram[0xFE10]=1;word(g_ram,0xFBA0,0xE);word(g_ram,0xFA2C,0xEEE);
     v.cram[22]=0xE00;sonic1_video.scanline(&v,0,native,320,out,1593);
     CHECK(out[1356]==genesis_dac_cram_to_argb(0xE00,GENESIS_DAC_NORMAL));
@@ -375,12 +385,16 @@ int main(int argc,char **argv)
     /* SEGA is selected before the demo's sixty-frame fade finishes. Keep
      * rendering the outgoing level until its player/planes are replaced. */
     uint32_t level_line[796];memcpy(level_line,out,sizeof level_line);
-    g_ram[0xF600]=0;word(g_ram,0xFFF0,1);
-    s1_video_hook(0xD65E);s1_video_hook(0xD746);
-    upload_sat(&v);
-    sonic1_video.scanline(&v,0,native,320,out,796);
-    CHECK(!memcmp(level_line,out,sizeof level_line));
-    s1_video_command(1,NULL);CHECK(strstr(reply,"\"scene\":1"));
+    word(g_ram,0xFFF0,1);
+    for(int mode=0;mode<=4;mode+=4) {
+        /* Start skips select Title; timeout selects SEGA. Both still own
+         * the outgoing level until its objects/planes are replaced. */
+        g_ram[0xF600]=(uint8_t)mode;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);
+        CHECK(!memcmp(level_line,out,sizeof level_line));
+        s1_video_command(1,NULL);CHECK(strstr(reply,"\"scene\":1"));
+    }
     /* The giant ring removes Sonic before the signpost/results finish.
      * The outgoing level still owns the canvas, including after the game
      * selects Special Stage but before it installs that scene. */
