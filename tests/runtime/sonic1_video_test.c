@@ -556,8 +556,8 @@ int main(int argc,char **argv)
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":0"));
     /* A scripted FZ boss is created at the original camera threshold, after
-     * the wide viewport can see its cylinders. Ready art can be previewed
-     * without allocating the boss early or changing any guest state. */
+     * the wide viewport can see its cylinders. An unrelated pending PLC
+     * must not suppress their draw-only preview or allocate the boss early. */
     memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);
     g_ram[0xF600]=12;g_ram[0xD000]=1;word(g_ram,0xFE10,0x502);g_ram[0xF742]=2;
     for(int n=0;n<6;++n)g_ram[0xA400+n]=1;
@@ -569,7 +569,7 @@ int main(int argc,char **argv)
     g_rom[0x1A49C]=0x10;g_rom[0x1A49D]=0;
     word(g_rom,0x1000,2);g_rom[0x1002]=1;memset(g_rom+0x1003,0,5);
     for(int n=0;n<4;++n){word(g_rom,0x1A462+n*4,5000);word(g_rom,0x1A464+n*4,8);}
-    word(g_rom,0x1A462,600);
+    word(g_rom,0x1A462,600);g_ram[0xF683]=1;word(g_ram,0xF6F8,1);
     memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
@@ -589,6 +589,41 @@ int main(int argc,char **argv)
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
     CHECK(out[38]==0xFF000000u);
+    /* Wide GHZ entry placements exist through card departure without early
+     * guest activation; queued native ring/spring/rock sprites replace them
+     * exactly once. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);
+    g_ram[0xF600]=0x8C;g_ram[0xD000]=1;g_ram[0xD080]=0x34;
+    for(int n=0;n<8;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,800);word(g_ram,0xFF10,800);
+    word(g_rom,0x6B000,0x500);
+    word(g_rom,0x6B500,600);word(g_rom,0x6B502,8);g_rom[0x6B504]=0xA5;g_rom[0x6B505]=0x31;
+    word(g_rom,0x6B506,620);word(g_rom,0x6B508,8);g_rom[0x6B50A]=0x41;g_rom[0x6B50B]=2;
+    word(g_rom,0x6B50C,640);word(g_rom,0x6B50E,8);g_rom[0x6B510]=0x3B;g_rom[0x6B511]=0;
+    word(g_rom,0x6B512,65535);
+    g_rom[0xDB0E]=g_rom[0xDB0F]=0;word(g_rom,0xDB10,0x1300);word(g_rom,0xDB16,1);
+    g_rom[0xD068]=g_rom[0xD069]=0;word(g_rom,0xD06A,0x1300);word(g_rom,0xD070,1);
+    word(g_rom,0x9F92,2);g_rom[0x9F94]=1;memset(g_rom+0x9F95,0,5);
+    word(g_rom,0x1300,2);g_rom[0x1302]=1;memset(g_rom+0x1303,0,5);
+    g_ram[0xF76C]=0;s1_video_hook(0xD8DA);g_ram[0xF76C]=2;
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;
+    memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":4"));
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    const unsigned entry_ids[]={0x25,0x25,0x41,0x3B};
+    for(unsigned n=0;n<4;++n) {
+        unsigned o=0xD800+n*64,pri=n<2?2:4;
+        g_ram[o]=(uint8_t)entry_ids[n];g_ram[o+1]=4;m68k_write32(o+4,0x1300);
+        word(g_ram,o+8,n<2?600:n==2?620:640);word(g_ram,o+12,n==1?24:8);
+        word(g_ram,0xAC02+pri*128+(n&1)*2,o);word(g_ram,0xAC00+pri*128,4);
+    }
+    memcpy(ram_before,g_ram,sizeof g_ram);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":4"));
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
     /* Ending animals hand off from a resting preview to their live sprite,
      * then retain a draw-only tail after native deletion. No guest lifetime
      * or visibility changes, and a consumed tail must not return. */

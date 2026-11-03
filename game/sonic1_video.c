@@ -161,11 +161,11 @@ static uint8_t pattern_pixel(const GVDP *v, uint16_t attr, int x, int y)
     return nibble ? (uint8_t)(((attr >> 9) & 48) | nibble) : 0;
 }
 /* Wide sprites can enter view before their native PLC replaces title-card
- * patterns. Decode the small immutable button/signpost assets separately;
+ * patterns. Decode immutable button/signpost/cylinder assets separately;
  * guest VRAM, PLC order and simulation clocks remain untouched. Format and
  * XOR rows follow REV00 NemDec ($1440), not a second machine execution. */
-typedef struct { uint8_t pixels[4096];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
-static SpriteArt s_sprite_art[3];
+typedef struct { uint8_t pixels[8192];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
+static SpriteArt s_sprite_art[4];
 static unsigned art_bits(unsigned bit,unsigned count)
 {
     unsigned value=0;
@@ -207,9 +207,10 @@ static int decode_sprite_art(SpriteArt *art,unsigned address)
 static uint8_t sprite_pixel(const GVDP *v,unsigned asset,uint16_t attr,int x,int y)
 {
     if(!asset || !enabled() || s_requested_width<=320)return pattern_pixel(v,attr,x,y);
-    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408};
+    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860};
+    static const unsigned bases[]={0x680,0x50F,0x513,0x300};
     SpriteArt *art=&s_sprite_art[asset-1];
-    if(!art->ready){art->base=asset==1?0x680:asset==3?0x513:0x50F;art->ready=decode_sprite_art(art,addresses[asset-1])?1:2;}
+    if(!art->ready){art->base=bases[asset-1];art->ready=decode_sprite_art(art,addresses[asset-1])?1:2;}
     int tile=(int)(attr&2047u)-(int)art->base;
     if(art->ready!=1 || tile<0 || (unsigned)(tile+1)*32>art->size)return pattern_pixel(v,attr,x,y);
     int fx=x&7,fy=y&7;if(attr&0x800)fx^=7;if(attr&0x1000)fy^=7;
@@ -330,7 +331,7 @@ int s1_video_rb_load(const void *src,size_t len)
         sprites[n]=in;in+=bytes;left-=bytes;
         for(unsigned k=0;k<counts[n];++k) {
             SceneSprite sprite;memcpy(&sprite,sprites[n]+k*sizeof sprite,sizeof sprite);
-            if(sprite.asset>3 || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
+            if(sprite.asset>4 || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
         }
     }
     if(left)return 0;
@@ -406,7 +407,7 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
         SceneSprite *s=&s_capture_frame->sprites[s_capture_frame->count++];
         s->x=x+dx; s->y=y+dy; s->attr=attr; s->size=(uint8_t)size; s->hud=(uint8_t)hud;s->slot=(uint8_t)s_capture_slot;s->space=(uint8_t)s_capture_space;
         unsigned owner=s_capture_slot?video_ram[0xD000+(s_capture_slot-1)*64]:0;
-        s->asset=(uint8_t)(owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):0);
+        s->asset=(uint8_t)(owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:0);
     }
 }
 static void load_placements(void)
@@ -518,14 +519,13 @@ static void springyard_present(unsigned priority,int camera,int left)
     }
 }
 /* DLE_FZboss creates the boss at camera $22B0. At 32:9 its stationary
- * cylinders are visible earlier. Use the ROM's initial pose and already
- * loaded boss art until each native cylinder initializes; no early boss,
+ * cylinders are visible earlier. Use the ROM's initial pose and immutable
+ * art until each native cylinder initializes; no early boss,
  * collisions, random calls or guest object slots are introduced. */
 static void final_cylinders_present(unsigned priority,int camera,int left)
 {
     int event=video_ram[0xF742];
-    if(priority!=3 || !gameplay() || ram16(0xFE10)!=0x502 || event<2 || event>4 ||
-       scene_read32(0xFFF680) || ram16(0xF6F8))return;
+    if(priority!=3 || !gameplay() || ram16(0xFE10)!=0x502 || event<2 || event>4)return;
     for(unsigned o=0xD000;o<0xF000;o+=64)
         if(video_ram[o]==0x85 && video_ram[o+0x24]==2 && video_ram[o+0x34]>=6)return;
     unsigned map=scene_read32(0x1A49A),gfx=scene_read16(0x1A494);
@@ -538,7 +538,9 @@ static void final_cylinders_present(unsigned priority,int camera,int left)
             if(video_ram[o]==0x84 && video_ram[o+0x28]==i*2 &&
                video_ram[o+0x24]>=2 && scene_read32(0xFF0000u+o+4))break;
         if(o<0xF000)continue;
+        unsigned first=s_capture_frame->count;
         add_mapping(map,0,gfx,i>=2?2:0,x-camera,y-ram16(0xF704),0,0);
+        for(unsigned n=first;n<s_capture_frame->count;++n)s_capture_frame->sprites[n].asset=4;
     }
 }
 /* Orb_Main initializes the head but only its satellites queue sprites in
@@ -745,6 +747,44 @@ static void collect_host_rings(void)
         }
     }
 }
+/* Card departure deliberately retains native activation. Present the static
+ * GHZ placements visible in the wider view until their original objects queue
+ * sprites; no early collision objects or ring collection are introduced. */
+static void entry_placements_present(unsigned priority,int camera,int left)
+{
+    if(!gameplay() || video_ram[0xFE10]!=0 || s_requested_width<=320 ||
+       (priority!=2 && priority!=4))return;
+    int entry=(video_ram[0xF600]&128)!=0;
+    for(unsigned o=0xD080;o<0xD200;o+=64)if(video_ram[o]==0x34)entry=1;
+    if(!entry)return;
+    load_placements();s_capture_slot=0;s_capture_space=4;
+    for(unsigned i=0;i<s_placement_count;++i) {
+        const Placement *p=&s_placements[i];
+        if(p->id==0x25 && priority==2) {
+            int count=(p->subtype&7)+1;if(count>7)count=7;
+            for(int n=0;n<count;++n) {
+                if(p->state && (video_ram[0xFC02+p->state]&(1u<<n)))continue;
+                int x,y;ring_position(p,n,&x,&y);
+                if(x+16<left || x-16>=left+s_requested_width)continue;
+                unsigned o;
+                for(o=0xD800;o<0xF000;o+=64)
+                    if(video_ram[o]==0x25 && ram16(o+8)==x && ram16(o+12)==y &&
+                       s_capture_frame->identity[1+(o-0xD000)/64])break;
+                if(o<0xF000)continue;
+                add_mapping(0x9F92,video_ram[0xFEC3]&3,0x27B2,0,x-camera,y-ram16(0xF704),0,0);
+            }
+        } else if(priority==4 && (p->id==0x3B || (p->id==0x41 && !(p->subtype&0x30)))) {
+            if(p->x+32<left || (int)p->x-32>=left+s_requested_width)continue;
+            unsigned o=placement_object(p);
+            if(o && s_capture_frame->identity[1+(o-0xD000)/64])continue;
+            unsigned init=p->id==0x3B?0xD062:0xDB08;
+            unsigned map=scene_read32(init+6),gfx=scene_read16(init+14);
+            if(p->id==0x41 && (p->subtype&2))gfx|=0x2000;
+            add_mapping(map,0,gfx,(p->y>>14)&3,(int)p->x-camera,
+                        (p->y&4095)-ram16(0xF704),0,0);
+        }
+    }
+}
 static void capture_objects(void)
 {
     s_capture_frame->count=0;s_capture_slot=s_capture_space=0;
@@ -806,6 +846,7 @@ static void capture_objects(void)
             final_cylinders_present(pri,cam,left);
             initial_orbinauts_present(pri,cam);
             ending_animals_present(pri,cam,left);
+            entry_placements_present(pri,cam,left);
         }
         if(!s_capture_readonly && pri==2 && gameplay() && !native_activation()) {
             s_capture_slot=0;s_capture_space=4;
