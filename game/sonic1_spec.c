@@ -137,6 +137,8 @@ const GameSpec g_game_spec = {
     .video                  = &sonic1_video,
     .video_default          = "fit",
     .logical_players        = 1,
+    .rb_state_save           = s1_video_rb_save,
+    .rb_state_load           = s1_video_rb_load,
     .display_name           = "Sonic the Hedgehog",
     .short_name             = "Sonic1",
 

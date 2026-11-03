@@ -567,6 +567,33 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,10,native,320,out,796);CHECK(out[100]==0xFF0000FFu);
     sonic1_video.scanline(&v,11,native,320,out,796);CHECK(out[100]==0xFF000000u);
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    /* Rewind must recover the displayed mappings as well as guest RAM: the
+     * later frame's sprite history may otherwise survive a frozen fade. */
+    size_t state_size=s1_video_rb_save(NULL,0);
+    uint8_t *video_state=malloc(state_size),*roundtrip=malloc(state_size);
+    CHECK(video_state && roundtrip);
+    CHECK(!s1_video_rb_save(video_state,state_size-1));
+    CHECK(s1_video_rb_save(video_state,state_size)==state_size);
+    uint32_t restored_row[796];memcpy(restored_row,out,sizeof restored_row);
+    memcpy(ram_before,g_ram,sizeof g_ram);before=v;cpu_before=g_cpu;
+    for(unsigned n=0;n<4;++n) {
+        word(g_ram,0xD808,900+n*8);
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);
+    }
+    memcpy(g_ram,ram_before,sizeof g_ram);v=before;
+    CHECK(!s1_video_rb_load(video_state,state_size-1));
+    CHECK(s1_video_rb_load(video_state,state_size));
+    CHECK(s1_video_rb_save(roundtrip,state_size)==state_size);
+    CHECK(!memcmp(video_state,roundtrip,state_size));
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,8,native,320,out,796);
+    CHECK(!memcmp(restored_row,out,sizeof restored_row));
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    video_state[0]^=1;CHECK(!s1_video_rb_load(video_state,state_size));
+    CHECK(s1_video_rb_save(roundtrip,state_size)==state_size);
+    video_state[0]^=1;CHECK(!memcmp(video_state,roundtrip,state_size));
+    free(roundtrip);free(video_state);
     puts("Sonic 1 video/audio: geometry, terrain, sprites, demo previews, mode continuity and FM6 restore passed");
 
     {

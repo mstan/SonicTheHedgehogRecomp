@@ -13,6 +13,7 @@
 #include "video/genesis_tile_row.h"
 #include "cmd_server.h"
 #include <limits.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -255,6 +256,88 @@ static int s_loader_active, s_rings_adopted;
 typedef struct { int x, y; unsigned tick; } RingSpark;
 static RingSpark s_sparks[64];
 static unsigned s_spark_next;
+
+/* Object-loader decisions and captured mappings belong to the saved timeline.
+ * Interpolation images, selected row pointers and immutable ROM art do not. */
+typedef struct {
+    uint32_t magic, serial, scene_tick, spawned, pool_pressure, ring_collected;
+    unsigned placement_count, placement_base, loader_active, rings_adopted;
+    unsigned spark_next, visible_count;
+    Placement placements[SCENE_PLACEMENTS];
+    RingSpark sparks[64];
+    unsigned visible_objects[128];
+} VideoState;
+enum { SCENE_HEADER = sizeof(SceneFrame)-offsetof(SceneFrame,count) };
+
+size_t s1_video_rb_save(void *dst,size_t cap)
+{
+    const SceneFrame *frames[]={&s_build,&s_history[0],&s_history[1],&s_history[2]};
+    size_t need=sizeof(VideoState);
+    for(unsigned n=0;n<4;++n)need+=SCENE_HEADER+frames[n]->count*sizeof(SceneSprite);
+    if(!dst)return need;
+    if(cap<need)return 0;
+    VideoState state;memset(&state,0,sizeof state);
+    state.magic=0x53315631u;state.serial=s_serial;state.scene_tick=s_scene_tick;
+    state.spawned=s_spawned;state.pool_pressure=s_pool_pressure;state.ring_collected=s_ring_collected;
+    state.placement_count=s_placement_count;state.placement_base=s_placement_base;
+    state.loader_active=s_loader_active;state.rings_adopted=s_rings_adopted;
+    state.spark_next=s_spark_next;state.visible_count=s_visible_count;
+    memcpy(state.placements,s_placements,sizeof s_placements);
+    memcpy(state.sparks,s_sparks,sizeof s_sparks);
+    memcpy(state.visible_objects,s_visible_objects,sizeof s_visible_objects);
+    uint8_t *out=dst;memcpy(out,&state,sizeof state);out+=sizeof state;
+    for(unsigned n=0;n<4;++n) {
+        memcpy(out,&frames[n]->count,SCENE_HEADER);out+=SCENE_HEADER;
+        size_t bytes=frames[n]->count*sizeof(SceneSprite);
+        memcpy(out,frames[n]->sprites,bytes);out+=bytes;
+    }
+    return need;
+}
+int s1_video_rb_load(const void *src,size_t len)
+{
+    VideoState state;
+    if(!src || len<sizeof state)return 0;
+    memcpy(&state,src,sizeof state);
+    if(state.magic!=0x53315631u || state.placement_count>SCENE_PLACEMENTS ||
+       state.visible_count>128 || state.loader_active>1 || state.rings_adopted>1)return 0;
+    for(unsigned n=0;n<state.visible_count;++n)
+        if(state.visible_objects[n]<0xD000 || state.visible_objects[n]>=0xF000 ||
+           (state.visible_objects[n]&63))return 0;
+    const uint8_t *in=(const uint8_t*)src+sizeof state;
+    size_t left=len-sizeof state;
+    const uint8_t *headers[4],*sprites[4];unsigned counts[4];
+    for(unsigned n=0;n<4;++n) {
+        if(left<SCENE_HEADER)return 0;
+        headers[n]=in;memcpy(&counts[n],in,sizeof counts[n]);
+        if(counts[n]>SCENE_SPRITES)return 0;
+        int scene;memcpy(&scene,in+offsetof(SceneFrame,scene)-offsetof(SceneFrame,count),sizeof scene);
+        if(scene<0 || scene>3)return 0;
+        in+=SCENE_HEADER;left-=SCENE_HEADER;
+        size_t bytes=counts[n]*sizeof(SceneSprite);
+        if(left<bytes)return 0;
+        sprites[n]=in;in+=bytes;left-=bytes;
+        for(unsigned k=0;k<counts[n];++k) {
+            SceneSprite sprite;memcpy(&sprite,sprites[n]+k*sizeof sprite,sizeof sprite);
+            if(sprite.asset>3 || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
+        }
+    }
+    if(left)return 0;
+    s_serial=state.serial;s_scene_tick=state.scene_tick;s_spawned=state.spawned;
+    s_pool_pressure=state.pool_pressure;s_ring_collected=state.ring_collected;
+    s_placement_count=state.placement_count;s_placement_base=state.placement_base;
+    s_loader_active=state.loader_active;s_rings_adopted=state.rings_adopted;
+    s_spark_next=state.spark_next;s_visible_count=state.visible_count;
+    memcpy(s_placements,state.placements,sizeof s_placements);
+    memcpy(s_sparks,state.sparks,sizeof s_sparks);
+    memcpy(s_visible_objects,state.visible_objects,sizeof s_visible_objects);
+    SceneFrame *frames[]={&s_build,&s_history[0],&s_history[1],&s_history[2]};
+    for(unsigned n=0;n<4;++n) {
+        memcpy(&frames[n]->count,headers[n],SCENE_HEADER);
+        memcpy(frames[n]->sprites,sprites[n],counts[n]*sizeof(SceneSprite));
+    }
+    s_display=NULL;s_title_world=0;interpolation_reset();
+    return 1;
+}
 
 static uint8_t scene_read8(unsigned a)
 {
