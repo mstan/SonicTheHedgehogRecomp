@@ -648,7 +648,7 @@ static void capture_objects(void)
                 y=(int16_t)(ram16(o+12)-ram16(scroll+4));
             } else {
                 x=(int16_t)ram16(o+8)-128;y=(int16_t)ram16(o+10)-128;
-                if(video_ram[o]==0x34) {
+                if(video_ram[o]==0x34 || video_ram[o]==0x3A || video_ram[o]==0x7E) {
                     /* Keep the ROM's arrival/hold/departure times and final
                      * composition, but cover the actual canvas on the way
                      * in/out instead of popping at the native 4:3 boundary. */

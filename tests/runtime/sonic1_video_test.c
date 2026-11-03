@@ -439,6 +439,10 @@ int main(int argc,char **argv)
     g_ram[0xD080]=0x34;word(g_ram,0xD082,0x8000);word(g_ram,0xD088,240);word(g_ram,0xD08A,128);
     word(g_ram,0xD0B0,288);m68k_write32(0xD084,0x1000);
     word(g_ram,0xAC00,2);word(g_ram,0xAC02,0xD080);
+    const unsigned cards[]={0x34,0x3A,0x7E};
+    for(unsigned card=0;card<3;++card) {
+    g_ram[0xD080]=(uint8_t)cards[card];word(g_ram,0xD088,240);
+    g_ram[0xF600]=card==2?16:12;g_ram[0xD000]=card==2?0:1;
     s1_video_hook(0xD65E);s1_video_hook(0xD746);
     upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);
@@ -447,6 +451,9 @@ int main(int argc,char **argv)
     upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(out[398]==0xFF0000FFu); /* centered target, independent of world origin */
+    if(card==2){s1_video_command(1,NULL);CHECK(strstr(reply,"\"scene\":3"));}
+    }
+    g_ram[0xF600]=12;g_ram[0xD000]=1;
     /* A composite piece can already be visible while its zero-radius actor
      * reference is outside the right edge (the FZ Eggmobile's pop-in). */
     memset(g_ram+0xD040,0,0x1FC0);memset(g_ram+0xAC00,0,1024);
