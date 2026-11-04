@@ -313,6 +313,18 @@ int main(int argc,char **argv)
      * using the game's sine table and live block frame/palette descriptors. */
     memset(g_ram,0,0x4000);memset(g_ram+0xAC00,0,0x400);
     g_ram[0xF600]=16;g_ram[0xD000]=9;
+    /* The white-in displays its repeating background before any special
+     * sprite list exists. Extend both edges, preserving the native center. */
+    before=v;g_ram[0xD040]=0;
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=0x11;
+    v.vsram[0]=v.vsram[1]=0;word(v.vram,0xFC00,0);word(v.vram,0xFC02,0);
+    memset(v.vram+0xC000,0,128);
+    for(unsigned a=0xE000;a<0xE080;a+=2)word(v.vram,a,1);
+    v.cram[1]=0xE00;memset(v.vram+32,0x11,32);
+    sonic1_video.scanline(&v,0,native,320,out,1593);
+    CHECK(out[0]==0xFF0000FFu && out[1592]==0xFF0000FFu);
+    CHECK(!memcmp(out+(1593-320)/2,native,sizeof native));
+    v=before;
     word(g_ram,0xF700,588);word(g_ram,0xF704,588);
     word(g_rom,0x29F2,0);word(g_rom,0x29F2+128,256);
     m68k_write32(0x4008,0x1000);word(g_ram,0x400C,0);word(g_ram,0x400E,0);
@@ -796,5 +808,37 @@ int main(int argc,char **argv)
     sonic1_video.presentation_reset();sonic1_video.presentation_configure(0);
     puts("Sonic 1 custom video: geometry, terrain, anchored HUD, wide sprites, culling, mode continuity and native opt-out and owned interpolation passed");
     }
+    /* Final Zone's escape camera legitimately passes the populated layout
+     * edge. Center its original framing through the outgoing level fade;
+     * ordinary stage clamping and guest activation remain unchanged. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);
+    CHECK(sonic1_video.configure("32:9"));sonic1_video.width(796,224,320,224);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;word(g_ram,0xFE10,0x502);
+    for(int n=0;n<40;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,0x2700);word(g_ram,0xFF10,0x2700);g_ram[0xF742]=6;
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-0x2700);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+    CHECK(strstr(reply,"\"view_left\":9444,") && strstr(reply,"\"native_x\":540,"));
+    g_ram[0xF742]=8;memcpy(ram_before,g_ram,sizeof g_ram);
+    sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+    CHECK(strstr(reply,"\"view_left\":9746,") && strstr(reply,"\"native_x\":238,"));
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    word(g_ram,0xD808,10400);word(g_ram,0xD80C,10);g_cpu.A[0]=0xFFD800;
+    CHECK(s1_video_hook(0xD87E) && g_cpu.D[0]==1);
+    g_ram[0xD800]=0x26;g_ram[0xD801]=4;m68k_write32(0xFFD804,0x1000);
+    word(g_rom,0x1000,2);g_rom[0x1002]=1;memset(g_rom+0x1003,0,5);
+    word(g_ram,0xAC00+2*128,2);word(g_ram,0xAC02+2*128,0xD800);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    CHECK(!(g_ram[0xD801]&128)); /* newly visible only to presentation */
+    word(g_ram,0xD808,9500);g_ram[0xD801]=4;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    CHECK(g_ram[0xD801]&128); /* prior guest visibility survives reframing */
+    g_ram[0xF600]=24;sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+    CHECK(strstr(reply,"\"view_left\":9746,"));
+    word(g_ram,0xFE10,0x600);g_ram[0xF742]=0;
+    sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+    CHECK(strstr(reply,"\"view_left\":9444,"));
     return 0;
 }

@@ -371,6 +371,15 @@ static int view_left(int camera, int w)
     if (left<0) left=0;
     return left>end ? end : left;
 }
+static int scene_left(const uint8_t *ram,int camera,int w)
+{
+    /* Eggman's escape extends the original camera beyond the populated
+     * foreground's edge. A layout-width clamp pins the wide view behind it.
+     * Keep the original camera centered without changing activation bounds. */
+    if(ram[0xFE10]==5 && ram[0xFE11]==2 && ram[0xF742]>=8)
+        return camera-(w-320)/2;
+    return view_left(camera,w);
+}
 static void activation_bounds(int camera,int w,int *lo,int *hi)
 {
     int left=view_left(camera,w);
@@ -791,7 +800,9 @@ static void capture_objects(void)
     memset(s_capture_frame->identity,0,sizeof s_capture_frame->identity);
     if(!s_capture_readonly){s_visible_count=0;++s_scene_tick;}
     s_capture_frame->scene=gameplay()?1:video_ram[0xD000]==9?2:0;
-    int cam=ram16(0xF700), left=gameplay()?view_left(cam,s_requested_width):cam-(s_requested_width-320)/2;
+    int cam=ram16(0xF700), level=gameplay();
+    int left=level?scene_left(video_ram,cam,s_requested_width):cam-(s_requested_width-320)/2;
+    int guest_left=level?view_left(cam,s_requested_width):left;
     for(unsigned pri=0;pri<8;++pri) {
         unsigned queue=0xAC00+pri*128, bytes=ram16(queue);
         if(bytes>126)bytes=126;
@@ -822,7 +833,8 @@ static void capture_objects(void)
             unsigned first=s_capture_frame->count;
             add_mapping(scene_read32(0xFF0000u+o+4),video_ram[o+0x1A],ram16(o+2),flags,x,y,hud,(flags&32)!=0);
             if(space) {
-                int visible=0,lo=left-cam,hi=lo+s_requested_width;
+                int visible=0,guest_visible=0,lo=left-cam,hi=lo+s_requested_width;
+                int guest_lo=guest_left-cam,guest_hi=guest_lo+s_requested_width;
                 /* Composite actors do not consistently populate obActWid
                  * (Final Zone's empty Eggmobile has zero). Cull their actual
                  * mapped pieces, rather than popping the whole actor when
@@ -830,10 +842,13 @@ static void capture_objects(void)
                 for(unsigned n=first;n<s_capture_frame->count;++n) {
                     const SceneSprite *p=&s_capture_frame->sprites[n];
                     int w=(((p->size>>2)&3)+1)*8;
-                    if(p->x+w>lo && p->x<hi) {visible=1;break;}
+                    if(p->x+w>lo && p->x<hi)visible=1;
+                    if(p->x+w>guest_lo && p->x<guest_hi)guest_visible=1;
                 }
+                /* A camera-only reframing must not change the visibility
+                 * flags consumed by guest object lifetimes and events. */
+                if(guest_visible && !s_capture_readonly && s_visible_count<128)s_visible_objects[s_visible_count++]=o;
                 if(!visible)s_capture_frame->count=first;
-                else if(!s_capture_readonly && s_visible_count<128)s_visible_objects[s_visible_count++]=o;
             }
         }
         if(!s_capture_readonly) {
@@ -1154,7 +1169,11 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
     int hs_a=(int16_t)vram16(v,hsbase+(unsigned)hi*4);
     int hs_b=(int16_t)vram16(v,hsbase+(unsigned)hi*4+2);
     hs_a=interpolate_scroll(line,0,hs_a);hs_b=interpolate_scroll(line,1,hs_b);
-    int level=gameplay(),special=s_display && s_display->scene==2;
+    /* SS_Load installs the repeating background before the first object pass
+     * publishes a special-stage sprite list. Its original white-in already
+     * exposes those planes; extend them during that interval too. */
+    int level=gameplay(),special=(s_display && s_display->scene==2) ||
+        ((video_ram[0xF600]&127)==16 && video_ram[0xD000]==9);
     /* The next player object can exist while the title-card SAT is still
      * displayed. Do not expose the incoming level before its own display
      * list/planes reach VBlank. */
@@ -1168,7 +1187,7 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
     if(line==0) {
         if(level)s_stage_width=stage_width();
         s_camera=camera;if(!s_interpolating)++s_frames;
-        s_left=level?view_left(camera,width):camera-(width-nw)/2;
+        s_left=level?scene_left(video_ram,camera,width):camera-(width-nw)/2;
     }
     int origin=level?camera-s_left:(width-nw)/2;
     s_native_x=origin;
@@ -1262,12 +1281,15 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         ++background_x;
         if(bg_width>0 && background_x==bg_width)background_x=0;
     }
-    if(!level && !special && !(s_display && s_display->scene==3)) {
+    if((!level && !special && !(s_display && s_display->scene==3)) ||
+       (special && !(s_display && s_display->scene==2))) {
         if (!native) native = native_row(native_ctx);
         /* Keep the original title sprite mask as well as its logo/menu
          * composition. Redrawing title sprites bypasses the X=0 SAT mask
          * that hides Sonic's torso behind the emblem. Extend only the
-         * surrounding scenery, following the live scene palette. */
+         * surrounding scenery, following the live scene palette. Before
+         * the first special-stage sprite publication, the original center
+         * likewise owns its early background-only fade composition. */
         if(origin>=0)memcpy(out+origin,native,(size_t)nw*sizeof(uint32_t));
     } else if(s_display) {
         draw_scene_sprites(v,line,out,width,origin,palette,world_steps>=0?world_palette:NULL);
@@ -1362,7 +1384,7 @@ static int interpolate_background_correction(int line,int margin,int current)
         const InterpFrame *f=frames[n];
         int reference=(f->ram[0xFF10]<<8)|f->ram[0xFF11];
         int camera=unwrap(-f->scroll[line][0],reference);
-        int left=view_left(unwrap(-f->scroll[0][0],reference),f->width);
+        int left=scene_left(f->ram,unwrap(-f->scroll[0][0],reference),f->width);
         int y=unwrap(f->vs[line][1],(f->ram[0xFF1C]<<8)|f->ram[0xFF1D])+line;
         correction[n]=background_parallax(left+margin,y)-background_parallax(camera,y);
     }
