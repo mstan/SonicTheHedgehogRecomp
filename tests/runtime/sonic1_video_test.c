@@ -881,6 +881,18 @@ int main(int argc,char **argv)
     CHECK(strstr(reply,"\"sprites\":2"));
     size_t cockpit_size=s1_video_rb_save(NULL,0);void *cockpit_state=malloc(cockpit_size);
     CHECK(cockpit_state && s1_video_rb_save(cockpit_state,cockpit_size)==cockpit_size);
+    /* A continuation owner is mandatory; anonymous cosmetic particles are
+     * the only records that may have no guest slot. Reject a corrupt owner. */
+    unsigned owner_records=0;
+    for(size_t i=0;i+68<=cockpit_size;++i) {
+        uint8_t *bytes=(uint8_t *)cockpit_state;uint16_t owner;
+        memcpy(&owner,bytes+i+64,sizeof owner);
+        if(owner!=0xD840 || memcmp(bytes+i,g_ram+0xD840,64))continue;
+        uint16_t invalid=0;memcpy(bytes+i+64,&invalid,sizeof invalid);
+        CHECK(!s1_video_rb_load(cockpit_state,cockpit_size));
+        memcpy(bytes+i+64,&owner,sizeof owner);++owner_records;
+    }
+    CHECK(owner_records==1);
     g_ram[0xD840]=0;s1_video_hook(0xD65E);s1_video_hook(0xD746);
     g_ram[0xD840]=0x85;CHECK(s1_video_rb_load(cockpit_state,cockpit_size));free(cockpit_state);
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);

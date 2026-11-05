@@ -323,6 +323,7 @@ int s1_video_rb_load(const void *src,size_t len)
         const SceneTail *a=&state.actor_tails[n];
         if(a->seen>1 || a->tail>1 || (a->slot &&
            (a->slot<0xD800 || a->slot>=0xF000 || (a->slot&63))))return 0;
+        if(a->seen && !a->slot && a->object[0]!=0x3F)return 0;
     }
     const uint8_t *in=(const uint8_t*)src+sizeof state;
     size_t left=len-sizeof state;
@@ -601,7 +602,8 @@ static void final_escape_present(unsigned priority,int camera)
             }
             if(video_ram[o]==0x3F && scene_read32(0xFF0000u+o+4))remember_tail(art,o);
         }
-        if(!body->seen)return;
+        if(!body->seen || parent<0xD800 || parent>=0xF000 || (parent&63) ||
+           body->object[0]!=0x85 || body->object[0x24]!=2)return;
         for(unsigned o=0xD800;o<0xF000;o+=64) {
             if(video_ram[o]!=0x85 || (scene_read32(0xFF0000u+o+0x34)&65535u)!=parent)continue;
             if(video_ram[o+0x24]==8)remember_tail(cockpit,o);
@@ -629,7 +631,8 @@ static void final_escape_present(unsigned priority,int camera)
             }
         }
     }
-    if(!body->seen)return;
+    if(!body->seen || body->slot<0xD800 || body->slot>=0xF000 || (body->slot&63) ||
+       body->object[0]!=0x85 || body->object[0x24]!=2)return;
     parent=body->slot;
     int alive=parent>=0xD800 && parent<0xF000 && video_ram[parent]==0x85 && video_ram[parent+0x24]==2;
     if(!alive && (video_ram[0xF600]&127)!=24)return;
