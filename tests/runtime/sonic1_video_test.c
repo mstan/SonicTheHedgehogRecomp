@@ -140,13 +140,23 @@ int main(int argc,char **argv)
     g_ram[0xA441]=1;g_ram[0xA442]=2;
     for(int n=0;n<256;++n)word(g_ram,512+n*2,1);
     for(int n=0;n<4;++n)word(g_ram,0xB008+n*2,2);
-    memset(v.vram+64,0x22,32);v.cram[2]=0xE00;word(v.vram,0xFC02,94);
+    memset(v.vram+64,0x22,32);v.cram[2]=0xE00;
+    word(v.vram,0xFC00,0);word(v.vram,0xFC02,94);
     for(int n=0;n<64;++n)word(v.vram,0xE000+25*128+n*2,2);
     sonic1_video.scanline(&v,0,native,320,out,796);
     sonic1_video.scanline(&v,200,native,320,out,796);
     CHECK(out[200]==0xFF0000FFu);
     CHECK(out[700]==0xFFFF0000u);
-    CHECK(!memcmp(out+238,native,sizeof native));
+    CHECK(out[238]==0xFF0000FFu); /* no cached-water seam inside the canvas */
+    word(v.vram,0xC000+25*128+2,1); /* original foreground overlay */
+    word(v.vram,0xA000,328);v.vram[0xA003]=1;
+    word(v.vram,0xA004,1);word(v.vram,0xA006,144);
+    word(v.vram,0xA008,328);v.vram[0xA00B]=2;word(v.vram,0xA00E,0);
+    word(v.vram,0xA010,328);word(v.vram,0xA014,1);word(v.vram,0xA016,160);
+    sonic1_video.scanline(&v,200,native,320,out,796);
+    CHECK(out[246]==native[8] && out[254]==native[16]);
+    CHECK(out[270]==0xFF0000FFu); /* masked sprite must not preserve stale BG */
+    word(v.vram,0xC000+25*128+2,0);memset(v.vram+0xA000,0,24);
     memset(v.vram+0xE000+25*128,0,128);
     g_ram[0xA441]=g_ram[0xA442]=0;memset(g_ram+512,0,512);
     memset(g_ram+0xB008,0,8);word(v.vram,0xFC02,0);
@@ -841,10 +851,15 @@ int main(int argc,char **argv)
      * Guest flags/timing stay exact, and the tail belongs to rewind state. */
     word(g_ram,0xD808,10400);g_ram[0xD801]=4;g_ram[0xD800]=0x85;
     g_ram[0xD824]=8;m68k_write32(0xFFD834,0xFFFFD840);
+    g_ram[0xD818]=2;g_ram[0xD858]=3;
     g_ram[0xD840]=0x85;g_ram[0xD864]=2;g_ram[0xD874]=14;
     word(g_ram,0xD848,10408);word(g_ram,0xD84C,10);
-    m68k_write32(0xFFD844,0x1000);
+    m68k_write32(0xFFD844,0x1100);word(g_ram,0xD842,3);
+    word(g_rom,0x1100,2);g_rom[0x1102]=1;memset(g_rom+0x1103,0,5);g_rom[0x1107]=8;
+    word(g_rom,0x1000,4);word(g_rom,0x1002,4);
+    g_rom[0x1004]=1;memset(g_rom+0x1005,0,5); /* both damaged poses */
     word(g_ram,0xD802,0x8001);memset(v.vram+32,0x22,32);v.cram[2]=0xE00;
+    memset(v.vram+96,0x33,32);v.cram[3]=0xE0;
     s1_video_hook(0xD65E);s1_video_hook(0xD746);
     CHECK(!(g_ram[0xD801]&128));
     g_ram[0xD800]=0;word(g_ram,0xAC00+2*128,0);
@@ -854,6 +869,16 @@ int main(int argc,char **argv)
     upload_sat(&v);sonic1_video.scanline(&v,0,native,320,out,796);
     sonic1_video.scanline(&v,10,native,320,out,796);
     CHECK(out[662]==0xFF0000FFu);
+    /* Extend visible damage effects without executing guest objects/RNG or
+     * adding sound. The native initialized explosion supplies its art. */
+    g_ram[0xD880]=0x3F;g_ram[0xD898]=1;g_ram[0xD881]=4;
+    m68k_write32(0xFFD884,0x1000);word(g_ram,0xD882,0x8001);
+    word(g_ram,0xFE04,8);g_ram[0xFE0F]=0;
+    memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+    CHECK(strstr(reply,"\"sprites\":2"));
     size_t cockpit_size=s1_video_rb_save(NULL,0);void *cockpit_state=malloc(cockpit_size);
     CHECK(cockpit_state && s1_video_rb_save(cockpit_state,cockpit_size)==cockpit_size);
     g_ram[0xD840]=0;s1_video_hook(0xD65E);s1_video_hook(0xD746);
@@ -861,10 +886,31 @@ int main(int argc,char **argv)
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);
     sonic1_video.scanline(&v,10,native,320,out,796);CHECK(out[662]==0xFF0000FFu);
+    g_ram[0xF600]=24;g_ram[0xD840]=0;memcpy(ram_before,g_ram,sizeof g_ram);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,10,native,320,out,796);CHECK(out[662]==0xFF0000FFu);
+    CHECK(out[670]==0xFF00FF00u); /* the deleted parent remains through fade */
     g_ram[0xF600]=24;sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
     CHECK(strstr(reply,"\"view_left\":9746,"));
     word(g_ram,0xFE10,0x600);g_ram[0xF742]=0;
     sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
     CHECK(strstr(reply,"\"view_left\":9444,"));
+    /* The last Deform_GHZ call after Start selects Title's zero A scroll.
+     * That must not move the still-displayed demo to a 1024px page edge. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);
+    g_ram[0xF600]=8;g_ram[0xD000]=1;word(g_ram,0xFFF0,1);
+    for(int n=0;n<20;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,3154);word(g_ram,0xFF10,3154);
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    g_ram[0xF600]=4;word(g_ram,0xF700,3160);
+    memcpy(ram_before,g_ram,sizeof g_ram);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+    CHECK(strstr(reply,"\"camera\":3160,"));
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
     return 0;
 }

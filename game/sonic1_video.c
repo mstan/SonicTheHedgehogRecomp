@@ -239,6 +239,13 @@ typedef struct {
     int16_t ox[SCENE_SLOTS],oy[SCENE_SLOTS];
     uint32_t identity[SCENE_SLOTS];
 } SceneFrame;
+enum { SCENE_CAMERA_TAG=0x53314341u };
+static int departing_demo(const SceneFrame *scene,const uint8_t *ram)
+{
+    int mode=ram[0xF600]&127;
+    return scene && scene->scene==1 && scene->identity[0]==SCENE_CAMERA_TAG &&
+        (mode==0 || mode==4) && ram[0xD000]==1 && ram[0xFFF0]==0 && ram[0xFFF1]==1;
+}
 static SceneFrame s_build, s_history[3], s_display_frame;
 static const SceneFrame *s_display;
 static SceneFrame s_native_build,s_native_history[3];
@@ -575,36 +582,81 @@ static void initial_orbinauts_present(unsigned priority,int camera)
 }
 static unsigned actor_word(const uint8_t *p,unsigned a) { return (p[a]<<8)|p[a+1]; }
 static void actor_put(uint8_t *p,unsigned a,unsigned v) { p[a]=(uint8_t)(v>>8);p[a+1]=(uint8_t)v; }
-static void final_cockpit_present(unsigned priority,int camera)
+static void remember_tail(SceneTail *tail,unsigned object)
 {
-    if(priority!=2 || s_requested_width<=320 || !gameplay() || ram16(0xFE10)!=0x502)return;
-    SceneTail *tail=&s_actor_tails[0];
-    unsigned frame=ram16(0xFE04);int advance=frame!=s_tail_frame;s_tail_frame=frame;
-    for(unsigned o=0xD000;o<0xF000;o+=64) {
-        if(video_ram[o]!=0x85 || video_ram[o+0x24]!=8)continue;
-        unsigned parent=scene_read32(0xFF0000u+o+0x34)&65535u;
-        if(parent<0xD000 || parent>=0xF000 || video_ram[parent]!=0x85 ||
-           video_ram[parent+0x24]!=2 || video_ram[parent+0x34]!=14 || video_ram[parent+0x21])continue;
-        memcpy(tail->object,video_ram+o,64);tail->slot=(uint16_t)o;tail->seen=tail->tail=1;
-        return; /* the original list still owns the live cockpit */
+    memcpy(tail->object,video_ram+object,64);tail->slot=(uint16_t)object;
+    tail->seen=tail->tail=1;
+}
+static void final_escape_present(unsigned priority,int camera)
+{
+    if(s_requested_width<=320 || !gameplay() || ram16(0xFE10)!=0x502)return;
+    SceneTail *cockpit=&s_actor_tails[0],*body=&s_actor_tails[1],*flame=&s_actor_tails[2];
+    SceneTail *art=&s_actor_tails[3];
+    unsigned parent=body->slot;
+    if(priority==0) {
+        unsigned frame=ram16(0xFE04);int advance=frame!=s_tail_frame;s_tail_frame=frame;
+        for(unsigned o=0xD800;o<0xF000;o+=64) {
+            if(video_ram[o]==0x85 && video_ram[o+0x24]==2 && video_ram[o+0x34]>=12) {
+                remember_tail(body,o);parent=o;
+            }
+            if(video_ram[o]==0x3F && scene_read32(0xFF0000u+o+4))remember_tail(art,o);
+        }
+        if(!body->seen)return;
+        for(unsigned o=0xD800;o<0xF000;o+=64) {
+            if(video_ram[o]!=0x85 || (scene_read32(0xFF0000u+o+0x34)&65535u)!=parent)continue;
+            if(video_ram[o+0x24]==8)remember_tail(cockpit,o);
+            if(video_ram[o+0x24]==12)remember_tail(flame,o);
+        }
+        int alive=parent>=0xD800 && parent<0xF000 && video_ram[parent]==0x85 && video_ram[parent+0x24]==2;
+        if(!alive && (video_ram[0xF600]&127)!=24) {
+            for(unsigned n=0;n<12;++n)s_actor_tails[n].seen=s_actor_tails[n].tail=0;
+            return;
+        }
+        int missing=cockpit->seen && (video_ram[cockpit->slot]!=0x85 || video_ram[cockpit->slot+0x24]!=8);
+        if(alive && missing && !body->object[0x21] && advance) {
+            uint8_t *a=cockpit->object;
+            /* Ani_FZEgg: two damaged poses, four ticks each. */
+            if((int8_t)--a[0x1E]<0){a[0x1E]=3;a[0x1A]^=1;}
+            if(art->seen && !(video_ram[0xFE0F]&7)) {
+                SceneTail *fx=&s_actor_tails[4+((frame>>3)&7)];
+                memcpy(fx->object,art->object,64);fx->seen=fx->tail=1;fx->slot=0;
+                /* Cosmetic continuation only: do not create guest objects,
+                 * consume guest RNG or enqueue additional explosion audio. */
+                unsigned seed=frame*1103515245u+ram16(0xF638);
+                actor_put(fx->object,8,actor_word(body->object,8)+(int)((seed>>2)&63)-32);
+                actor_put(fx->object,12,actor_word(body->object,12)+((seed>>11)&31));
+                actor_put(fx->object,0x30,frame);
+            }
+        }
     }
-    if(!tail->seen || tail->object[0]!=0x85)return;
-    uint8_t *a=tail->object;
-    unsigned parent=((actor_word(a,0x34)<<16)|actor_word(a,0x36))&65535u;
-    if(parent<0xD000 || parent>=0xF000 || video_ram[parent]!=0x85 ||
-       video_ram[parent+0x24]!=2 || video_ram[parent+0x34]!=14 || video_ram[parent+0x21]) {
-        tail->seen=tail->tail=0;return;
+    if(!body->seen)return;
+    parent=body->slot;
+    int alive=parent>=0xD800 && parent<0xF000 && video_ram[parent]==0x85 && video_ram[parent+0x24]==2;
+    if(!alive && (video_ram[0xF600]&127)!=24)return;
+    int x=(int16_t)actor_word(body->object,8),y=(int16_t)actor_word(body->object,12);
+    for(unsigned n=0;n<3;++n) {
+        SceneTail *tail=&s_actor_tails[n];uint8_t *a=tail->object;
+        if(!tail->seen || a[0x18]!=priority)continue;
+        if(video_ram[tail->slot]==0x85 && video_ram[tail->slot+0x24]==a[0x24])continue;
+        /* Preserve the final complete craft through GM_Ending's palette
+         * fade. The original parent deletion/Ending trigger stays intact. */
+        unsigned slot=1+(parent-0xD000)/64;
+        s_capture_slot=slot;s_capture_space=4;
+        s_capture_frame->ox[slot]=(int16_t)x;s_capture_frame->oy[slot]=(int16_t)y;
+        s_capture_frame->identity[slot]=0x85000000u|
+            ((actor_word(body->object,4)<<16)|actor_word(body->object,6));
+        add_mapping((actor_word(a,4)<<16)|actor_word(a,6),a[0x1A],actor_word(a,2),a[1],
+                    x-camera,y-ram16(0xF704),0,0);
     }
-    /* Ani_FZEgg alternates its two damaged poses every four ticks. Continue
-     * only those pixels: no extra BossDefeated calls, explosions or RNG. */
-    if(advance && (int8_t)--a[0x1E]<0) {a[0x1E]=3;a[0x1A]^=1;}
-    unsigned slot=1+(parent-0xD000)/64;
-    s_capture_slot=slot;s_capture_space=4;
-    s_capture_frame->ox[slot]=(int16_t)ram16(parent+8);
-    s_capture_frame->oy[slot]=(int16_t)ram16(parent+12);
-    s_capture_frame->identity[slot]=0x85000000u|scene_read32(0xFF0000u+parent+4);
-    add_mapping(((uint32_t)actor_word(a,4)<<16)|actor_word(a,6),a[0x1A],actor_word(a,2),a[1],
-                (int16_t)(ram16(parent+8)-camera),(int16_t)(ram16(parent+12)-ram16(0xF704)),0,0);
+    if(priority!=1)return;
+    s_capture_slot=0;s_capture_space=4;
+    for(unsigned n=4;n<12;++n) {
+        SceneTail *fx=&s_actor_tails[n];if(!fx->seen)continue;
+        uint8_t *a=fx->object;unsigned age=(uint16_t)(ram16(0xFE04)-actor_word(a,0x30));
+        if(age>=40){fx->seen=fx->tail=0;continue;}
+        add_mapping((actor_word(a,4)<<16)|actor_word(a,6),age/8,actor_word(a,2),a[1],
+                    (int16_t)actor_word(a,8)-camera,(int16_t)actor_word(a,12)-ram16(0xF704),0,0);
+    }
 }
 /* Read-only GHZ FindFloor/FindFloor2, including neighboring blocks and flips.
  * These continuation poses must not execute guest instructions or charge
@@ -831,8 +883,17 @@ static void capture_objects(void)
     s_capture_frame->count=0;s_capture_slot=s_capture_space=0;
     memset(s_capture_frame->identity,0,sizeof s_capture_frame->identity);
     if(!s_capture_readonly){s_visible_count=0;++s_scene_tick;}
+    if(!s_capture_readonly && ram16(0xFE10)!=0x502 &&
+       s_actor_tails[1].seen && s_actor_tails[1].object[0]==0x85) {
+        memset(s_actor_tails,0,sizeof s_actor_tails);s_tail_frame=0;
+    }
     s_capture_frame->scene=gameplay()?1:video_ram[0xD000]==9?2:0;
     int cam=ram16(0xF700), level=gameplay();
+    if(level) {
+        s_capture_frame->identity[0]=SCENE_CAMERA_TAG;
+        s_capture_frame->ox[0]=(int16_t)cam;
+        s_capture_frame->oy[0]=(int16_t)ram16(0xF704);
+    }
     int left=level?scene_left(video_ram,cam,s_requested_width):cam-(s_requested_width-320)/2;
     int guest_left=level?view_left(cam,s_requested_width):left;
     for(unsigned pri=0;pri<8;++pri) {
@@ -891,7 +952,7 @@ static void capture_objects(void)
                 springyard_present(pri,cam,left);
             }
             final_cylinders_present(pri,cam,left);
-            final_cockpit_present(pri,cam);
+            final_escape_present(pri,cam);
             initial_orbinauts_present(pri,cam);
             ending_animals_present(pri,cam,left);
             entry_placements_present(pri,cam,left);
@@ -1120,6 +1181,31 @@ static int attributes_differ(const GVDP *v,uint16_t a,uint16_t b,int x,int y)
     }
     return 0;
 }
+/* Coverage of the original linked SAT, including its X=0 mask. Keep native
+ * overlay pixels while replacing the title's incomplete cached water layer. */
+static void title_sprite_coverage(const GVDP *v,int line,uint8_t *keep)
+{
+    memset(keep,0,320);
+    unsigned base=(v->reg[5]&127u)<<9,link=0,on_line=0;
+    for(unsigned n=0;n<80;++n) {
+        unsigned e=base+link*8,size=v->vram[(e+2)&65535u];
+        int y=(vram16(v,e)&1023)-128,cw=((size>>2)&3)+1,ch=(size&3)+1;
+        if(line>=y && line<y+ch*8) {
+            unsigned xword=vram16(v,e+6)&1023u;
+            if(++on_line>20 || (!xword && on_line>1))break;
+            unsigned attr=vram16(v,e+4);int iy=line-y;
+            if(attr&0x1000)iy=ch*8-1-iy;
+            for(int i=0;i<cw*8;++i) {
+                int x=(int)xword-128+i,ix=(attr&0x800)?cw*8-1-i:i;
+                if(x<0 || x>=320)continue;
+                unsigned cell=(attr&0xE000u)|(((attr&2047u)+(unsigned)(ix/8*ch+iy/8))&2047u);
+                if(pattern_pixel(v,(uint16_t)cell,ix,iy))keep[x]=1;
+            }
+        }
+        link=v->vram[(e+3)&65535u]&127u;
+        if(!link || link>=80)break;
+    }
+}
 /* Deform_GHZ's three scroll bands. Reproject the ORIGINAL and WIDE camera
  * through the same integer math, rather than moving a parallax layer by the
  * foreground's full edge-clamp correction. The latter made scenery slide
@@ -1201,6 +1287,9 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
     int hmode=v->reg[11]&3,hi=hmode==0?0:hmode==2?line&~7:line;
     int hs_a=(int16_t)vram16(v,hsbase+(unsigned)hi*4);
     int hs_b=(int16_t)vram16(v,hsbase+(unsigned)hi*4+2);
+    /* Skipping a demo selects Title before its last deformation call, which
+     * zeroes A scroll. Keep the camera that owns the installed sprite list. */
+    if(enabled() && departing_demo(s_display,video_ram))hs_a=-s_display->ox[0];
     hs_a=interpolate_scroll(line,0,hs_a);hs_b=interpolate_scroll(line,1,hs_b);
     /* SS_Load installs the repeating background before the first object pass
      * publishes a special-stage sprite list. Its original white-in already
@@ -1245,11 +1334,12 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         int row=((by>>8)&7)*128;
         for(int col=0;col<64;++col)if(video_ram[0xA440+row+col])bg_width=(col+1)*256;
     }
-    /* The title's 512px nametable is a streaming cache, not a repeating
-     * texture. Perspective rows can see its rewritten columns in a wide
-     * margin as a diagonal moving boundary. Reconstruct the full background
-     * from the live layout, using the same unwrapped row scroll. The native
-     * center below retains its original sprite mask and composition. */
+    /* The title's 512px nametable is a streaming cache. Compose water as one
+     * continuous layer across the center and margins; copying cached water
+     * back over its middle reintroduces a moving seam at the old boundary. */
+    int title_water=s_title_world && width>320 && by>=152;
+    uint8_t title_keep[320];
+    if(title_water)title_sprite_coverage(v,line,title_keep);
     int bg_base=-origin-hs_b;
     if(level) {
         int margin=(width-nw)/2;
@@ -1275,6 +1365,7 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         }
         uint16_t a=fg.attr,b=bg.attr;
         uint8_t ap=gtile_row_pixel(&fg),bp=gtile_row_pixel(&bg);
+        if(title_water && nx>=0 && nx<320 && ap)title_keep[nx]=1;
         if(level && (wx<0 || wx>=s_stage_width))ap=0;
         /* Menus have a centered foreground composition, with full-width
          * scenery underneath. Special-stage planes are repeating art. */
@@ -1323,7 +1414,11 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
          * surrounding scenery, following the live scene palette. Before
          * the first special-stage sprite publication, the original center
          * likewise owns its early background-only fade composition. */
-        if(origin>=0)memcpy(out+origin,native,(size_t)nw*sizeof(uint32_t));
+        if(origin>=0) {
+            if(title_water) {
+                for(int x=0;x<nw;++x)if(title_keep[x])out[origin+x]=native[x];
+            } else memcpy(out+origin,native,(size_t)nw*sizeof(uint32_t));
+        }
     } else if(s_display) {
         draw_scene_sprites(v,line,out,width,origin,palette,world_steps>=0?world_palette:NULL);
     } else {
@@ -1490,6 +1585,7 @@ static void presentation_capture(const GVDP *v,int line,const uint32_t *pixels,
     unsigned row=mode==0?0:mode==2?(unsigned)line&~7u:(unsigned)line;
     f->scroll[line][0]=(int16_t)vram16(v,base+row*4);
     f->scroll[line][1]=(int16_t)vram16(v,base+row*4+2);
+    if(enabled() && departing_demo(&f->scene,f->ram))f->scroll[line][0]=-f->scene.ox[0];
     /* This stock S1 adapter does not own optional private-provider art. */
     if(raster && raster->private_planes)f->valid=0;
     f->lines=line+1;
