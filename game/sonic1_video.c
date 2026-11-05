@@ -257,9 +257,10 @@ static int s_loader_active, s_rings_adopted;
 typedef struct { int x, y; unsigned tick; } RingSpark;
 static RingSpark s_sparks[64];
 static unsigned s_spark_next;
-typedef struct { uint8_t object[64]; uint16_t slot; uint8_t seen, tail; } EndingAnimal;
-static EndingAnimal s_ending_animals[128];
-static unsigned s_ending_frame;
+typedef struct { uint8_t object[64]; uint16_t slot; uint8_t seen, tail; } SceneTail;
+/* Scene-exclusive continuations share storage and reset at level setup. */
+static SceneTail s_actor_tails[128];
+static unsigned s_tail_frame;
 
 /* Object-loader decisions and captured mappings belong to the saved timeline.
  * Interpolation images, selected row pointers and immutable ROM art do not. */
@@ -270,8 +271,8 @@ typedef struct {
     Placement placements[SCENE_PLACEMENTS];
     RingSpark sparks[64];
     unsigned visible_objects[128];
-    EndingAnimal ending_animals[128];
-    unsigned ending_frame;
+    SceneTail actor_tails[128];
+    unsigned tail_frame;
 } VideoState;
 enum { SCENE_HEADER = sizeof(SceneFrame)-offsetof(SceneFrame,count) };
 
@@ -291,8 +292,8 @@ size_t s1_video_rb_save(void *dst,size_t cap)
     memcpy(state.placements,s_placements,sizeof s_placements);
     memcpy(state.sparks,s_sparks,sizeof s_sparks);
     memcpy(state.visible_objects,s_visible_objects,sizeof s_visible_objects);
-    memcpy(state.ending_animals,s_ending_animals,sizeof s_ending_animals);
-    state.ending_frame=s_ending_frame;
+    memcpy(state.actor_tails,s_actor_tails,sizeof s_actor_tails);
+    state.tail_frame=s_tail_frame;
     uint8_t *out=dst;memcpy(out,&state,sizeof state);out+=sizeof state;
     for(unsigned n=0;n<4;++n) {
         memcpy(out,&frames[n]->count,SCENE_HEADER);out+=SCENE_HEADER;
@@ -312,7 +313,7 @@ int s1_video_rb_load(const void *src,size_t len)
         if(state.visible_objects[n]<0xD000 || state.visible_objects[n]>=0xF000 ||
            (state.visible_objects[n]&63))return 0;
     for(unsigned n=0;n<128;++n) {
-        const EndingAnimal *a=&state.ending_animals[n];
+        const SceneTail *a=&state.actor_tails[n];
         if(a->seen>1 || a->tail>1 || (a->slot &&
            (a->slot<0xD800 || a->slot>=0xF000 || (a->slot&63))))return 0;
     }
@@ -343,8 +344,8 @@ int s1_video_rb_load(const void *src,size_t len)
     memcpy(s_placements,state.placements,sizeof s_placements);
     memcpy(s_sparks,state.sparks,sizeof s_sparks);
     memcpy(s_visible_objects,state.visible_objects,sizeof s_visible_objects);
-    memcpy(s_ending_animals,state.ending_animals,sizeof s_ending_animals);
-    s_ending_frame=state.ending_frame;
+    memcpy(s_actor_tails,state.actor_tails,sizeof s_actor_tails);
+    s_tail_frame=state.tail_frame;
     SceneFrame *frames[]={&s_build,&s_history[0],&s_history[1],&s_history[2]};
     for(unsigned n=0;n<4;++n) {
         memcpy(&frames[n]->count,headers[n],SCENE_HEADER);
@@ -572,8 +573,39 @@ static void initial_orbinauts_present(unsigned priority,int camera)
                     (int16_t)(ram16(o+8)-camera),(int16_t)(ram16(o+12)-ram16(0xF704)),0,0);
     }
 }
-static unsigned animal_word(const uint8_t *p,unsigned a) { return (p[a]<<8)|p[a+1]; }
-static void animal_put(uint8_t *p,unsigned a,unsigned v) { p[a]=(uint8_t)(v>>8);p[a+1]=(uint8_t)v; }
+static unsigned actor_word(const uint8_t *p,unsigned a) { return (p[a]<<8)|p[a+1]; }
+static void actor_put(uint8_t *p,unsigned a,unsigned v) { p[a]=(uint8_t)(v>>8);p[a+1]=(uint8_t)v; }
+static void final_cockpit_present(unsigned priority,int camera)
+{
+    if(priority!=2 || s_requested_width<=320 || !gameplay() || ram16(0xFE10)!=0x502)return;
+    SceneTail *tail=&s_actor_tails[0];
+    unsigned frame=ram16(0xFE04);int advance=frame!=s_tail_frame;s_tail_frame=frame;
+    for(unsigned o=0xD000;o<0xF000;o+=64) {
+        if(video_ram[o]!=0x85 || video_ram[o+0x24]!=8)continue;
+        unsigned parent=scene_read32(0xFF0000u+o+0x34)&65535u;
+        if(parent<0xD000 || parent>=0xF000 || video_ram[parent]!=0x85 ||
+           video_ram[parent+0x24]!=2 || video_ram[parent+0x34]!=14 || video_ram[parent+0x21])continue;
+        memcpy(tail->object,video_ram+o,64);tail->slot=(uint16_t)o;tail->seen=tail->tail=1;
+        return; /* the original list still owns the live cockpit */
+    }
+    if(!tail->seen || tail->object[0]!=0x85)return;
+    uint8_t *a=tail->object;
+    unsigned parent=((actor_word(a,0x34)<<16)|actor_word(a,0x36))&65535u;
+    if(parent<0xD000 || parent>=0xF000 || video_ram[parent]!=0x85 ||
+       video_ram[parent+0x24]!=2 || video_ram[parent+0x34]!=14 || video_ram[parent+0x21]) {
+        tail->seen=tail->tail=0;return;
+    }
+    /* Ani_FZEgg alternates its two damaged poses every four ticks. Continue
+     * only those pixels: no extra BossDefeated calls, explosions or RNG. */
+    if(advance && (int8_t)--a[0x1E]<0) {a[0x1E]=3;a[0x1A]^=1;}
+    unsigned slot=1+(parent-0xD000)/64;
+    s_capture_slot=slot;s_capture_space=4;
+    s_capture_frame->ox[slot]=(int16_t)ram16(parent+8);
+    s_capture_frame->oy[slot]=(int16_t)ram16(parent+12);
+    s_capture_frame->identity[slot]=0x85000000u|scene_read32(0xFF0000u+parent+4);
+    add_mapping(((uint32_t)actor_word(a,4)<<16)|actor_word(a,6),a[0x1A],actor_word(a,2),a[1],
+                (int16_t)(ram16(parent+8)-camera),(int16_t)(ram16(parent+12)-ram16(0xF704)),0,0);
+}
 /* Read-only GHZ FindFloor/FindFloor2, including neighboring blocks and flips.
  * These continuation poses must not execute guest instructions or charge
  * cycles: the cutscene's native object list and timing remain authoritative. */
@@ -604,9 +636,9 @@ static int animal_floor(int x,int y)
 static void animal_move(uint8_t *p)
 {
     for(unsigned a=8;a<=12;a+=4) {
-        uint32_t pos=((uint32_t)animal_word(p,a)<<16)|animal_word(p,a+2);
-        pos+=(uint32_t)((int16_t)animal_word(p,a==8?0x10:0x12)*256);
-        animal_put(p,a,pos>>16);animal_put(p,a+2,pos);
+        uint32_t pos=((uint32_t)actor_word(p,a)<<16)|actor_word(p,a+2);
+        pos+=(uint32_t)((int16_t)actor_word(p,a==8?0x10:0x12)*256);
+        actor_put(p,a,pos>>16);actor_put(p,a+2,pos);
     }
 }
 /* Anml's ending-only branches, applied only after the native object is gone.
@@ -614,36 +646,36 @@ static void animal_move(uint8_t *p)
 static void animal_continue(uint8_t *p)
 {
     unsigned routine=p[0x24],subtype=p[0x28];
-    int delta=(int16_t)(ram16(0xD008)-animal_word(p,8)-184);
+    int delta=(int16_t)(ram16(0xD008)-actor_word(p,8)-184);
     if(routine==20 || routine==22) {
-        if((uint16_t)(ram16(0xD008)-animal_word(p,8))>=184)return;
+        if((uint16_t)(ram16(0xD008)-actor_word(p,8))>=184)return;
         routine=p[0x24]=14;
-        animal_put(p,0x10,animal_word(p,0x32));animal_put(p,0x12,animal_word(p,0x34));
+        actor_put(p,0x10,actor_word(p,0x32));actor_put(p,0x12,actor_word(p,0x34));
     } else if(routine==26) {
         if(delta>=0)return;
         routine=p[0x24]=4;
-        animal_put(p,0x10,animal_word(p,0x32));animal_put(p,0x12,animal_word(p,0x34));
+        actor_put(p,0x10,actor_word(p,0x32));actor_put(p,0x12,actor_word(p,0x34));
     } else if(routine>=24 && routine<=38 && delta>=0)return;
     int stationary=routine==24 || routine==28 || routine==32 || routine==36;
-    if(stationary){animal_put(p,0x10,0);animal_put(p,0x32,0);}
+    if(stationary){actor_put(p,0x10,0);actor_put(p,0x32,0);}
     animal_move(p);
     int flying=routine==6 || routine==10 || routine==14 || routine==24 || routine==38;
-    animal_put(p,0x12,animal_word(p,0x12)+(flying?24:56));
-    int falling=(int16_t)animal_word(p,0x12)>=0;
+    actor_put(p,0x12,actor_word(p,0x12)+(flying?24:56));
+    int falling=(int16_t)actor_word(p,0x12)>=0;
     if(!flying)p[0x1A]=(uint8_t)!falling;
     if(falling) {
-        int d=animal_floor((int16_t)animal_word(p,8),(int16_t)animal_word(p,12)+12);
+        int d=animal_floor((int16_t)actor_word(p,8),(int16_t)actor_word(p,12)+12);
         if(d<0) {
-            animal_put(p,12,animal_word(p,12)+d);animal_put(p,0x12,animal_word(p,0x34));
+            actor_put(p,12,actor_word(p,12)+d);actor_put(p,0x12,actor_word(p,0x34));
             int turn=0;
             if(routine==38 || routine==40){p[0x29]^=255;turn=p[0x29]==0;}
             else if(routine==30 || routine==34 || (routine==14 && subtype!=10))turn=1;
-            if(turn){animal_put(p,0x10,-(int16_t)animal_word(p,0x10));p[1]^=1;}
+            if(turn){actor_put(p,0x10,-(int16_t)actor_word(p,0x10));p[1]^=1;}
         }
     }
     if(flying && (int8_t)--p[0x1E]<0){p[0x1E]=1;p[0x1A]=(p[0x1A]+1)&1;}
     if(routine==24 || routine==28 || routine==32 || routine==36)
-        p[1]=(uint8_t)((p[1]&~1u)|(animal_word(p,8)>=ram16(0xD008)));
+        p[1]=(uint8_t)((p[1]&~1u)|(actor_word(p,8)>=ram16(0xD008)));
 }
 /* Preview resting poses before original activation; continue only the visible
  * tail after native deletion. The native scene itself remains unchanged. */
@@ -652,25 +684,25 @@ static void ending_animals_present(unsigned priority,int camera,int left)
     if(priority!=6 || s_requested_width<=320 || !gameplay() ||
        (video_ram[0xF600]&127)!=24 || video_ram[0xFE10]!=6)return;
     load_placements();s_capture_slot=0;s_capture_space=4;
-    unsigned frame=ram16(0xFE04);int advance=frame!=s_ending_frame;
-    s_ending_frame=frame;
+    unsigned frame=ram16(0xFE04);int advance=frame!=s_tail_frame;
+    s_tail_frame=frame;
     for(unsigned i=0;i<s_placement_count && i<128;++i) {
         Placement *p=&s_placements[i];
         if(p->id!=0x28 || p->subtype<10 || p->subtype>20)continue;
-        EndingAnimal *animal=&s_ending_animals[i];
+        SceneTail *animal=&s_actor_tails[i];
         unsigned o=animal->slot;
         if(!animal->seen)o=placement_object(p);
         if(o && video_ram[o]==0x28 && video_ram[o+0x28]==p->subtype &&
-           (!animal->seen || abs((int16_t)(ram16(o+8)-animal_word(animal->object,8)))<32)) {
+           (!animal->seen || abs((int16_t)(ram16(o+8)-actor_word(animal->object,8)))<32)) {
             memcpy(animal->object,video_ram+o,64);animal->slot=(uint16_t)o;
             animal->seen=1;animal->tail=1;p->loaded=1;continue;
         }
         if(animal->seen && animal->tail) {
             if(video_ram[0xD000]==0x87 && video_ram[0xD025]>=8){animal->tail=0;continue;}
             if(advance)animal_continue(animal->object);
-            uint8_t *a=animal->object;int x=(int16_t)animal_word(a,8),y=(int16_t)animal_word(a,12)-ram16(0xF704);
+            uint8_t *a=animal->object;int x=(int16_t)actor_word(a,8),y=(int16_t)actor_word(a,12)-ram16(0xF704);
             if(x+32<left || x-32>=left+s_requested_width || y+32<0 || y-32>=224){animal->tail=0;continue;}
-            add_mapping(((uint32_t)animal_word(a,4)<<16)|animal_word(a,6),a[0x1A],animal_word(a,2),a[1],
+            add_mapping(((uint32_t)actor_word(a,4)<<16)|actor_word(a,6),a[0x1A],actor_word(a,2),a[1],
                         x-camera,y,0,0);continue;
         }
         if(p->loaded || video_ram[0xD000]!=1 || p->x+24<left ||
@@ -845,8 +877,8 @@ static void capture_objects(void)
                     if(p->x+w>lo && p->x<hi)visible=1;
                     if(p->x+w>guest_lo && p->x<guest_hi)guest_visible=1;
                 }
-                /* A camera-only reframing must not change the visibility
-                 * flags consumed by guest object lifetimes and events. */
+                /* Presentation-only reframing retains the existing guest
+                 * visibility flags, lifetimes and event timing. */
                 if(guest_visible && !s_capture_readonly && s_visible_count<128)s_visible_objects[s_visible_count++]=o;
                 if(!visible)s_capture_frame->count=first;
             }
@@ -859,6 +891,7 @@ static void capture_objects(void)
                 springyard_present(pri,cam,left);
             }
             final_cylinders_present(pri,cam,left);
+            final_cockpit_present(pri,cam);
             initial_orbinauts_present(pri,cam);
             ending_animals_present(pri,cam,left);
             entry_placements_present(pri,cam,left);
@@ -920,7 +953,7 @@ int s1_video_hook(uint32_t pc)
     if(pc==0xD8DA && !video_ram[0xF76C]) {
         s_placement_base=s_placement_count=0;s_loader_active=s_rings_adopted=0;
         memset(s_sparks,0,sizeof s_sparks);
-        memset(s_ending_animals,0,sizeof s_ending_animals);s_ending_frame=0;
+        memset(s_actor_tails,0,sizeof s_actor_tails);s_tail_frame=0;
     }
     if(pc==0xD980 && gameplay() && !native_activation() && (enabled() || s_loader_active)) { spawn_scene();return 1; }
     if(!enabled())return 0;
@@ -1212,11 +1245,11 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         int row=((by>>8)&7)*128;
         for(int col=0;col<64;++col)if(video_ram[0xA440+row+col])bg_width=(col+1)*256;
     }
-    /* The title streams water cells into its circular hardware nametable.
-     * Repeating the static level layout loses those updates at some scroll
-     * phases, creating a seam against the hardware-composed native center.
-     * Extend the same live nametable through the water margins. */
-    int title_water=s_title_world && by>=0x98;
+    /* The title's 512px nametable is a streaming cache, not a repeating
+     * texture. Perspective rows can see its rewritten columns in a wide
+     * margin as a diagonal moving boundary. Reconstruct the full background
+     * from the live layout, using the same unwrapped row scroll. The native
+     * center below retains its original sprite mask and composition. */
     int bg_base=-origin-hs_b;
     if(level) {
         int margin=(width-nw)/2;
@@ -1237,8 +1270,8 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
             gtile_row_begin(&fg,v->vram,attr,level?wx:nx-hs_a,level?wy:line+(v->vsram[0]&1023));
         }
         if (!bg.remaining) {
-            uint16_t attr=bg_world && !title_water?world_attr(background_x,by,1):plane_attr(v,base_b,bx,by);
-            gtile_row_begin(&bg,v->vram,attr,bg_world && !title_water?background_x:bx,by);
+            uint16_t attr=bg_world?world_attr(background_x,by,1):plane_attr(v,base_b,bx,by);
+            gtile_row_begin(&bg,v->vram,attr,bg_world?background_x:bx,by);
         }
         uint16_t a=fg.attr,b=bg.attr;
         uint8_t ap=gtile_row_pixel(&fg),bp=gtile_row_pixel(&bg);
@@ -1271,7 +1304,7 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
                     int rx=reference_bx;
                     if(bg_width>0){rx%=bg_width;if(rx<0)rx+=bg_width;}
                     uint16_t expected=plane_attr(v,base_b,reference_bx,by);
-                    uint16_t actual=title_water?plane_attr(v,base_b,reference_bx,by):world_attr(rx,by,1);
+                    uint16_t actual=world_attr(rx,by,1);
                     ++s_bg_checks;s_bg_errors+=attributes_differ(v,actual,expected,reference_bx,by);
                 }
             }

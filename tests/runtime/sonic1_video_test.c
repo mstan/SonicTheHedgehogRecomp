@@ -134,9 +134,9 @@ int main(int argc,char **argv)
     word(g_ram,0xFF1C,0x31A);
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(out[0]==0xFFFF0000u && out[795]==0xFFFF0000u);
-    /* Title water uses live streamed nametable cells, which can differ from
-     * both static chunks. The native center and extended margins must use
-     * the same updated water patterns at each scroll phase. */
+    /* A rewritten column in the circular nametable must not sweep through
+     * the extended water as a diagonal boundary. The layout and live tile
+     * art own the margins; native composition remains authoritative inside. */
     g_ram[0xA441]=1;g_ram[0xA442]=2;
     for(int n=0;n<256;++n)word(g_ram,512+n*2,1);
     for(int n=0;n<4;++n)word(g_ram,0xB008+n*2,2);
@@ -145,6 +145,8 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,0,native,320,out,796);
     sonic1_video.scanline(&v,200,native,320,out,796);
     CHECK(out[200]==0xFF0000FFu);
+    CHECK(out[700]==0xFFFF0000u);
+    CHECK(!memcmp(out+238,native,sizeof native));
     memset(v.vram+0xE000+25*128,0,128);
     g_ram[0xA441]=g_ram[0xA442]=0;memset(g_ram+512,0,512);
     memset(g_ram+0xB008,0,8);word(v.vram,0xFC02,0);
@@ -835,6 +837,30 @@ int main(int argc,char **argv)
     word(g_ram,0xD808,9500);g_ram[0xD801]=4;
     s1_video_hook(0xD65E);s1_video_hook(0xD746);
     CHECK(g_ram[0xD801]&128); /* prior guest visibility survives reframing */
+    /* A damaged cockpit gets a render-only tail after native deletion.
+     * Guest flags/timing stay exact, and the tail belongs to rewind state. */
+    word(g_ram,0xD808,10400);g_ram[0xD801]=4;g_ram[0xD800]=0x85;
+    g_ram[0xD824]=8;m68k_write32(0xFFD834,0xFFFFD840);
+    g_ram[0xD840]=0x85;g_ram[0xD864]=2;g_ram[0xD874]=14;
+    word(g_ram,0xD848,10408);word(g_ram,0xD84C,10);
+    m68k_write32(0xFFD844,0x1000);
+    word(g_ram,0xD802,0x8001);memset(v.vram+32,0x22,32);v.cram[2]=0xE00;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    CHECK(!(g_ram[0xD801]&128));
+    g_ram[0xD800]=0;word(g_ram,0xAC00+2*128,0);
+    memcpy(ram_before,g_ram,sizeof g_ram);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    upload_sat(&v);sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,10,native,320,out,796);
+    CHECK(out[662]==0xFF0000FFu);
+    size_t cockpit_size=s1_video_rb_save(NULL,0);void *cockpit_state=malloc(cockpit_size);
+    CHECK(cockpit_state && s1_video_rb_save(cockpit_state,cockpit_size)==cockpit_size);
+    g_ram[0xD840]=0;s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    g_ram[0xD840]=0x85;CHECK(s1_video_rb_load(cockpit_state,cockpit_size));free(cockpit_state);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,10,native,320,out,796);CHECK(out[662]==0xFF0000FFu);
     g_ram[0xF600]=24;sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
     CHECK(strstr(reply,"\"view_left\":9746,"));
     word(g_ram,0xFE10,0x600);g_ram[0xF742]=0;
