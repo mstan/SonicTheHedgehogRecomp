@@ -360,6 +360,12 @@ kind = "game_hook"
 addr = 0xF178
 kind = "game_hook"
 
+# LavaTag has an additional BMI before its range CMP. Rebase the input to
+# its SUB so both original deletion branches use the expanded bounds.
+[[widescreen_site]]
+addr = 0xF200
+kind = "game_hook"
+
 [[widescreen_site]]
 addr = 0xF6C2
 kind = "game_hook"

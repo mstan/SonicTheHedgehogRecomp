@@ -1112,6 +1112,19 @@ int s1_video_hook(uint32_t pc)
         g_cpu.SR=(uint16_t)((g_cpu.SR&~15u)|(g_cpu.D[0]?0:4));
         return 1;
     }
+    case 0xF200: {
+        /* LavaTag's SUB precedes a private BMI as well as the usual range
+         * CMP/BHI. Adjust its input, then let the original SUB set flags.
+         * Patching only the later CMP cannot retain left-margin hazards. */
+        if(gameplay()) {
+            int lo,hi;activation_bounds(ram16(0xF700),s_requested_width,&lo,&hi);
+            int x=(int)(g_cpu.D[0]&65535u);
+            unsigned outside=x<lo || x>=hi;
+            unsigned input=(g_cpu.D[1]+(outside?641u:320u))&65535u;
+            g_cpu.D[0]=(g_cpu.D[0]&0xFFFF0000u)|input;
+        }
+        return 0;
+    }
     default:
         if(gameplay()) {
             /* All remaining configured sites are out_of_range's CMP. D0

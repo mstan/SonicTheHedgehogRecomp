@@ -987,5 +987,35 @@ int main(int argc,char **argv)
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
     CHECK(strstr(reply,"\"sprites\":1"));
+    /* The lava tag has a negative-distance branch before its range CMP.
+     * Its original SUB must see a positive in/out result for either edge;
+     * native output and recorded-demo execution keep the original operand. */
+    memset(g_ram,0,sizeof g_ram);s1_video_hook(0xD8DA);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;word(g_ram,0xFE10,0x200);
+    for(int n=0;n<20;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,0x160);
+    CHECK(sonic1_video.configure("16:9"));
+    CHECK(sonic1_video.width(1600,900,320,224)==398);
+    const unsigned lava_positions[]={0,128,896,1024};
+    const unsigned lava_results[]={641,320,320,641};
+    for(unsigned n=0;n<4;++n) {
+        g_cpu.D[0]=0xC0DE0000u|lava_positions[n];g_cpu.D[1]=0x12340080u;
+        g_cpu.SR=0x230F;cpu_before=g_cpu;memcpy(ram_before,g_ram,sizeof g_ram);
+        CHECK(!s1_video_hook(0xF200));
+        CHECK(((g_cpu.D[0]-g_cpu.D[1])&65535u)==lava_results[n]);
+        CHECK((g_cpu.D[0]>>16)==0xC0DE && g_cpu.D[1]==cpu_before.D[1]);
+        CHECK(g_cpu.SR==cpu_before.SR && !memcmp(ram_before,g_ram,sizeof g_ram));
+    }
+    /* A stage-start window extends left of zero. The native subtraction
+     * wraps $FF80, but the host bounds comparison must remain signed. */
+    word(g_ram,0xF700,0);CHECK(sonic1_video.configure("32:9"));
+    CHECK(sonic1_video.width(3200,900,320,224)==796);
+    g_cpu.D[0]=0x380;g_cpu.D[1]=0xFF80;
+    CHECK(!s1_video_hook(0xF200));
+    CHECK(((g_cpu.D[0]-g_cpu.D[1])&65535u)==320);
+    g_cpu=cpu_before;word(g_ram,0xFFF0,1);cpu_before=g_cpu;
+    CHECK(!s1_video_hook(0xF200) && !memcmp(&g_cpu,&cpu_before,sizeof g_cpu));
+    word(g_ram,0xFFF0,0);CHECK(sonic1_video.configure("off"));
+    CHECK(!s1_video_hook(0xF200) && !memcmp(&g_cpu,&cpu_before,sizeof g_cpu));
     return 0;
 }
