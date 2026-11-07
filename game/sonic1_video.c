@@ -165,7 +165,7 @@ static uint8_t pattern_pixel(const GVDP *v, uint16_t attr, int x, int y)
  * guest VRAM, PLC order and simulation clocks remain untouched. Format and
  * XOR rows follow REV00 NemDec ($1440), not a second machine execution. */
 typedef struct { uint8_t pixels[8192];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
-static SpriteArt s_sprite_art[7];
+static SpriteArt s_sprite_art[9];
 static unsigned art_bits(unsigned bit,unsigned count)
 {
     unsigned value=0;
@@ -207,8 +207,8 @@ static int decode_sprite_art(SpriteArt *art,unsigned address)
 static uint8_t sprite_pixel(const GVDP *v,unsigned asset,uint16_t attr,int x,int y)
 {
     if(!asset || !enabled() || s_requested_width<=320)return pattern_pixel(v,attr,x,y);
-    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324};
-    static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400};
+    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324,0x5CC62,0x339DA};
+    static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400,0x400,0x3CC};
     SpriteArt *art=&s_sprite_art[asset-1];
     if(!art->ready) {
         art->base=bases[asset-1];
@@ -266,6 +266,8 @@ static void native_publish(void);
 static void interpolation_sprite_delta(const SceneSprite *sprite,int line,int *dx,int *dy);
 static unsigned s_serial, s_scene_tick, s_spawned, s_pool_pressure, s_ring_collected;
 static unsigned s_visible_objects[128], s_visible_count;
+static uint16_t s_overflow_objects[128];
+static unsigned s_overflow_count;
 typedef struct { unsigned address; uint16_t x, y; uint8_t id, subtype, state, loaded; } Placement;
 static Placement s_placements[SCENE_PLACEMENTS];
 static unsigned s_placement_count, s_placement_base;
@@ -289,6 +291,8 @@ typedef struct {
     unsigned visible_objects[128];
     SceneTail actor_tails[128];
     unsigned tail_frame;
+    uint16_t overflow_objects[128];
+    unsigned overflow_count;
 } VideoState;
 enum { SCENE_HEADER = sizeof(SceneFrame)-offsetof(SceneFrame,count) };
 
@@ -310,6 +314,8 @@ size_t s1_video_rb_save(void *dst,size_t cap)
     memcpy(state.visible_objects,s_visible_objects,sizeof s_visible_objects);
     memcpy(state.actor_tails,s_actor_tails,sizeof s_actor_tails);
     state.tail_frame=s_tail_frame;
+    state.overflow_count=s_overflow_count;
+    memcpy(state.overflow_objects,s_overflow_objects,sizeof s_overflow_objects);
     uint8_t *out=dst;memcpy(out,&state,sizeof state);out+=sizeof state;
     for(unsigned n=0;n<4;++n) {
         memcpy(out,&frames[n]->count,SCENE_HEADER);out+=SCENE_HEADER;
@@ -318,13 +324,17 @@ size_t s1_video_rb_save(void *dst,size_t cap)
     }
     return need;
 }
-int s1_video_rb_load(const void *src,size_t len)
+static int video_state_load(const void *src,size_t len,int apply)
 {
     VideoState state;
     if(!src || len<sizeof state)return 0;
     memcpy(&state,src,sizeof state);
     if(state.magic!=0x53315631u || state.placement_count>SCENE_PLACEMENTS ||
-       state.visible_count>128 || state.loader_active>1 || state.rings_adopted>1)return 0;
+       state.visible_count>128 || state.overflow_count>128 ||
+       state.loader_active>1 || state.rings_adopted>1)return 0;
+    for(unsigned n=0;n<state.overflow_count;++n)
+        if(state.overflow_objects[n]<0xD000 || state.overflow_objects[n]>=0xF000 ||
+           (state.overflow_objects[n]&63))return 0;
     for(unsigned n=0;n<state.visible_count;++n)
         if(state.visible_objects[n]<0xD000 || state.visible_objects[n]>=0xF000 ||
            (state.visible_objects[n]&63))return 0;
@@ -350,15 +360,18 @@ int s1_video_rb_load(const void *src,size_t len)
         sprites[n]=in;in+=bytes;left-=bytes;
         for(unsigned k=0;k<counts[n];++k) {
             SceneSprite sprite;memcpy(&sprite,sprites[n]+k*sizeof sprite,sizeof sprite);
-            if(sprite.asset>7 || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
+            if(sprite.asset>9 || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
         }
     }
     if(left)return 0;
+    if(!apply)return 1;
     s_serial=state.serial;s_scene_tick=state.scene_tick;s_spawned=state.spawned;
     s_pool_pressure=state.pool_pressure;s_ring_collected=state.ring_collected;
     s_placement_count=state.placement_count;s_placement_base=state.placement_base;
     s_loader_active=state.loader_active;s_rings_adopted=state.rings_adopted;
     s_spark_next=state.spark_next;s_visible_count=state.visible_count;
+    s_overflow_count=state.overflow_count;
+    memcpy(s_overflow_objects,state.overflow_objects,sizeof s_overflow_objects);
     memcpy(s_placements,state.placements,sizeof s_placements);
     memcpy(s_sparks,state.sparks,sizeof s_sparks);
     memcpy(s_visible_objects,state.visible_objects,sizeof s_visible_objects);
@@ -371,6 +384,39 @@ int s1_video_rb_load(const void *src,size_t len)
     }
     s_display=NULL;s_title_world=0;interpolation_reset();
     return 1;
+}
+int s1_video_rb_load(const void *src,size_t len)
+{
+    return video_state_load(src,len,1);
+}
+
+/* The shared disk envelope requires a fixed-size, preflightable host section.
+ * Keep the compact rollback representation inside a zero-filled reservation;
+ * disk loads then recover the same placements and displayed mappings. */
+typedef struct { uint32_t magic,bytes,mode,reserved;double ratio; } VideoDiskHeader;
+size_t s1_video_state_size(void)
+{
+    return sizeof(VideoDiskHeader)+sizeof(VideoState)+
+        4*(SCENE_HEADER+SCENE_SPRITES*sizeof(SceneSprite));
+}
+int s1_video_state_save(void *dst,size_t size)
+{
+    if(!dst || size!=s1_video_state_size())return 0;
+    memset(dst,0,size);
+    VideoDiskHeader header={0};
+    header.magic=0x53314431u;header.mode=(uint32_t)s_mode;header.ratio=s_ratio;
+    header.bytes=(uint32_t)s1_video_rb_save((uint8_t*)dst+sizeof header,size-sizeof header);
+    if(!header.bytes)return 0;
+    memcpy(dst,&header,sizeof header);return 1;
+}
+int s1_video_state_load(const void *src,size_t size,int apply)
+{
+    if(!src || size!=s1_video_state_size())return 0;
+    VideoDiskHeader header;memcpy(&header,src,sizeof header);
+    if(header.magic!=0x53314431u || header.reserved || header.mode!=(uint32_t)s_mode ||
+       (s_mode==VIDEO_RATIO && header.ratio!=s_ratio) ||
+       header.bytes>size-sizeof header)return 0;
+    return video_state_load((const uint8_t*)src+sizeof header,header.bytes,apply);
 }
 
 static uint8_t scene_read8(unsigned a)
@@ -411,6 +457,7 @@ static void activation_bounds(int camera,int w,int *lo,int *hi)
 }
 static void scene_mode_changed(int was_enabled)
 {
+    s_overflow_count=0;
     if (was_enabled == enabled()) return;
     s_rings_adopted=0;
     for (unsigned i=0;i<s_placement_count;++i)
@@ -435,7 +482,9 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
         SceneSprite *s=&s_capture_frame->sprites[s_capture_frame->count++];
         s->x=x+dx; s->y=y+dy; s->attr=attr; s->size=(uint8_t)size; s->hud=(uint8_t)hud;s->slot=(uint8_t)s_capture_slot;s->space=(uint8_t)s_capture_space;
         unsigned owner=s_capture_slot?video_ram[0xD000+(s_capture_slot-1)*64]:0;
-        s->asset=(uint8_t)(owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:0);
+        /* The shared Eggmobile mappings include the exhaust. Wider object
+         * activation can expose them before their PLC completes as well. */
+        s->asset=(uint8_t)(owner==0x5C?9:map==0x17D0C?8:owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:0);
     }
 }
 static void load_placements(void)
@@ -471,6 +520,9 @@ static unsigned placement_object(const Placement *p)
         if (!video_ram[o]) continue;
         if (p->state && video_ram[o+0x23]==p->state) return o;
         if (!p->state && video_ram[o]==p->id) {
+            /* Pylon owns the level-wide screen-space decoration; its X is
+             * derived from the camera rather than its sole placement. */
+            if(p->id==0x5C)return o;
             if(ram16(o+8)==p->x)return o;
             /* BasicPlatform moves on its first pass. Its persistent origin,
              * rather than the displaced pose, identifies a native placement
@@ -577,6 +629,29 @@ static void final_cylinders_present(unsigned priority,int camera,int left)
         add_mapping(map,0,gfx,i>=2?2:0,x-camera,y-ram16(0xF704),0,0);
         for(unsigned n=first;n<s_capture_frame->count;++n)s_capture_frame->sprites[n].asset=4;
     }
+}
+static void labyrinth_boss_present(unsigned priority,int camera,int left)
+{
+    /* DLE_LZ3 waits for the native camera gate. An expanded view can see
+     * the stationary ship first; compose its initial ROM pose until the
+     * original boss exists, without starting its chase or allocating slots. */
+    unsigned event=video_ram[0xF742],pending=0;
+    if(priority!=4 || !gameplay() || s_requested_width<=320 ||
+       ram16(0xFE10)!=0x102 || event>2 || ram16(0xF704)>=0x600)return;
+    for(unsigned o=0xD800;o<0xF000;o+=64)if(video_ram[o]==0x77) {
+        if(video_ram[o+0x24]>=2)return;
+        pending=1;
+    }
+    /* DLE can allocate after ExecuteObjects. Cover that uninitialized tick
+     * too, but never recreate a boss removed after the event has started. */
+    if(event && !pending)return;
+    const int x=0x1E10,y=0x5C0;
+    if(x+40<=left || x-40>=left+s_requested_width)return;
+    s_capture_slot=0;s_capture_space=4;
+    static const unsigned frames[]={0,1,10};
+    for(unsigned i=0;i<3;++i)
+        add_mapping(0x17D0C,frames[i],0x400,4,
+                    x-camera,y-ram16(0xF704),0,0);
 }
 /* Orb_Main initializes the head but only its satellites queue sprites in
  * the first object pass. During the frozen level fade, show that already
@@ -967,20 +1042,33 @@ static void collect_host_rings(void)
         }
     }
 }
-/* Card departure deliberately retains native activation. Present the static
- * GHZ placements visible in the wider view until their original objects queue
+/* Card departure deliberately retains native activation. Present initial
+ * placements visible in the wider view until their original objects queue
  * sprites; no early collision objects or ring collection are introduced. */
 static void entry_placements_present(unsigned priority,int camera,int left)
 {
-    if(!gameplay() || video_ram[0xFE10]!=0 || s_requested_width<=320 ||
-       (priority!=2 && priority!=4))return;
+    if(!gameplay() || results_world() || video_ram[0xD5C0]==0x3A || s_requested_width<=320 ||
+       (priority!=2 && priority!=3 && priority!=4))return;
     int entry=(video_ram[0xF600]&128)!=0;
     for(unsigned o=0xD080;o<0xD200;o+=64)if(video_ram[o]==0x34)entry=1;
-    if(!entry)return;
     load_placements();s_capture_slot=0;s_capture_space=4;
     for(unsigned i=0;i<s_placement_count;++i) {
         const Placement *p=&s_placements[i];
-        if(p->id==0x25 && priority==2) {
+        if(priority==3 && (p->id==0x1F || p->id==0x22)) {
+            if(p->x+32<left || (int)p->x-32>=left+s_requested_width)continue;
+            unsigned o=placement_object(p);
+            if(!entry && (!o || video_ram[o+0x24]))continue;
+            if(p->state && !o && (video_ram[0xFC02+p->state]&128))continue;
+            if(o && s_capture_frame->identity[1+(o-0xD000)/64])continue;
+            unsigned map=p->id==0x1F?0x9750:0x9A36,gfx=p->id==0x1F?0x400:0x444;
+            unsigned frame=0,flags=(p->y>>14)&3;int x=p->x,y=p->y&4095;
+            if(o && video_ram[o+0x24] && scene_read32(0xFF0000u+o+4)) {
+                map=scene_read32(0xFF0000u+o+4);gfx=ram16(o+2);
+                frame=video_ram[o+0x1A];flags=video_ram[o+1];
+                x=ram16(o+8);y=ram16(o+12);
+            }
+            add_mapping(map,frame,gfx,flags,x-camera,y-ram16(0xF704),0,0);
+        } else if(entry && p->id==0x25 && priority==2) {
             int count=(p->subtype&7)+1;if(count>7)count=7;
             for(int n=0;n<count;++n) {
                 if(p->state && (video_ram[0xFC02+p->state]&(1u<<n)))continue;
@@ -993,7 +1081,8 @@ static void entry_placements_present(unsigned priority,int camera,int left)
                 if(o<0xF000)continue;
                 add_mapping(0x9F92,video_ram[0xFEC3]&3,0x27B2,0,x-camera,y-ram16(0xF704),0,0);
             }
-        } else if(priority==4 && (p->id==0x3B || (p->id==0x41 && !(p->subtype&0x30)))) {
+        } else if(entry && video_ram[0xFE10]==0 && priority==4 &&
+                  (p->id==0x3B || (p->id==0x41 && !(p->subtype&0x30)))) {
             if(p->x+32<left || (int)p->x-32>=left+s_requested_width)continue;
             unsigned o=placement_object(p);
             if(o && s_capture_frame->identity[1+(o-0xD000)/64])continue;
@@ -1036,10 +1125,20 @@ static void capture_objects(void)
     for(unsigned pri=0;pri<8;++pri) {
         unsigned queue=0xAC00+pri*128, bytes=ram16(queue);
         if(bytes>126)bytes=126;
-        for(unsigned k=2;k<=bytes;k+=2) {
-            unsigned o=ram16(queue+k);
+        unsigned objects[63+128],count=0,native_count=bytes/2;
+        for(unsigned k=2;k<=bytes;k+=2)objects[count++]=ram16(queue+k);
+        if(!s_capture_readonly)for(unsigned n=0;n<s_overflow_count;++n) {
+            unsigned o=s_overflow_objects[n];
+            if((video_ram[o+0x18]&7)!=pri)continue;
+            unsigned k;for(k=0;k<count && objects[k]!=o;++k){}
+            if(k==count)objects[count++]=o;
+        }
+        for(unsigned k=0;k<count;++k) {
+            unsigned o=objects[k];
             if(o<0xD000 || o>=0xF000 || !video_ram[o])continue;
             unsigned flags=video_ram[o+1], space=flags&12;
+            int pylon=!s_capture_readonly && level &&
+                video_ram[o]==0x5C && !space;
             s_capture_slot=1+(o-0xD000)/0x40;s_capture_space=space;
             int object_x=o==0xD000?runoff_x:ram16(o+8);
             s_capture_frame->ox[s_capture_slot]=(int16_t)object_x;
@@ -1052,6 +1151,14 @@ static void capture_objects(void)
                 y=(int16_t)(ram16(o+12)-ram16(scroll+4));
             } else {
                 x=(int16_t)ram16(o+8)-128;y=(int16_t)ram16(o+10)-128;
+                if(pylon) {
+                    /* Pyl_Display scrolls at twice camera speed and relies
+                     * on the SAT's 9-bit X wrap. Project that screen-space
+                     * phase from the native world origin, rather than UI. */
+                    x=(ram16(o+8)&511)-128;hud=0;s_capture_space=4;
+                    s_capture_frame->ox[s_capture_slot]=(int16_t)(cam+x);
+                    s_capture_frame->oy[s_capture_slot]=(int16_t)(ram16(0xF704)+y);
+                }
                 if(video_ram[o]==0x34 || video_ram[o]==0x3A || video_ram[o]==0x7E) {
                     /* Keep the ROM's arrival/hold/departure times and final
                      * composition, but cover the actual canvas on the way
@@ -1064,6 +1171,39 @@ static void capture_objects(void)
             unsigned first=s_capture_frame->count;
             add_mapping(scene_read32(0xFF0000u+o+4),video_ram[o+0x1A],ram16(o+2),flags,x,y,hud,(flags&32)!=0);
             unsigned mapped_end=s_capture_frame->count;
+            if(pylon)for(unsigned n=first;n<mapped_end;++n) {
+                const SceneSprite source=s_capture_frame->sprites[n];
+                int lo=left-cam,hi=lo+s_requested_width;
+                int cell_width=(((source.size>>2)&3)+1)*8;
+                for(int direction=-1;direction<=1;direction+=2) {
+                    SceneSprite fill=source;
+                    for(fill.x+=direction*512;fill.x+cell_width>lo && fill.x<hi;
+                        fill.x+=direction*512)
+                        if(s_capture_frame->count<SCENE_SPRITES)
+                            s_capture_frame->sprites[s_capture_frame->count++]=fill;
+                }
+            }
+            if(!s_capture_readonly && s_requested_width>320 && level &&
+               video_ram[o]==0x1B && scene_read32(0xFF0000u+o+4)==0x1116C &&
+               video_ram[o+0x1A]<6) {
+                /* Surf's 192px mapping repeats its live animation into the
+                 * margins. Keep all original native-window pieces and use
+                 * only their footprints when publishing guest visibility. */
+                int lo=left-cam,hi=lo+s_requested_width;
+                for(unsigned n=first;n<mapped_end;++n) {
+                    const SceneSprite source=s_capture_frame->sprites[n];
+                    int cell_width=(((source.size>>2)&3)+1)*8;
+                    for(int direction=-1;direction<=1;direction+=2) {
+                        SceneSprite fill=source;
+                        for(fill.x+=direction*192;fill.x+cell_width>lo && fill.x<hi;
+                            fill.x+=direction*192) {
+                            if(fill.x<320 && fill.x+cell_width>0)continue;
+                            if(s_capture_frame->count<SCENE_SPRITES)
+                                s_capture_frame->sprites[s_capture_frame->count++]=fill;
+                        }
+                    }
+                }
+            }
             if(!s_capture_readonly && s_requested_width>320 && level &&
                video_ram[0xFE10]==2 && video_ram[o]==0x4E && video_ram[o+0x1A]==4) {
                 /* The lava wall's rectangular tail only covers a native
@@ -1095,7 +1235,7 @@ static void capture_objects(void)
                 }
                 /* Presentation-only reframing retains the existing guest
                  * visibility flags, lifetimes and event timing. */
-                if(guest_visible && !s_capture_readonly && s_visible_count<128 &&
+                if(guest_visible && k<native_count && !s_capture_readonly && s_visible_count<128 &&
                    !(video_ram[o]==0x28 && capsule_animals()))s_visible_objects[s_visible_count++]=o;
                 if(!visible)s_capture_frame->count=first;
             }
@@ -1108,6 +1248,7 @@ static void capture_objects(void)
                 springyard_present(pri,cam,left);
             }
             final_cylinders_present(pri,cam,left);
+            labyrinth_boss_present(pri,cam,left);
             scrap_floor_present(pri,cam,left);
             final_escape_present(pri,cam);
             initial_orbinauts_present(pri,cam);
@@ -1133,6 +1274,7 @@ static void capture_objects(void)
             }
         }
     }
+    if(!s_capture_readonly)s_overflow_count=0;
 }
 static void capture_special(void)
 {
@@ -1165,6 +1307,20 @@ static void publish_sprites(void)
 }
 int s1_video_hook(uint32_t pc)
 {
+    if(pc==0xD604 || pc==0xD622) {
+        /* DisplaySprite drops submissions after 63 objects per priority.
+         * Retain only those real draw attempts for the wider host pass;
+         * never promote their guest visibility or synthesize dead actors. */
+        if(enabled() && s_requested_width>320 && gameplay() && !native_activation()) {
+            unsigned o=g_cpu.A[pc==0xD604?0:1]&65535u;
+            if(o>=0xD000 && o<0xF000 && !(o&63) && video_ram[o] &&
+               ram16(0xAC00+(video_ram[o+0x18]&7)*128)>=126) {
+                unsigned n;for(n=0;n<s_overflow_count && s_overflow_objects[n]!=o;++n){}
+                if(n==s_overflow_count && n<128)s_overflow_objects[s_overflow_count++]=(uint16_t)o;
+            }
+        }
+        return 0;
+    }
     if(s_interpolation_enabled && !enabled()) {
         if(pc==0xD65E) {
             s_capture_frame=&s_native_build;s_capture_readonly=1;capture_objects();
@@ -1172,6 +1328,7 @@ int s1_video_hook(uint32_t pc)
         } else if(pc==0xD746 || pc==0xD74E)native_publish();
     }
     if(pc==0xD8DA && !video_ram[0xF76C]) {
+        s_overflow_count=0;
         s_placement_base=s_placement_count=0;s_loader_active=s_rings_adopted=0;
         memset(s_sparks,0,sizeof s_sparks);
         memset(s_actor_tails,0,sizeof s_actor_tails);s_tail_frame=0;
@@ -1206,8 +1363,8 @@ int s1_video_hook(uint32_t pc)
         g_cpu.SR=(uint16_t)((g_cpu.SR&~15u)|(g_cpu.D[0]?0:4));
         return 1;
     }
-    case 0xF200: {
-        /* LavaTag's SUB precedes a private BMI as well as the usual range
+    case 0xF200:case 0x1165E: {
+        /* LavaTag/Seesaw SUB precedes a private BMI as well as the range
          * CMP/BHI. Adjust its input, then let the original SUB set flags.
          * Patching only the later CMP cannot retain left-margin hazards. */
         if(gameplay()) {
@@ -1321,6 +1478,10 @@ static void draw_scene_sprites(const GVDP *v,int line,uint32_t *out,int width,
     if(!s_display)return;
     for(unsigned n=0;n<s_display->count;++n) {
         const SceneSprite *s=&s_display->sprites[n];
+        /* A title-card list can contain initialized world sprites before
+         * the level planes reach VBlank. Their world origin is not installed
+         * yet; wait for that scene instead of centering them with the card. */
+        if(width>320 && s_display->scene==3 && s->space)continue;
         unsigned owner=s->slot?s_display->identity[s->slot]>>24:0;
         int fade_world=world_palette && s->space && !s->hud && owner!=1 && owner!=0x87;
         int cw=((s->size>>2)&3)+1,ch=(s->size&3)+1;
@@ -1725,8 +1886,13 @@ static void interpolation_sprite_delta(const SceneSprite *sprite,int line,int *d
     unsigned slot=sprite->slot;
     if(slot && slot<SCENE_SLOTS && b->scene.identity[slot] &&
        a->scene.identity[slot]==b->scene.identity[slot]) {
-        *dx=lerp(a->scene.ox[slot],b->scene.ox[slot],48)-b->scene.ox[slot];
-        *dy=lerp(a->scene.oy[slot],b->scene.oy[slot],48)-b->scene.oy[slot];
+        int ax=a->scene.ox[slot],ay=a->scene.oy[slot];
+        if(sprite->space==4 && b->scene.identity[slot]>>24==0x5C) {
+            ax=b->scene.ox[slot]+((ax-b->scene.ox[slot]+256)&511)-256;
+            ay=b->scene.oy[slot]+((ay-b->scene.oy[slot]+32)&63)-32;
+        }
+        *dx=lerp(ax,b->scene.ox[slot],48)-b->scene.ox[slot];
+        *dy=lerp(ay,b->scene.oy[slot],48)-b->scene.oy[slot];
     }
     if(sprite->space==4) {
         /* Current mappings already align with the current installed scroll.

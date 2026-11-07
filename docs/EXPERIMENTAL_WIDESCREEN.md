@@ -77,15 +77,16 @@ generic `GameSpec` callback.
 
 ## Prototype limits
 
-- This is experimental. Later-zone playtesting exposed an activation/culling
-  regression after initial Green Hill approval; the corrected production build
-  passed renewed owner playtesting. Long-session coverage is not exhaustive.
+- Widescreen remains experimental. Validation covers specific scenes and test
+  profiles; it does not establish exhaustive route or long-session coverage.
 - Non-ring actors still use the existing dynamic-object storage. At extreme
   widths it can fill; spawning prioritizes actors closest to Sonic and exposes
   `pool_pressure` in `custom_video`. Host-owned placed rings do not consume that
   storage. This remains an implementation limit, not a fidelity requirement.
-- Mid-level mode changes, save-state rewinds, bosses and later-zone scripted
-  activation rules need additional validation.
+- Build-specific disk states include host scene data and queued audio events.
+  Warm and cold restores, rollback and rewind have focused runtime checks.
+  Mid-level mode changes, bosses and scripted activation still need broader
+  scene coverage; a passing fixture does not validate an entire stage.
 - Water effects, unusual raster effects and later-zone dynamic terrain need
   further game-specific validation. Full-stage rendering costs more CPU/GPU time.
 

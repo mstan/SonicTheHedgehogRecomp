@@ -96,6 +96,26 @@ endforeach()
 # ---------------------------------------------------------------------------
 enable_language(CXX)
 set(CMAKE_CXX_STANDARD 17)
+
+# Disk states contain host-owned scene data and are specific to this producer.
+file(GLOB_RECURSE _s1_state_inputs CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/game/*.c" "${CMAKE_CURRENT_SOURCE_DIR}/game/*.h" "${CMAKE_CURRENT_SOURCE_DIR}/game/*.toml"
+    "${RUNNER_ROOT}/*.c" "${RUNNER_ROOT}/*.cpp" "${RUNNER_ROOT}/*.h"
+    "${RECOMP_ROOT}/external/m68k-recomp-core/*.c" "${RECOMP_ROOT}/external/m68k-recomp-core/*.h"
+    "${RECOMP_ROOT}/external/z80-recomp-core/*.c" "${RECOMP_ROOT}/external/z80-recomp-core/*.h"
+    "${RECOMP_ROOT}/recompiler/src/*.c" "${RECOMP_ROOT}/recompiler/src/*.h")
+list(FILTER _s1_state_inputs EXCLUDE REGEX "/(generated|s1disasm|external/SDL2)/")
+list(SORT _s1_state_inputs)
+set(_s1_state_fingerprint "Sonic1-state-v1;${CMAKE_C_COMPILER_ID};${CMAKE_C_COMPILER_VERSION};${CMAKE_CXX_COMPILER_ID};${CMAKE_CXX_COMPILER_VERSION};${CMAKE_SIZEOF_VOID_P};${CMAKE_SYSTEM_PROCESSOR};${GEN_ENABLE_TRACE};${GEN_DEV_TRACE};${SONIC_REVERSE_DEBUG};${CMAKE_C_FLAGS};${CMAKE_C_FLAGS_RELEASE};${CMAKE_CXX_FLAGS};${CMAKE_CXX_FLAGS_RELEASE}")
+foreach(_source IN LISTS _s1_state_inputs)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_source}")
+    file(SHA256 "${_source}" _s1_state_hash)
+    string(APPEND _s1_state_fingerprint ";${_s1_state_hash}")
+endforeach()
+string(SHA256 _s1_state_id "${_s1_state_fingerprint}")
+set_property(SOURCE game/sonic1_spec.c APPEND PROPERTY COMPILE_DEFINITIONS
+    "SONIC1_STATE_BUILD_ID=\"${_s1_state_id}\"")
+
 set(FM_SOURCES
     "${RUNNER_ROOT}/audio/ym2612_ymfm.cpp"
     "${RUNNER_ROOT}/external/ymfm/src/ymfm_opn.cpp"
