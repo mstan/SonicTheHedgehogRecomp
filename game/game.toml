@@ -207,6 +207,14 @@ kind = "game_hook"
 addr = 0xD65E
 kind = "game_hook"
 
+[[widescreen_site]]
+addr = 0xD604
+kind = "game_hook"
+
+[[widescreen_site]]
+addr = 0xD622
+kind = "game_hook"
+
 # Music restore after a 1-UP: release DAC mode when the restored song uses FM6.
 [[widescreen_site]]
 addr = 0x72B24

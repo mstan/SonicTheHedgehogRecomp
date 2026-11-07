@@ -266,6 +266,8 @@ static void native_publish(void);
 static void interpolation_sprite_delta(const SceneSprite *sprite,int line,int *dx,int *dy);
 static unsigned s_serial, s_scene_tick, s_spawned, s_pool_pressure, s_ring_collected;
 static unsigned s_visible_objects[128], s_visible_count;
+static uint16_t s_overflow_objects[128];
+static unsigned s_overflow_count;
 typedef struct { unsigned address; uint16_t x, y; uint8_t id, subtype, state, loaded; } Placement;
 static Placement s_placements[SCENE_PLACEMENTS];
 static unsigned s_placement_count, s_placement_base;
@@ -289,6 +291,8 @@ typedef struct {
     unsigned visible_objects[128];
     SceneTail actor_tails[128];
     unsigned tail_frame;
+    uint16_t overflow_objects[128];
+    unsigned overflow_count;
 } VideoState;
 enum { SCENE_HEADER = sizeof(SceneFrame)-offsetof(SceneFrame,count) };
 
@@ -310,6 +314,8 @@ size_t s1_video_rb_save(void *dst,size_t cap)
     memcpy(state.visible_objects,s_visible_objects,sizeof s_visible_objects);
     memcpy(state.actor_tails,s_actor_tails,sizeof s_actor_tails);
     state.tail_frame=s_tail_frame;
+    state.overflow_count=s_overflow_count;
+    memcpy(state.overflow_objects,s_overflow_objects,sizeof s_overflow_objects);
     uint8_t *out=dst;memcpy(out,&state,sizeof state);out+=sizeof state;
     for(unsigned n=0;n<4;++n) {
         memcpy(out,&frames[n]->count,SCENE_HEADER);out+=SCENE_HEADER;
@@ -324,7 +330,11 @@ static int video_state_load(const void *src,size_t len,int apply)
     if(!src || len<sizeof state)return 0;
     memcpy(&state,src,sizeof state);
     if(state.magic!=0x53315631u || state.placement_count>SCENE_PLACEMENTS ||
-       state.visible_count>128 || state.loader_active>1 || state.rings_adopted>1)return 0;
+       state.visible_count>128 || state.overflow_count>128 ||
+       state.loader_active>1 || state.rings_adopted>1)return 0;
+    for(unsigned n=0;n<state.overflow_count;++n)
+        if(state.overflow_objects[n]<0xD000 || state.overflow_objects[n]>=0xF000 ||
+           (state.overflow_objects[n]&63))return 0;
     for(unsigned n=0;n<state.visible_count;++n)
         if(state.visible_objects[n]<0xD000 || state.visible_objects[n]>=0xF000 ||
            (state.visible_objects[n]&63))return 0;
@@ -360,6 +370,8 @@ static int video_state_load(const void *src,size_t len,int apply)
     s_placement_count=state.placement_count;s_placement_base=state.placement_base;
     s_loader_active=state.loader_active;s_rings_adopted=state.rings_adopted;
     s_spark_next=state.spark_next;s_visible_count=state.visible_count;
+    s_overflow_count=state.overflow_count;
+    memcpy(s_overflow_objects,state.overflow_objects,sizeof s_overflow_objects);
     memcpy(s_placements,state.placements,sizeof s_placements);
     memcpy(s_sparks,state.sparks,sizeof s_sparks);
     memcpy(s_visible_objects,state.visible_objects,sizeof s_visible_objects);
@@ -445,6 +457,7 @@ static void activation_bounds(int camera,int w,int *lo,int *hi)
 }
 static void scene_mode_changed(int was_enabled)
 {
+    s_overflow_count=0;
     if (was_enabled == enabled()) return;
     s_rings_adopted=0;
     for (unsigned i=0;i<s_placement_count;++i)
@@ -1086,8 +1099,16 @@ static void capture_objects(void)
     for(unsigned pri=0;pri<8;++pri) {
         unsigned queue=0xAC00+pri*128, bytes=ram16(queue);
         if(bytes>126)bytes=126;
-        for(unsigned k=2;k<=bytes;k+=2) {
-            unsigned o=ram16(queue+k);
+        unsigned objects[63+128],count=0,native_count=bytes/2;
+        for(unsigned k=2;k<=bytes;k+=2)objects[count++]=ram16(queue+k);
+        if(!s_capture_readonly)for(unsigned n=0;n<s_overflow_count;++n) {
+            unsigned o=s_overflow_objects[n];
+            if((video_ram[o+0x18]&7)!=pri)continue;
+            unsigned k;for(k=0;k<count && objects[k]!=o;++k){}
+            if(k==count)objects[count++]=o;
+        }
+        for(unsigned k=0;k<count;++k) {
+            unsigned o=objects[k];
             if(o<0xD000 || o>=0xF000 || !video_ram[o])continue;
             unsigned flags=video_ram[o+1], space=flags&12;
             s_capture_slot=1+(o-0xD000)/0x40;s_capture_space=space;
@@ -1166,7 +1187,7 @@ static void capture_objects(void)
                 }
                 /* Presentation-only reframing retains the existing guest
                  * visibility flags, lifetimes and event timing. */
-                if(guest_visible && !s_capture_readonly && s_visible_count<128 &&
+                if(guest_visible && k<native_count && !s_capture_readonly && s_visible_count<128 &&
                    !(video_ram[o]==0x28 && capsule_animals()))s_visible_objects[s_visible_count++]=o;
                 if(!visible)s_capture_frame->count=first;
             }
@@ -1204,6 +1225,7 @@ static void capture_objects(void)
             }
         }
     }
+    if(!s_capture_readonly)s_overflow_count=0;
 }
 static void capture_special(void)
 {
@@ -1236,6 +1258,20 @@ static void publish_sprites(void)
 }
 int s1_video_hook(uint32_t pc)
 {
+    if(pc==0xD604 || pc==0xD622) {
+        /* DisplaySprite drops submissions after 63 objects per priority.
+         * Retain only those real draw attempts for the wider host pass;
+         * never promote their guest visibility or synthesize dead actors. */
+        if(enabled() && s_requested_width>320 && gameplay() && !native_activation()) {
+            unsigned o=g_cpu.A[pc==0xD604?0:1]&65535u;
+            if(o>=0xD000 && o<0xF000 && !(o&63) && video_ram[o] &&
+               ram16(0xAC00+(video_ram[o+0x18]&7)*128)>=126) {
+                unsigned n;for(n=0;n<s_overflow_count && s_overflow_objects[n]!=o;++n){}
+                if(n==s_overflow_count && n<128)s_overflow_objects[s_overflow_count++]=(uint16_t)o;
+            }
+        }
+        return 0;
+    }
     if(s_interpolation_enabled && !enabled()) {
         if(pc==0xD65E) {
             s_capture_frame=&s_native_build;s_capture_readonly=1;capture_objects();
@@ -1243,6 +1279,7 @@ int s1_video_hook(uint32_t pc)
         } else if(pc==0xD746 || pc==0xD74E)native_publish();
     }
     if(pc==0xD8DA && !video_ram[0xF76C]) {
+        s_overflow_count=0;
         s_placement_base=s_placement_count=0;s_loader_active=s_rings_adopted=0;
         memset(s_sparks,0,sizeof s_sparks);
         memset(s_actor_tails,0,sizeof s_actor_tails);s_tail_frame=0;

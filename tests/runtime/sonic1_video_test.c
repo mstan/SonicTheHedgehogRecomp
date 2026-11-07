@@ -579,6 +579,39 @@ int main(int argc,char **argv)
     memset(g_ram+0xAC00,0,1024);g_ram[0xF600]=8;
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":0"));
+    /* A saturated native priority queue must not hide a real wider-view
+     * draw attempt. Preserve its pending submission across rollback, leave
+     * guest visibility alone, and never keep a deleted or unsubmitted orb. */
+    word(g_ram,0xFFF0,0);word(g_ram,0xFE10,0x100);
+    memset(g_ram+0xD800,0,0x1800);
+    for(unsigned n=0;n<63;++n) {
+        unsigned o=0xD800+n*64;
+        g_ram[o]=0x60;g_ram[o+1]=4;g_ram[o+0x18]=4;g_ram[o+0x24]=6;
+        word(g_ram,o+2,0x8001);m68k_write32(o+4,0x1300);
+        word(g_ram,o+8,4000);word(g_ram,o+12,8);
+        word(g_ram,0xAC02+4*128+n*2,o);
+    }
+    word(g_ram,0xAC00+4*128,126);
+    memcpy(g_ram+0xE800,g_ram+0xD800,64);word(g_ram,0xE808,600);
+    g_cpu.A[0]=g_cpu.A[1]=0xFFE800;
+    memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+    CHECK(!s1_video_hook(0xD604));CHECK(!s1_video_hook(0xD622));
+    size_t pending_size=s1_video_rb_save(NULL,0);void *pending=malloc(pending_size);CHECK(pending);
+    CHECK(s1_video_rb_save(pending,pending_size)==pending_size);
+    for(unsigned n=0;n<2;++n) {
+        if(n)CHECK(s1_video_rb_load(pending,pending_size));
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
+        CHECK(out[38]==0xFF0000FFu);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":1"));
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    }
+    free(pending);
+    s1_video_hook(0xD604);memset(g_ram+0xE800,0,64);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":0"));
+    memcpy(g_ram+0xE800,g_ram+0xD800,64);word(g_ram,0xE808,600);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":0"));
     /* A scripted FZ boss is created at the original camera threshold, after
      * the wide viewport can see its cylinders. An unrelated pending PLC
      * must not suppress their draw-only preview or allocate the boss early. */
