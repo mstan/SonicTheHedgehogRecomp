@@ -165,7 +165,7 @@ static uint8_t pattern_pixel(const GVDP *v, uint16_t attr, int x, int y)
  * guest VRAM, PLC order and simulation clocks remain untouched. Format and
  * XOR rows follow REV00 NemDec ($1440), not a second machine execution. */
 typedef struct { uint8_t pixels[8192];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
-static SpriteArt s_sprite_art[8];
+static SpriteArt s_sprite_art[9];
 static unsigned art_bits(unsigned bit,unsigned count)
 {
     unsigned value=0;
@@ -207,8 +207,8 @@ static int decode_sprite_art(SpriteArt *art,unsigned address)
 static uint8_t sprite_pixel(const GVDP *v,unsigned asset,uint16_t attr,int x,int y)
 {
     if(!asset || !enabled() || s_requested_width<=320)return pattern_pixel(v,attr,x,y);
-    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324,0x5CC62};
-    static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400,0x400};
+    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324,0x5CC62,0x339DA};
+    static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400,0x400,0x3CC};
     SpriteArt *art=&s_sprite_art[asset-1];
     if(!art->ready) {
         art->base=bases[asset-1];
@@ -360,7 +360,7 @@ static int video_state_load(const void *src,size_t len,int apply)
         sprites[n]=in;in+=bytes;left-=bytes;
         for(unsigned k=0;k<counts[n];++k) {
             SceneSprite sprite;memcpy(&sprite,sprites[n]+k*sizeof sprite,sizeof sprite);
-            if(sprite.asset>8 || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
+            if(sprite.asset>9 || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
         }
     }
     if(left)return 0;
@@ -484,7 +484,7 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
         unsigned owner=s_capture_slot?video_ram[0xD000+(s_capture_slot-1)*64]:0;
         /* The shared Eggmobile mappings include the exhaust. Wider object
          * activation can expose them before their PLC completes as well. */
-        s->asset=(uint8_t)(map==0x17D0C?8:owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:0);
+        s->asset=(uint8_t)(owner==0x5C?9:map==0x17D0C?8:owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:0);
     }
 }
 static void load_placements(void)
@@ -520,6 +520,9 @@ static unsigned placement_object(const Placement *p)
         if (!video_ram[o]) continue;
         if (p->state && video_ram[o+0x23]==p->state) return o;
         if (!p->state && video_ram[o]==p->id) {
+            /* Pylon owns the level-wide screen-space decoration; its X is
+             * derived from the camera rather than its sole placement. */
+            if(p->id==0x5C)return o;
             if(ram16(o+8)==p->x)return o;
             /* BasicPlatform moves on its first pass. Its persistent origin,
              * rather than the displaced pose, identifies a native placement
@@ -1111,6 +1114,8 @@ static void capture_objects(void)
             unsigned o=objects[k];
             if(o<0xD000 || o>=0xF000 || !video_ram[o])continue;
             unsigned flags=video_ram[o+1], space=flags&12;
+            int pylon=!s_capture_readonly && level &&
+                video_ram[o]==0x5C && !space;
             s_capture_slot=1+(o-0xD000)/0x40;s_capture_space=space;
             int object_x=o==0xD000?runoff_x:ram16(o+8);
             s_capture_frame->ox[s_capture_slot]=(int16_t)object_x;
@@ -1123,6 +1128,14 @@ static void capture_objects(void)
                 y=(int16_t)(ram16(o+12)-ram16(scroll+4));
             } else {
                 x=(int16_t)ram16(o+8)-128;y=(int16_t)ram16(o+10)-128;
+                if(pylon) {
+                    /* Pyl_Display scrolls at twice camera speed and relies
+                     * on the SAT's 9-bit X wrap. Project that screen-space
+                     * phase from the native world origin, rather than UI. */
+                    x=(ram16(o+8)&511)-128;hud=0;s_capture_space=4;
+                    s_capture_frame->ox[s_capture_slot]=(int16_t)(cam+x);
+                    s_capture_frame->oy[s_capture_slot]=(int16_t)(ram16(0xF704)+y);
+                }
                 if(video_ram[o]==0x34 || video_ram[o]==0x3A || video_ram[o]==0x7E) {
                     /* Keep the ROM's arrival/hold/departure times and final
                      * composition, but cover the actual canvas on the way
@@ -1135,6 +1148,18 @@ static void capture_objects(void)
             unsigned first=s_capture_frame->count;
             add_mapping(scene_read32(0xFF0000u+o+4),video_ram[o+0x1A],ram16(o+2),flags,x,y,hud,(flags&32)!=0);
             unsigned mapped_end=s_capture_frame->count;
+            if(pylon)for(unsigned n=first;n<mapped_end;++n) {
+                const SceneSprite source=s_capture_frame->sprites[n];
+                int lo=left-cam,hi=lo+s_requested_width;
+                int cell_width=(((source.size>>2)&3)+1)*8;
+                for(int direction=-1;direction<=1;direction+=2) {
+                    SceneSprite fill=source;
+                    for(fill.x+=direction*512;fill.x+cell_width>lo && fill.x<hi;
+                        fill.x+=direction*512)
+                        if(s_capture_frame->count<SCENE_SPRITES)
+                            s_capture_frame->sprites[s_capture_frame->count++]=fill;
+                }
+            }
             if(!s_capture_readonly && s_requested_width>320 && level &&
                video_ram[o]==0x1B && scene_read32(0xFF0000u+o+4)==0x1116C &&
                video_ram[o+0x1A]<6) {
@@ -1314,8 +1339,8 @@ int s1_video_hook(uint32_t pc)
         g_cpu.SR=(uint16_t)((g_cpu.SR&~15u)|(g_cpu.D[0]?0:4));
         return 1;
     }
-    case 0xF200: {
-        /* LavaTag's SUB precedes a private BMI as well as the usual range
+    case 0xF200:case 0x1165E: {
+        /* LavaTag/Seesaw SUB precedes a private BMI as well as the range
          * CMP/BHI. Adjust its input, then let the original SUB set flags.
          * Patching only the later CMP cannot retain left-margin hazards. */
         if(gameplay()) {
@@ -1837,8 +1862,13 @@ static void interpolation_sprite_delta(const SceneSprite *sprite,int line,int *d
     unsigned slot=sprite->slot;
     if(slot && slot<SCENE_SLOTS && b->scene.identity[slot] &&
        a->scene.identity[slot]==b->scene.identity[slot]) {
-        *dx=lerp(a->scene.ox[slot],b->scene.ox[slot],48)-b->scene.ox[slot];
-        *dy=lerp(a->scene.oy[slot],b->scene.oy[slot],48)-b->scene.oy[slot];
+        int ax=a->scene.ox[slot],ay=a->scene.oy[slot];
+        if(sprite->space==4 && b->scene.identity[slot]>>24==0x5C) {
+            ax=b->scene.ox[slot]+((ax-b->scene.ox[slot]+256)&511)-256;
+            ay=b->scene.oy[slot]+((ay-b->scene.oy[slot]+32)&63)-32;
+        }
+        *dx=lerp(ax,b->scene.ox[slot],48)-b->scene.ox[slot];
+        *dy=lerp(ay,b->scene.oy[slot],48)-b->scene.oy[slot];
     }
     if(sprite->space==4) {
         /* Current mappings already align with the current installed scroll.

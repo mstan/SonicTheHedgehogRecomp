@@ -374,6 +374,11 @@ kind = "game_hook"
 addr = 0xF200
 kind = "game_hook"
 
+# Seesaw's signed early-delete branch also precedes its range CMP.
+[[widescreen_site]]
+addr = 0x1165E
+kind = "game_hook"
+
 [[widescreen_site]]
 addr = 0xF6C2
 kind = "game_hook"
