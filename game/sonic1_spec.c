@@ -10,6 +10,7 @@
 #include "genesis_runtime.h"
 #include "sonic1_video.h"
 #include "sonic1_audio.h"
+#include "audio/event_queue.h"
 
 #include <stdint.h>
 #ifdef GENESIS_Z80_RECOMP
@@ -82,6 +83,41 @@ static void s1_call_resume(uint32_t resume_pc)
     recomp_call_addr(resume_pc);
 }
 
+static size_t s1_state_size(void)
+{
+    return s1_video_state_size()+audio_event_state_size();
+}
+static int s1_state_save(void *data,size_t size)
+{
+    size_t video=s1_video_state_size();
+    return data && size==s1_state_size() && s1_video_state_save(data,video) &&
+        audio_event_state_save((uint8_t*)data+video,size-video);
+}
+static int s1_state_load(const void *data,size_t size,int apply)
+{
+    size_t video=s1_video_state_size();
+    if(!data || size!=s1_state_size() || !s1_video_state_load(data,video,0) ||
+       !audio_event_state_load((const uint8_t*)data+video,size-video,0))return 0;
+    return !apply || (s1_video_state_load(data,video,1) &&
+        audio_event_state_load((const uint8_t*)data+video,size-video,1));
+}
+static int s1_state_at_boundary(void)
+{
+    unsigned sp=g_cpu.A[7]&65535u;
+    if(sp>65532)return 0;
+    unsigned caller=((unsigned)g_ram[sp]<<24)|((unsigned)g_ram[sp+1]<<16)|
+        ((unsigned)g_ram[sp+2]<<8)|g_ram[sp+3];
+    /* REV00 WaitForVBlank callers with established cold-resume loops. */
+    switch(g_ram[0xF600]) {
+    case 8:case 12:return caller==0x3AF0 || caller==0x13D4;
+    case 16:return caller==0x4738 || caller==0x13D4;
+    case 4:return caller==0x3186;
+    case 20:return caller==0x4DCE;
+    case 24:return caller==0x5292 || caller==0x52FE || caller==0x13D4;
+    default:return 0;
+    }
+}
+
 /* ---- Sonic-specific debug-server handlers (sonic_extras.c) ---- */
 extern void handle_sonic_state(int id);
 extern void handle_object_table(int id, const char *json);
@@ -131,6 +167,11 @@ const GameSpec g_game_spec = {
     .logical_players        = 1,
     .rb_state_save           = s1_video_rb_save,
     .rb_state_load           = s1_video_rb_load,
+    .state_build_id          = SONIC1_STATE_BUILD_ID,
+    .state_size              = s1_state_size,
+    .state_save              = s1_state_save,
+    .state_load              = s1_state_load,
+    .state_at_boundary       = s1_state_at_boundary,
     .display_name           = "Sonic the Hedgehog",
     .short_name             = "Sonic1",
 

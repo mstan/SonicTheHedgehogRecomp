@@ -165,7 +165,7 @@ static uint8_t pattern_pixel(const GVDP *v, uint16_t attr, int x, int y)
  * guest VRAM, PLC order and simulation clocks remain untouched. Format and
  * XOR rows follow REV00 NemDec ($1440), not a second machine execution. */
 typedef struct { uint8_t pixels[8192];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
-static SpriteArt s_sprite_art[7];
+static SpriteArt s_sprite_art[8];
 static unsigned art_bits(unsigned bit,unsigned count)
 {
     unsigned value=0;
@@ -207,8 +207,8 @@ static int decode_sprite_art(SpriteArt *art,unsigned address)
 static uint8_t sprite_pixel(const GVDP *v,unsigned asset,uint16_t attr,int x,int y)
 {
     if(!asset || !enabled() || s_requested_width<=320)return pattern_pixel(v,attr,x,y);
-    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324};
-    static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400};
+    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324,0x5CC62};
+    static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400,0x400};
     SpriteArt *art=&s_sprite_art[asset-1];
     if(!art->ready) {
         art->base=bases[asset-1];
@@ -318,7 +318,7 @@ size_t s1_video_rb_save(void *dst,size_t cap)
     }
     return need;
 }
-int s1_video_rb_load(const void *src,size_t len)
+static int video_state_load(const void *src,size_t len,int apply)
 {
     VideoState state;
     if(!src || len<sizeof state)return 0;
@@ -350,10 +350,11 @@ int s1_video_rb_load(const void *src,size_t len)
         sprites[n]=in;in+=bytes;left-=bytes;
         for(unsigned k=0;k<counts[n];++k) {
             SceneSprite sprite;memcpy(&sprite,sprites[n]+k*sizeof sprite,sizeof sprite);
-            if(sprite.asset>7 || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
+            if(sprite.asset>8 || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
         }
     }
     if(left)return 0;
+    if(!apply)return 1;
     s_serial=state.serial;s_scene_tick=state.scene_tick;s_spawned=state.spawned;
     s_pool_pressure=state.pool_pressure;s_ring_collected=state.ring_collected;
     s_placement_count=state.placement_count;s_placement_base=state.placement_base;
@@ -371,6 +372,39 @@ int s1_video_rb_load(const void *src,size_t len)
     }
     s_display=NULL;s_title_world=0;interpolation_reset();
     return 1;
+}
+int s1_video_rb_load(const void *src,size_t len)
+{
+    return video_state_load(src,len,1);
+}
+
+/* The shared disk envelope requires a fixed-size, preflightable host section.
+ * Keep the compact rollback representation inside a zero-filled reservation;
+ * disk loads then recover the same placements and displayed mappings. */
+typedef struct { uint32_t magic,bytes,mode,reserved;double ratio; } VideoDiskHeader;
+size_t s1_video_state_size(void)
+{
+    return sizeof(VideoDiskHeader)+sizeof(VideoState)+
+        4*(SCENE_HEADER+SCENE_SPRITES*sizeof(SceneSprite));
+}
+int s1_video_state_save(void *dst,size_t size)
+{
+    if(!dst || size!=s1_video_state_size())return 0;
+    memset(dst,0,size);
+    VideoDiskHeader header={0};
+    header.magic=0x53314431u;header.mode=(uint32_t)s_mode;header.ratio=s_ratio;
+    header.bytes=(uint32_t)s1_video_rb_save((uint8_t*)dst+sizeof header,size-sizeof header);
+    if(!header.bytes)return 0;
+    memcpy(dst,&header,sizeof header);return 1;
+}
+int s1_video_state_load(const void *src,size_t size,int apply)
+{
+    if(!src || size!=s1_video_state_size())return 0;
+    VideoDiskHeader header;memcpy(&header,src,sizeof header);
+    if(header.magic!=0x53314431u || header.reserved || header.mode!=(uint32_t)s_mode ||
+       (s_mode==VIDEO_RATIO && header.ratio!=s_ratio) ||
+       header.bytes>size-sizeof header)return 0;
+    return video_state_load((const uint8_t*)src+sizeof header,header.bytes,apply);
 }
 
 static uint8_t scene_read8(unsigned a)
@@ -435,7 +469,9 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
         SceneSprite *s=&s_capture_frame->sprites[s_capture_frame->count++];
         s->x=x+dx; s->y=y+dy; s->attr=attr; s->size=(uint8_t)size; s->hud=(uint8_t)hud;s->slot=(uint8_t)s_capture_slot;s->space=(uint8_t)s_capture_space;
         unsigned owner=s_capture_slot?video_ram[0xD000+(s_capture_slot-1)*64]:0;
-        s->asset=(uint8_t)(owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:0);
+        /* The shared Eggmobile mappings include the exhaust. Wider object
+         * activation can expose them before their PLC completes as well. */
+        s->asset=(uint8_t)(map==0x17D0C?8:owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:0);
     }
 }
 static void load_placements(void)
@@ -967,20 +1003,33 @@ static void collect_host_rings(void)
         }
     }
 }
-/* Card departure deliberately retains native activation. Present the static
- * GHZ placements visible in the wider view until their original objects queue
+/* Card departure deliberately retains native activation. Present initial
+ * placements visible in the wider view until their original objects queue
  * sprites; no early collision objects or ring collection are introduced. */
 static void entry_placements_present(unsigned priority,int camera,int left)
 {
-    if(!gameplay() || video_ram[0xFE10]!=0 || s_requested_width<=320 ||
-       (priority!=2 && priority!=4))return;
+    if(!gameplay() || results_world() || video_ram[0xD5C0]==0x3A || s_requested_width<=320 ||
+       (priority!=2 && priority!=3 && priority!=4))return;
     int entry=(video_ram[0xF600]&128)!=0;
     for(unsigned o=0xD080;o<0xD200;o+=64)if(video_ram[o]==0x34)entry=1;
-    if(!entry)return;
     load_placements();s_capture_slot=0;s_capture_space=4;
     for(unsigned i=0;i<s_placement_count;++i) {
         const Placement *p=&s_placements[i];
-        if(p->id==0x25 && priority==2) {
+        if(priority==3 && (p->id==0x1F || p->id==0x22)) {
+            if(p->x+32<left || (int)p->x-32>=left+s_requested_width)continue;
+            unsigned o=placement_object(p);
+            if(!entry && (!o || video_ram[o+0x24]))continue;
+            if(p->state && !o && (video_ram[0xFC02+p->state]&128))continue;
+            if(o && s_capture_frame->identity[1+(o-0xD000)/64])continue;
+            unsigned map=p->id==0x1F?0x9750:0x9A36,gfx=p->id==0x1F?0x400:0x444;
+            unsigned frame=0,flags=(p->y>>14)&3;int x=p->x,y=p->y&4095;
+            if(o && video_ram[o+0x24] && scene_read32(0xFF0000u+o+4)) {
+                map=scene_read32(0xFF0000u+o+4);gfx=ram16(o+2);
+                frame=video_ram[o+0x1A];flags=video_ram[o+1];
+                x=ram16(o+8);y=ram16(o+12);
+            }
+            add_mapping(map,frame,gfx,flags,x-camera,y-ram16(0xF704),0,0);
+        } else if(entry && p->id==0x25 && priority==2) {
             int count=(p->subtype&7)+1;if(count>7)count=7;
             for(int n=0;n<count;++n) {
                 if(p->state && (video_ram[0xFC02+p->state]&(1u<<n)))continue;
@@ -993,7 +1042,8 @@ static void entry_placements_present(unsigned priority,int camera,int left)
                 if(o<0xF000)continue;
                 add_mapping(0x9F92,video_ram[0xFEC3]&3,0x27B2,0,x-camera,y-ram16(0xF704),0,0);
             }
-        } else if(priority==4 && (p->id==0x3B || (p->id==0x41 && !(p->subtype&0x30)))) {
+        } else if(entry && video_ram[0xFE10]==0 && priority==4 &&
+                  (p->id==0x3B || (p->id==0x41 && !(p->subtype&0x30)))) {
             if(p->x+32<left || (int)p->x-32>=left+s_requested_width)continue;
             unsigned o=placement_object(p);
             if(o && s_capture_frame->identity[1+(o-0xD000)/64])continue;
@@ -1064,6 +1114,27 @@ static void capture_objects(void)
             unsigned first=s_capture_frame->count;
             add_mapping(scene_read32(0xFF0000u+o+4),video_ram[o+0x1A],ram16(o+2),flags,x,y,hud,(flags&32)!=0);
             unsigned mapped_end=s_capture_frame->count;
+            if(!s_capture_readonly && s_requested_width>320 && level &&
+               video_ram[o]==0x1B && scene_read32(0xFF0000u+o+4)==0x1116C &&
+               video_ram[o+0x1A]<6) {
+                /* Surf's 192px mapping repeats its live animation into the
+                 * margins. Keep all original native-window pieces and use
+                 * only their footprints when publishing guest visibility. */
+                int lo=left-cam,hi=lo+s_requested_width;
+                for(unsigned n=first;n<mapped_end;++n) {
+                    const SceneSprite source=s_capture_frame->sprites[n];
+                    int cell_width=(((source.size>>2)&3)+1)*8;
+                    for(int direction=-1;direction<=1;direction+=2) {
+                        SceneSprite fill=source;
+                        for(fill.x+=direction*192;fill.x+cell_width>lo && fill.x<hi;
+                            fill.x+=direction*192) {
+                            if(fill.x<320 && fill.x+cell_width>0)continue;
+                            if(s_capture_frame->count<SCENE_SPRITES)
+                                s_capture_frame->sprites[s_capture_frame->count++]=fill;
+                        }
+                    }
+                }
+            }
             if(!s_capture_readonly && s_requested_width>320 && level &&
                video_ram[0xFE10]==2 && video_ram[o]==0x4E && video_ram[o+0x1A]==4) {
                 /* The lava wall's rectangular tail only covers a native
@@ -1321,6 +1392,10 @@ static void draw_scene_sprites(const GVDP *v,int line,uint32_t *out,int width,
     if(!s_display)return;
     for(unsigned n=0;n<s_display->count;++n) {
         const SceneSprite *s=&s_display->sprites[n];
+        /* A title-card list can contain initialized world sprites before
+         * the level planes reach VBlank. Their world origin is not installed
+         * yet; wait for that scene instead of centering them with the card. */
+        if(width>320 && s_display->scene==3 && s->space)continue;
         unsigned owner=s->slot?s_display->identity[s->slot]>>24:0;
         int fade_world=world_palette && s->space && !s->hud && owner!=1 && owner!=0x87;
         int cw=((s->size>>2)&3)+1,ch=(s->size&3)+1;
