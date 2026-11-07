@@ -165,7 +165,7 @@ static uint8_t pattern_pixel(const GVDP *v, uint16_t attr, int x, int y)
  * guest VRAM, PLC order and simulation clocks remain untouched. Format and
  * XOR rows follow REV00 NemDec ($1440), not a second machine execution. */
 typedef struct { uint8_t pixels[8192];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
-static SpriteArt s_sprite_art[4];
+static SpriteArt s_sprite_art[5];
 static unsigned art_bits(unsigned bit,unsigned count)
 {
     unsigned value=0;
@@ -207,8 +207,8 @@ static int decode_sprite_art(SpriteArt *art,unsigned address)
 static uint8_t sprite_pixel(const GVDP *v,unsigned asset,uint16_t attr,int x,int y)
 {
     if(!asset || !enabled() || s_requested_width<=320)return pattern_pixel(v,attr,x,y);
-    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860};
-    static const unsigned bases[]={0x680,0x50F,0x513,0x300};
+    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102};
+    static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518};
     SpriteArt *art=&s_sprite_art[asset-1];
     if(!art->ready){art->base=bases[asset-1];art->ready=decode_sprite_art(art,addresses[asset-1])?1:2;}
     int tile=(int)(attr&2047u)-(int)art->base;
@@ -321,7 +321,8 @@ int s1_video_rb_load(const void *src,size_t len)
            (state.visible_objects[n]&63))return 0;
     for(unsigned n=0;n<128;++n) {
         const SceneTail *a=&state.actor_tails[n];
-        if(a->seen>1 || a->tail>1 || (a->slot &&
+        int player_owner=a->slot==0xD000 && a->object[0]==1;
+        if(a->seen>1 || a->tail>1 || (a->slot && !player_owner &&
            (a->slot<0xD800 || a->slot>=0xF000 || (a->slot&63))))return 0;
         if(a->seen && !a->slot && a->object[0]!=0x3F)return 0;
     }
@@ -340,7 +341,7 @@ int s1_video_rb_load(const void *src,size_t len)
         sprites[n]=in;in+=bytes;left-=bytes;
         for(unsigned k=0;k<counts[n];++k) {
             SceneSprite sprite;memcpy(&sprite,sprites[n]+k*sizeof sprite,sizeof sprite);
-            if(sprite.asset>4 || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
+            if(sprite.asset>5 || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
         }
     }
     if(left)return 0;
@@ -425,7 +426,7 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
         SceneSprite *s=&s_capture_frame->sprites[s_capture_frame->count++];
         s->x=x+dx; s->y=y+dy; s->attr=attr; s->size=(uint8_t)size; s->hud=(uint8_t)hud;s->slot=(uint8_t)s_capture_slot;s->space=(uint8_t)s_capture_space;
         unsigned owner=s_capture_slot?video_ram[0xD000+(s_capture_slot-1)*64]:0;
-        s->asset=(uint8_t)(owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:0);
+        s->asset=(uint8_t)(owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:0);
     }
 }
 static void load_placements(void)
@@ -587,6 +588,65 @@ static void remember_tail(SceneTail *tail,unsigned object)
 {
     memcpy(tail->object,video_ram+object,64);tail->slot=(uint16_t)object;
     tail->seen=tail->tail=1;
+}
+/* Keep the scripted run-off moving after Sonic reaches the native boundary.
+ * Only the displayed X advances. SBZ2's pan catches this pose until the real
+ * player reaches it, then ordinary presentation resumes without a position
+ * jump. Reuse the serialized, level-local continuation storage. */
+static int scrap_runoff_x(void)
+{
+    int x=ram16(0xD008),zone=ram16(0xFE10);
+    SceneTail *tail=&s_actor_tails[0];
+    if(s_capture_readonly || !enabled() || s_requested_width<=320)return x;
+    if((zone!=0x500 && zone!=0x501) || video_ram[0xD000]!=1 || recorded_demo()) {
+        if(tail->seen && tail->object[0]==1)memset(tail,0,sizeof *tail);
+        return x;
+    }
+    if(!tail->seen || tail->object[0]!=1) {
+        if(video_ram[0xD5C0]!=0x3A || x<(int)ram16(0xF72A)+352)return x;
+        int extra=(s_requested_width-320)/2+32;
+        int target=extra>65535-x?65535:x+extra;
+        /* Stay within SBZ2's approach so the original player catches this
+         * pose before the scripted stop and floor collapse. */
+        if(zone==0x501 && target>0x20F0)target=0x20F0;
+        if(target<=x)return x;
+        remember_tail(tail,0xD000);
+        actor_put(tail->object,0x30,(unsigned)target);
+        actor_put(tail->object,0x32,ram16(0xFE04));
+    }
+    int target=actor_word(tail->object,0x30);
+    if(x>=target) {memset(tail,0,sizeof *tail);return x;}
+    unsigned frame=ram16(0xFE04),dt=(uint16_t)(frame-actor_word(tail->object,0x32));
+    int shown=actor_word(tail->object,8);
+    if(dt) {
+        shown+=(int)dt*6;if(shown>target)shown=target;
+        if(shown<x)shown=x;
+        actor_put(tail->object,8,(unsigned)shown);
+        actor_put(tail->object,0x32,frame);
+    }
+    return shown;
+}
+/* DLE_SBZ2 creates the floor at the native camera threshold. Its initial
+ * eight unmoving blocks can be seen sooner in a wide view. Present their
+ * original mapping/art until each actual block owns its display slot. */
+static void scrap_floor_present(unsigned priority,int camera,int left)
+{
+    if(priority!=3 || !gameplay() || ram16(0xFE10)!=0x501 ||
+       video_ram[0xF742]<2 || video_ram[0xF742]>4)return;
+    unsigned map=scene_read32(0x19BBA),gfx=scene_read16(0x19BC2);
+    s_capture_slot=0;s_capture_space=4;
+    for(int i=0;i<8;++i) {
+        int x=0x2010+i*32;
+        if(x+16<=left || x-16>=left+s_requested_width)continue;
+        unsigned o;
+        for(o=0xD800;o<0xF000;o+=64)
+            if(video_ram[o]==0x83 && video_ram[o+0x24]>=8 && ram16(o+8)==x)break;
+        if(o<0xF000 && (video_ram[o+0x24]!=8 ||
+           s_capture_frame->identity[1+(o-0xD000)/64]))continue;
+        unsigned first=s_capture_frame->count;
+        add_mapping(map,0,gfx,4,x-camera,0x5D0-ram16(0xF704),0,0);
+        for(unsigned n=first;n<s_capture_frame->count;++n)s_capture_frame->sprites[n].asset=5;
+    }
 }
 static void final_escape_present(unsigned priority,int camera)
 {
@@ -899,6 +959,7 @@ static void capture_objects(void)
     }
     int left=level?scene_left(video_ram,cam,s_requested_width):cam-(s_requested_width-320)/2;
     int guest_left=level?view_left(cam,s_requested_width):left;
+    int runoff_x=scrap_runoff_x();
     for(unsigned pri=0;pri<8;++pri) {
         unsigned queue=0xAC00+pri*128, bytes=ram16(queue);
         if(bytes>126)bytes=126;
@@ -907,13 +968,14 @@ static void capture_objects(void)
             if(o<0xD000 || o>=0xF000 || !video_ram[o])continue;
             unsigned flags=video_ram[o+1], space=flags&12;
             s_capture_slot=1+(o-0xD000)/0x40;s_capture_space=space;
-            s_capture_frame->ox[s_capture_slot]=(int16_t)ram16(o+8);
+            int object_x=o==0xD000?runoff_x:ram16(o+8);
+            s_capture_frame->ox[s_capture_slot]=(int16_t)object_x;
             s_capture_frame->oy[s_capture_slot]=(int16_t)ram16(o+12);
             s_capture_frame->identity[s_capture_slot]=((uint32_t)video_ram[o]<<24)|scene_read32(0xFF0000u+o+4);
             int x,y,hud=video_ram[o]==0x21?1:space?0:2;
             if(space) {
                 unsigned scroll=space==4?0xF700:space==8?0xF708:0xF718;
-                x=(int16_t)(ram16(o+8)-ram16(scroll));
+                x=(int16_t)(object_x-ram16(scroll));
                 y=(int16_t)(ram16(o+12)-ram16(scroll+4));
             } else {
                 x=(int16_t)ram16(o+8)-128;y=(int16_t)ram16(o+10)-128;
@@ -939,7 +1001,8 @@ static void capture_objects(void)
                     const SceneSprite *p=&s_capture_frame->sprites[n];
                     int w=(((p->size>>2)&3)+1)*8;
                     if(p->x+w>lo && p->x<hi)visible=1;
-                    if(p->x+w>guest_lo && p->x<guest_hi)guest_visible=1;
+                    int guest_x=p->x+(int)ram16(o+8)-object_x;
+                    if(guest_x+w>guest_lo && guest_x<guest_hi)guest_visible=1;
                 }
                 /* Presentation-only reframing retains the existing guest
                  * visibility flags, lifetimes and event timing. */
@@ -955,6 +1018,7 @@ static void capture_objects(void)
                 springyard_present(pri,cam,left);
             }
             final_cylinders_present(pri,cam,left);
+            scrap_floor_present(pri,cam,left);
             final_escape_present(pri,cam);
             initial_orbinauts_present(pri,cam);
             ending_animals_present(pri,cam,left);
