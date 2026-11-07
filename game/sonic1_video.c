@@ -630,6 +630,29 @@ static void final_cylinders_present(unsigned priority,int camera,int left)
         for(unsigned n=first;n<s_capture_frame->count;++n)s_capture_frame->sprites[n].asset=4;
     }
 }
+static void labyrinth_boss_present(unsigned priority,int camera,int left)
+{
+    /* DLE_LZ3 waits for the native camera gate. An expanded view can see
+     * the stationary ship first; compose its initial ROM pose until the
+     * original boss exists, without starting its chase or allocating slots. */
+    unsigned event=video_ram[0xF742],pending=0;
+    if(priority!=4 || !gameplay() || s_requested_width<=320 ||
+       ram16(0xFE10)!=0x102 || event>2 || ram16(0xF704)>=0x600)return;
+    for(unsigned o=0xD800;o<0xF000;o+=64)if(video_ram[o]==0x77) {
+        if(video_ram[o+0x24]>=2)return;
+        pending=1;
+    }
+    /* DLE can allocate after ExecuteObjects. Cover that uninitialized tick
+     * too, but never recreate a boss removed after the event has started. */
+    if(event && !pending)return;
+    const int x=0x1E10,y=0x5C0;
+    if(x+40<=left || x-40>=left+s_requested_width)return;
+    s_capture_slot=0;s_capture_space=4;
+    static const unsigned frames[]={0,1,10};
+    for(unsigned i=0;i<3;++i)
+        add_mapping(0x17D0C,frames[i],0x400,4,
+                    x-camera,y-ram16(0xF704),0,0);
+}
 /* Orb_Main initializes the head but only its satellites queue sprites in
  * the first object pass. During the frozen level fade, show that already
  * initialized head too. The next ordinary object pass owns it again. */
@@ -1225,6 +1248,7 @@ static void capture_objects(void)
                 springyard_present(pri,cam,left);
             }
             final_cylinders_present(pri,cam,left);
+            labyrinth_boss_present(pri,cam,left);
             scrap_floor_present(pri,cam,left);
             final_escape_present(pri,cam);
             initial_orbinauts_present(pri,cam);
