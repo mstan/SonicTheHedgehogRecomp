@@ -1261,7 +1261,11 @@ static void capture_objects(void)
                      * its phase through the expanded view's camera too,
                      * so a clamped view keeps its foreground stationary. */
                     int view_camera=left+(s_requested_width-320)/2;
-                    x=((ram16(o+8)+cam-view_camera)&511)-128;hud=0;s_capture_space=4;
+                    /* The native actor doubles the full 16.16 camera, so
+                     * its X includes a carry from the fractional half. A
+                     * clamped view has no such fractional movement. */
+                    int carry=view_camera!=cam?(ram16(0xF702)>>15):0;
+                    x=((ram16(o+8)+cam-view_camera+carry)&511)-128;hud=0;s_capture_space=4;
                     s_capture_frame->ox[s_capture_slot]=(int16_t)(cam+x);
                     s_capture_frame->oy[s_capture_slot]=(int16_t)(ram16(0xF704)+y);
                 }
@@ -1364,7 +1368,11 @@ static void capture_objects(void)
             capsule_animals_present(pri,cam,left);
             entry_placements_present(pri,cam,left);
         }
-        if(!s_capture_readonly && pri==2 && gameplay() && !native_activation()) {
+        /* The outgoing level still owns adopted rings after activation is
+         * frozen for a Title/SEGA fade. Draw them without resuming guest work. */
+        int outgoing=(video_ram[0xF600]&127)==0 || (video_ram[0xF600]&127)==4;
+        if(!s_capture_readonly && pri==2 && gameplay() &&
+           (!native_activation() || (s_rings_adopted && outgoing && !recorded_demo()))) {
             s_capture_slot=0;s_capture_space=4;
             for(unsigned n=0;n<s_placement_count;++n) {
                 Placement *p=&s_placements[n]; if(p->id!=0x25)continue;

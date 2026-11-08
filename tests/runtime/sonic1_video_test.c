@@ -301,6 +301,26 @@ int main(int argc,char **argv)
     CHECK(!s1_video_hook(0x1ADE4));CHECK(ring_calls==1); /* no duplicate collection */
     CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD840]==0); /* no duplicate spawn */
 
+    /* Adopted rings remain visible while the live level fades to Title or
+     * SEGA. Freezing activation must not remove their presentation owner. */
+    for(unsigned frame=0;frame<4;++frame)word(g_rom,0x9F92+frame*2,8);
+    g_rom[0x9F9A]=1;
+    for(unsigned n=1;n<=5;++n)g_rom[0x9F9A+n]=0;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    upload_sat(&v);sonic1_video.scanline(&v,0,native,320,out,1593);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":3"));
+    for(unsigned mode=0;mode<=4;mode+=4) {
+        g_ram[0xF600]=(uint8_t)mode;
+        memcpy(ram_before,g_ram,sizeof g_ram);M68KState cpu_before=g_cpu;
+        CHECK(!s1_video_hook(0xD980));
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);
+        upload_sat(&v);sonic1_video.scanline(&v,0,native,320,out,1593);
+        s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":3"));
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+        CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    }
+    g_ram[0xF600]=12;memset(g_rom+0x9F92,0,14);
+
     /* MZ's first grassy platform is at X=640. A smooth camera at X=1
      * previously spawned it, then the 128px-rounded culler deleted it and
      * the host loader remembered it forever. Load and retain the SAME cells. */
@@ -1479,7 +1499,10 @@ int main(int argc,char **argv)
         for(unsigned tick=0;tick<4;++tick) {
             int camera=clamp_cameras[edge][tick];
             word(g_ram,0xF700,camera);word(g_ram,0xFF10,camera);word(g_ram,0xFE04,tick+10);
-            word(g_ram,0xD808,-2*camera);word(v.vram,0xFC00,-camera);
+            /* Pyl_Display doubles the full 16.16 camera before taking its
+             * integer part. A half-pixel carry must not shake a fixed view. */
+            word(g_ram,0xF702,tick&1?0x9000:0x7000);
+            word(g_ram,0xD808,-2*camera-(tick&1));word(v.vram,0xFC00,-camera);
             memcpy(ram_before,g_ram,sizeof g_ram);
             s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
             CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
@@ -1499,6 +1522,7 @@ int main(int argc,char **argv)
         }
         sonic1_video.presentation_configure(0);
     }
+    word(g_ram,0xF702,0);
     /* Interpolate through the hardware's X wrap without taking a 512px
      * excursion. Sixteen pixels of camera movement moves each column 32px. */
     sonic1_video.presentation_configure(1);
