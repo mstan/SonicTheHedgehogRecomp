@@ -1549,5 +1549,23 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
     CHECK(out[14]==0xFF0000FFu);CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
     word(g_ram,0xF700,0xBF0);CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD800]==0x5B);
+    /* Stage planes can arrive while the card SAT still owns the display.
+     * Black stage palettes must suppress palette0 scenery too, even before
+     * the fade target is loaded; the card and HUD keep their own palette. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
+    g_ram[0xF600]=0x8C;word(g_ram,0xFE10,0x400);word(g_ram,0xF626,0x003F);
+    g_ram[0xD080]=0x34;word(g_ram,0xD082,2);word(g_ram,0xD088,288);word(g_ram,0xD08A,144);word(g_ram,0xD0B0,288);
+    m68k_write32(0xD084,0x1200);word(g_rom,0x1200,2);g_rom[0x1202]=1;memset(g_rom+0x1203,0,5);
+    g_ram[0xD040]=0x21;word(g_ram,0xD042,1);word(g_ram,0xD048,144);word(g_ram,0xD04A,144);m68k_write32(0xD044,0x1200);
+    word(g_ram,0xAC00,4);word(g_ram,0xAC02,0xD080);word(g_ram,0xAC04,0xD040);
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;
+    v.cram[1]=0xE00;v.cram[2]=0xE;memset(v.vram+32,0x11,32);memset(v.vram+64,0x22,32);
+    word(v.vram,0xC000+24*128+24*2,1);memcpy(ram_before,g_ram,sizeof g_ram);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,192,native,320,out,796);
+    CHECK(out[430]==0xFF000000u);
+    sonic1_video.scanline(&v,16,native,320,out,796);
+    CHECK(out[398]==0xFFFF0000u && out[16]==0xFF0000FFu);
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
     return 0;
 }

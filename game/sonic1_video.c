@@ -1564,6 +1564,9 @@ static int world_fade_steps(const GVDP *v,int width)
     unsigned range=ram16(0xF626);
     if(width<=320 || !(video_ram[0xF600]&128) ||
        (range!=0x202F && range!=0x003F))return -1;
+    unsigned black=16;
+    while(black<64 && !(v->cram[black]&0xEEE))++black;
+    if(black==64)return 0;
     const unsigned targets[]={0xFB80,0xFA00};
     for(unsigned n=0;n<(video_ram[0xFE10]==1?2u:1u);++n) {
         int steps=-1;
@@ -1755,7 +1758,7 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
      * displayed. Do not expose the incoming level before its own display
      * list/planes reach VBlank. */
     if(s_title_world || (s_display && s_display->scene!=1))level=0;
-    int world_steps=level?world_fade_steps(v,width):-1;
+    int world_steps=level || (s_display && s_display->scene==3)?world_fade_steps(v,width):-1;
     uint32_t world_palette[16];
     if(world_steps>=0)for(unsigned i=0;i<16;++i)
         world_palette[i]=genesis_dac_cram_to_argb(fade_from_black(v->cram[i],world_steps),GENESIS_DAC_NORMAL);
