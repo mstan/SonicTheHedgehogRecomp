@@ -1219,6 +1219,20 @@ int main(int argc,char **argv)
         s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
         sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":0"));
     }
+    /* Marble's initial ship and tube obey the same visual-only handoff,
+     * with their own authored pose and earlier native event gate. */
+    memset(g_ram+0xD800,0,64);word(g_ram,0xFE10,0x202);g_ram[0xF742]=0;
+    word(g_ram,0xF700,0x17D0);word(g_ram,0xFF10,0x17D0);word(g_ram,0xF704,0x224);
+    word(v.vram,0xFC00,-0x17D0);word(g_rom,0x17DD4+8,12);
+    for(unsigned phase=0;phase<4;++phase) {
+        g_ram[0xD800]=phase==1 || phase==2?0x73:0;
+        g_ram[0xD824]=phase==2?2:0;g_ram[0xF742]=phase?2:0;
+        memcpy(ram_before,g_ram,sizeof g_ram);ship_cpu=g_cpu;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+        CHECK(strstr(reply,phase<2?"\"sprites\":4":"\"sprites\":0"));
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&ship_cpu,&g_cpu,sizeof g_cpu));
+    }
     /* An early world sprite must not borrow a title card's centered origin
      * before its level scene is installed. The screen-space card stays. */
     memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
@@ -1527,11 +1541,11 @@ int main(int argc,char **argv)
     }
     /* A clamped expanded view keeps its foreground fixed while the native
      * camera catches up. Cover both ends and fractional presentation. */
-    const int clamp_cameras[2][4]={{0,64,128,176},{978,1000,1100,1216}};
+    const int clamp_cameras[2][5]={{0,64,128,176,176},{978,978,1000,1100,1216}};
     uint32_t pylon_locked[796];
     for(unsigned edge=0;edge<2;++edge) {
         sonic1_video.presentation_configure(1);
-        for(unsigned tick=0;tick<4;++tick) {
+        for(unsigned tick=0;tick<5;++tick) {
             int camera=clamp_cameras[edge][tick];
             word(g_ram,0xF700,camera);word(g_ram,0xFF10,camera);word(g_ram,0xFE04,tick+10);
             /* Pyl_Display doubles the full 16.16 camera before taking its

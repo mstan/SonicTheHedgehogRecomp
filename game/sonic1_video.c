@@ -681,22 +681,24 @@ static void labyrinth_boss_present(unsigned priority,int camera,int left)
         add_mapping(0x17D0C,frames[i],0x400,4,
                     x-camera,y-ram16(0xF704),0,0);
 }
-static void starlight_boss_present(unsigned priority,int camera,int left)
+static void stationary_boss_present(unsigned priority,int camera,int left)
 {
-    /* The stationary ship is visible before DLE_SLZ3's music/PLC gate.
+    /* The stationary ship is visible before the native music/PLC gate.
      * Publish only its initial pose until the real boss initializes. */
-    unsigned event=video_ram[0xF742],pending=0;
+    unsigned zone=ram16(0xFE10),event=video_ram[0xF742],pending=0;
+    int marble=zone==0x202;
+    unsigned id=marble?0x73:0x7A,gate=marble?2:4;
     if((priority!=3 && priority!=4) || !gameplay() || s_requested_width<=320 ||
-       ram16(0xFE10)!=0x302 || event>4)return;
-    for(unsigned o=0xD800;o<0xF000;o+=64)if(video_ram[o]==0x7A) {
+       (zone!=0x302 && !marble) || event>gate)return;
+    for(unsigned o=0xD800;o<0xF000;o+=64)if(video_ram[o]==id) {
         if(video_ram[o+0x24]>=2)return;
         pending=1;
     }
-    if(event==4 && !pending)return;
-    const int x=0x2188,y=0x228;
+    if(event==gate && !pending)return;
+    const int x=marble?0x19F0:0x2188,y=marble?0x22C:0x228;
     if(x+48<=left || x-48>=left+s_requested_width)return;
     s_capture_slot=0;s_capture_space=4;
-    if(priority==3)add_mapping(0x17DD4,3,0x246C,4,x-camera,y-ram16(0xF704),0,0);
+    if(priority==3)add_mapping(0x17DD4,marble?4:3,0x246C,4,x-camera,y-ram16(0xF704),0,0);
     else {
         static const unsigned frames[]={0,1,8};
         for(unsigned i=0;i<3;++i)
@@ -1284,7 +1286,8 @@ static void capture_objects(void)
                     /* The native actor doubles the full 16.16 camera, so
                      * its X includes a carry from the fractional half. A
                      * clamped view has no such fractional movement. */
-                    int carry=view_camera!=cam?(ram16(0xF702)>>15):0;
+                    int carry=ram16(0xF702)>>15;
+                    if(view_camera==cam && scene_left(video_ram,cam+1,s_requested_width)!=left)carry=0;
                     x=((ram16(o+8)+cam-view_camera+carry)&511)-128;hud=0;s_capture_space=4;
                     s_capture_frame->ox[s_capture_slot]=(int16_t)(cam+x);
                     s_capture_frame->oy[s_capture_slot]=(int16_t)(ram16(0xF704)+y);
@@ -1380,7 +1383,7 @@ static void capture_objects(void)
             }
             final_cylinders_present(pri,cam,left);
             labyrinth_boss_present(pri,cam,left);
-            starlight_boss_present(pri,cam,left);
+            stationary_boss_present(pri,cam,left);
             scrap_floor_present(pri,cam,left);
             final_escape_present(pri,cam);
             initial_orbinauts_present(pri,cam);
