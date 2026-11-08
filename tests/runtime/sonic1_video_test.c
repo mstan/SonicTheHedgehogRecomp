@@ -108,7 +108,7 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(!memcmp(out+238,native,sizeof native)); /* centered during scrolling */
     CHECK(out[10] == 0xFFFF0000u); CHECK(out[795] == 0xFFFF0000u);
-    g_ram[0xF600] = 4;
+    g_ram[0xF600] = 4;g_ram[0xD000]=0;
     sonic1_video.scanline(&v,0,native,320,out,8192);
     CHECK(!memcmp(out+(8192-320)/2,native,sizeof native));
     CHECK(out[0] == 0xFF000000u); CHECK(out[8191] == 0xFF000000u);
@@ -250,11 +250,11 @@ int main(int argc,char **argv)
         sonic1_video.scanline(&v,1,native,256,expected,1593);
         sonic1_video.scanline_lazy(&v,1,256,out,1593,fetch_native,native);
         CHECK(native_fetches==1);CHECK(!memcmp(expected,out,sizeof expected));
-        unsigned mode=g_ram[0xF600];g_ram[0xF600]=4;
+        unsigned mode=g_ram[0xF600],player=g_ram[0xD000];g_ram[0xF600]=4;g_ram[0xD000]=0;
         sonic1_video.scanline(&v,0,native,320,expected,1593);
         sonic1_video.scanline_lazy(&v,0,320,out,1593,fetch_native,native);
         CHECK(native_fetches==2);CHECK(!memcmp(expected,out,sizeof expected));
-        g_ram[0xF600]=(uint8_t)mode;
+        g_ram[0xF600]=(uint8_t)mode;g_ram[0xD000]=(uint8_t)player;
         sonic1_video.scanline(&v,0,native,320,out,1593);
     }
     s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":2"));
@@ -409,8 +409,8 @@ int main(int argc,char **argv)
     /* SEGA is selected before the demo's sixty-frame fade finishes. Keep
      * rendering the outgoing level until its player/planes are replaced. */
     uint32_t level_line[796];memcpy(level_line,out,sizeof level_line);
-    word(g_ram,0xFFF0,1);
-    for(int mode=0;mode<=4;mode+=4) {
+    for(int demo=0;demo<=1;++demo)for(int mode=0;mode<=4;mode+=4) {
+        word(g_ram,0xFFF0,demo);
         /* Start skips select Title; timeout selects SEGA. Both still own
          * the outgoing level until its objects/planes are replaced. */
         g_ram[0xF600]=(uint8_t)mode;

@@ -61,7 +61,7 @@ static int gameplay(void)
      * still-live player/layout until the incoming scene replaces them. */
     int player=video_ram[0xD000];
     return ((mode == 8 || mode == 12 || mode == 16 || mode == 24 || mode == 28 ||
-             ((mode == 0 || mode == 4) && ram16(0xFFF0) == 1)) && player == 1) ||
+             mode == 0 || mode == 4) && player == 1) ||
            ((mode == 24 || mode == 28) && player == 0x87) || results_world();
 }
 static int recorded_demo(void)
@@ -76,6 +76,7 @@ static int native_activation(void)
 {
     if(recorded_demo())return 1;
     if(!gameplay())return 0;
+    if((video_ram[0xF600]&127)==0 || (video_ram[0xF600]&127)==4)return 1;
     if(results_world())return 1; /* no player: presentation only, no host rings/activation */
     if(video_ram[0xF600]&128)return 1;
     for(unsigned o=0xD080;o<0xD200;o+=64)if(video_ram[o]==0x34)return 1;
@@ -165,7 +166,7 @@ static uint8_t pattern_pixel(const GVDP *v, uint16_t attr, int x, int y)
  * guest VRAM, PLC order and simulation clocks remain untouched. Format and
  * XOR rows follow REV00 NemDec ($1440), not a second machine execution. */
 typedef struct { uint8_t pixels[8192];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
-enum { SPRITE_ART_COUNT=18 };
+enum { SPRITE_ART_COUNT=21 };
 static SpriteArt s_sprite_art[SPRITE_ART_COUNT];
 static unsigned art_bits(unsigned bit,unsigned count)
 {
@@ -209,9 +210,10 @@ static uint8_t sprite_pixel(const GVDP *v,unsigned asset,uint16_t attr,int x,int
 {
     if(!asset || asset>SPRITE_ART_COUNT || !enabled() || s_requested_width<=320)return pattern_pixel(v,attr,x,y);
     static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324,0x5CC62,0x339DA,
-        0x3B3DA,0x3B532,0x3B68E,0x3B80A,0x3B926,0x3BA5C,0x3BB96,0x3401A,0x5D4C6};
+        0x3B3DA,0x3B532,0x3B68E,0x3B80A,0x3B926,0x3BA5C,0x3BB96,0x3401A,0x5D4C6,
+        0x36DD4,0x3A360,0x3A462};
     static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400,0x400,0x3CC,
-        0x580,0x592,0x580,0x592,0x580,0x592,0x580,0x4A0,0x46C};
+        0x580,0x592,0x580,0x592,0x580,0x592,0x580,0x4A0,0x46C,0x486,0x523,0x533};
     SpriteArt *art=&s_sprite_art[asset-1];
     if(!art->ready) {
         art->base=bases[asset-1];
@@ -256,7 +258,7 @@ static int departing_demo(const SceneFrame *scene,const uint8_t *ram)
 {
     int mode=ram[0xF600]&127;
     return scene && scene->scene==1 && scene->identity[0]==SCENE_CAMERA_TAG &&
-        (mode==0 || mode==4) && ram[0xD000]==1 && ram[0xFFF0]==0 && ram[0xFFF1]==1;
+        (mode==0 || mode==4) && ram[0xD000]==1;
 }
 static SceneFrame s_build, s_history[3], s_display_frame;
 static const SceneFrame *s_display;
@@ -492,7 +494,8 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
         }
         /* The shared Eggmobile mappings include the exhaust. Wider object
          * activation can expose them before their PLC completes as well. */
-        s->asset=(uint8_t)(owner==0x5C?9:map==0x17D0C?8:map==0x17DD4?18:
+        s->asset=(uint8_t)(map==0xAC70?19:map==0xDD1A?((gfx&2047u)==0x533?21:20):
+            owner==0x5C?9:map==0x17D0C?8:map==0x17DD4?18:
             owner==0x82 && map==0xBEA4?17:owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:animal);
     }
 }
