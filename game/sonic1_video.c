@@ -242,7 +242,7 @@ static uint16_t plane_attr(const GVDP *v, unsigned base, int x, int y)
  * for the hardware pass and publishes a signature used to align our list
  * with the exact VBlank upload displayed by the VDP. */
 typedef struct { int x, y; uint16_t attr; uint8_t size, hud,slot,space,asset; } SceneSprite;
-enum { SCENE_SPRITES = 32768, SCENE_PLACEMENTS = 1024, SCENE_SLOTS=129 };
+enum { SCENE_SPRITES = 32768, SCENE_PLACEMENTS = 1024, SCENE_SLOTS=160 };
 typedef struct {
     SceneSprite sprites[SCENE_SPRITES];
     unsigned count, serial;
@@ -280,7 +280,7 @@ static int s_loader_active, s_rings_adopted;
 typedef struct { int x, y; unsigned tick; } RingSpark;
 static RingSpark s_sparks[64];
 static unsigned s_spark_next;
-typedef struct { uint8_t object[64]; uint16_t slot; uint8_t seen, tail; } SceneTail;
+typedef struct { uint8_t object[64]; uint16_t slot; uint8_t seen, tail; uint32_t generation; } SceneTail;
 /* Scene-exclusive continuations share storage and reset at level setup. */
 static SceneTail s_actor_tails[128];
 static unsigned s_tail_frame;
@@ -486,7 +486,7 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
         if (y+dy>=224 || y+dy+((size&3)+1)*8<=0) continue;
         SceneSprite *s=&s_capture_frame->sprites[s_capture_frame->count++];
         s->x=x+dx; s->y=y+dy; s->attr=attr; s->size=(uint8_t)size; s->hud=(uint8_t)hud;s->slot=(uint8_t)s_capture_slot;s->space=(uint8_t)s_capture_space;
-        unsigned owner=s_capture_slot?video_ram[0xD000+(s_capture_slot-1)*64]:0;
+        unsigned owner=s_capture_slot && s_capture_slot<=128?video_ram[0xD000+(s_capture_slot-1)*64]:0;
         unsigned animal=0;
         if(owner==0x28) {
             unsigned o=0xD000+(s_capture_slot-1)*64;
@@ -553,14 +553,30 @@ static int placement_alive(const Placement *p) { return placement_object(p)!=0; 
  * Their motion follows LGrass_Types/Glass_Types in the original REV00 code. */
 static void marble_present(unsigned priority,int camera,int left)
 {
-    if(!native_activation() || !gameplay() || video_ram[0xFE10]!=2 ||
+    if(!gameplay() || video_ram[0xFE10]!=2 ||
        (priority!=3 && priority!=4 && priority!=5))return;
+    int native=native_activation();
     load_placements();s_capture_slot=0;s_capture_space=4;
     for(unsigned i=0;i<s_placement_count;++i) {
         const Placement *p=&s_placements[i];
         if(p->x+64<left || (int)p->x-64>=left+s_requested_width)continue;
         if(p->id!=0x2F && p->id!=0x30)continue;
-        if(placement_alive(p))continue;
+        unsigned o=placement_object(p);s_capture_slot=0;
+        if(o) {
+            unsigned slot=1+(o-0xD000)/64;
+            if(p->id!=0x2F || s_capture_frame->identity[slot])continue;
+            unsigned map=scene_read32(0xFF0000u+o+4);
+            if(video_ram[o+0x24] && map) {
+                if(priority!=video_ram[o+0x18])continue;
+                s_capture_slot=slot;
+                s_capture_frame->ox[slot]=(int16_t)ram16(o+8);
+                s_capture_frame->oy[slot]=(int16_t)ram16(o+12);
+                s_capture_frame->identity[slot]=0x2F000000u|map;
+                add_mapping(map,video_ram[o+0x1A],ram16(o+2),video_ram[o+1],
+                            (int)ram16(o+8)-camera,(int)ram16(o+12)-ram16(0xF704),0,0);
+                continue;
+            }
+        } else if(!native)continue;
         unsigned type=p->subtype&7,frame=0,map,gfx;
         int y=p->y&4095,offset=0;
         if(p->id==0x2F) {
@@ -938,6 +954,7 @@ static void retire_capsule_animal(const SceneTail *tail)
 {
     for(unsigned n=97;n<128;++n)if(!s_actor_tails[n].seen || !s_actor_tails[n].tail) {
         s_actor_tails[n]=*tail;
+        s_actor_tails[n].generation=s_scene_tick;
         return;
     }
 }
@@ -986,7 +1003,12 @@ static void capsule_animals_present(unsigned priority,int camera,int left)
             tail->tail=0;continue;
         }
         if(a[0x18]!=priority)continue;
-        s_capture_slot=0;s_capture_space=4;
+        /* Stable host slots let interpolation follow the continuation even
+         * after its native slot is reused by another released animal. */
+        s_capture_slot=32+n;s_capture_space=4;
+        s_capture_frame->ox[s_capture_slot]=(int16_t)x;
+        s_capture_frame->oy[s_capture_slot]=(int16_t)actor_word(a,12);
+        s_capture_frame->identity[s_capture_slot]=0x28000000u|(tail->generation&0xFFFFFFu);
         unsigned first=s_capture_frame->count;
         add_mapping(((uint32_t)actor_word(a,4)<<16)|actor_word(a,6),a[0x1A],actor_word(a,2),a[1],x-camera,y,0,0);
         if(a[0x30]<7)for(unsigned k=first;k<s_capture_frame->count;++k)

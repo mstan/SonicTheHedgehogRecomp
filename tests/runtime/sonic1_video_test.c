@@ -531,6 +531,15 @@ int main(int argc,char **argv)
     word(g_ram,0xFE04,50);s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);
     sonic1_video.scanline(&v,8,native,320,out,796);CHECK(out[38]==0xFF0000FFu);
+    /* Card departure can allocate the platform before its first display
+     * submission. The visual preview must survive that loader handoff. */
+    g_ram[0xF600]=12;word(g_ram,0xFFF0,0);
+    g_ram[0xD800]=0x2F;word(g_ram,0xD808,600);word(g_ram,0xD80C,8);
+    memcpy(ram_before,g_ram,sizeof g_ram);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,8,native,320,out,796);CHECK(out[38]==0xFF0000FFu);
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
     /* Recorded SYZ fades show both unloaded margin Yadrins and initialized
      * enemies that have not yet queued a sprite. They remain visual-only,
      * hand over once queued, and never resurrect a destroyed enemy. */
@@ -1308,6 +1317,21 @@ int main(int argc,char **argv)
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
     sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
     CHECK(out[36]==0xFF0000FFu);
+    /* A retired margin animal still moves at fractional presentation
+     * phases, after its reusable native object slot has been deleted. */
+    static uint32_t animal_fractional[796*224];
+    sonic1_video.presentation_configure(1);
+    for(unsigned tick=3;tick<=4;++tick) {
+        word(g_ram,0xFE04,tick);s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        for(int y=0;y<224;++y) {
+            sonic1_video.scanline(&v,y,native,320,out,796);
+            sonic1_video.presentation_capture(&v,y,out,796,320,NULL);
+        }
+    }
+    CHECK(sonic1_video.interpolate(.5,animal_fractional,796,224));
+    CHECK(animal_fractional[8*796+32]==0xFF000000u);
+    CHECK(animal_fractional[8*796+33]==0xFF0000FFu);
+    sonic1_video.presentation_configure(0);
     /* Fixed magma fills only blank margin cells. Foreground stonework,
      * native coordinates and the guest layout remain untouched. */
     memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
