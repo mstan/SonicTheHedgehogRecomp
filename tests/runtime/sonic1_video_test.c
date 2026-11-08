@@ -1423,7 +1423,7 @@ int main(int argc,char **argv)
     g_ram[0xD801]=0;word(g_ram,0xD802,0x8001);m68k_write32(0xFFD804,0x11096);
     word(g_ram,0xD80A,136);g_ram[0xD818]=1;
     word(g_ram,0xAC00+128,2);word(g_ram,0xAC02+128,0xD800);
-    const int pylon_cameras[]={0,768,800},pylon_x[][2]={{384,-1},{110,622},{46,558}};
+    const int pylon_cameras[]={0,768,800},pylon_x[][2]={{146,658},{110,622},{46,558}};
     for(unsigned n=0;n<3;++n) {
         word(g_ram,0xF700,pylon_cameras[n]);word(g_ram,0xFF10,pylon_cameras[n]);
         word(g_ram,0xD808,-2*pylon_cameras[n]);word(v.vram,0xFC00,-pylon_cameras[n]);
@@ -1433,6 +1433,35 @@ int main(int argc,char **argv)
         CHECK(out[pylon_x[n][0]]==0xFF0000FFu);
         if(pylon_x[n][1]>=0)CHECK(out[pylon_x[n][1]]==0xFF0000FFu);
         CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    }
+    /* A clamped expanded view keeps its foreground fixed while the native
+     * camera catches up. Cover both ends and fractional presentation. */
+    const int clamp_cameras[2][4]={{0,64,128,176},{978,1000,1100,1216}};
+    uint32_t pylon_locked[796];
+    for(unsigned edge=0;edge<2;++edge) {
+        sonic1_video.presentation_configure(1);
+        for(unsigned tick=0;tick<4;++tick) {
+            int camera=clamp_cameras[edge][tick];
+            word(g_ram,0xF700,camera);word(g_ram,0xFF10,camera);word(g_ram,0xFE04,tick+10);
+            word(g_ram,0xD808,-2*camera);word(v.vram,0xFC00,-camera);
+            memcpy(ram_before,g_ram,sizeof g_ram);
+            s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+            CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+            for(int y=0;y<224;++y) {
+                sonic1_video.scanline(&v,y,native,320,out,796);
+                if(y==8) {
+                    if(!tick)memcpy(pylon_locked,out,sizeof pylon_locked);
+                    else CHECK(!memcmp(pylon_locked,out,sizeof pylon_locked));
+                }
+                sonic1_video.presentation_capture(&v,y,out,796,320,NULL);
+            }
+            if(tick) {
+                static uint32_t locked_frame[796*224];
+                CHECK(sonic1_video.interpolate(.5,locked_frame,796,224));
+                CHECK(!memcmp(pylon_locked,locked_frame+8*796,sizeof pylon_locked));
+            }
+        }
+        sonic1_video.presentation_configure(0);
     }
     /* Interpolate through the hardware's X wrap without taking a 512px
      * excursion. Sixteen pixels of camera movement moves each column 32px. */

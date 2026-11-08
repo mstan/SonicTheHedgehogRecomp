@@ -1211,10 +1211,11 @@ static void capture_objects(void)
             } else {
                 x=(int16_t)ram16(o+8)-128;y=(int16_t)ram16(o+10)-128;
                 if(pylon) {
-                    /* Pyl_Display scrolls at twice camera speed and relies
-                     * on the SAT's 9-bit X wrap. Project that screen-space
-                     * phase from the native world origin, rather than UI. */
-                    x=(ram16(o+8)&511)-128;hud=0;s_capture_space=4;
+                    /* Pyl_Display uses twice the native camera. Reproject
+                     * its phase through the expanded view's camera too,
+                     * so a clamped view keeps its foreground stationary. */
+                    int view_camera=left+(s_requested_width-320)/2;
+                    x=((ram16(o+8)+cam-view_camera)&511)-128;hud=0;s_capture_space=4;
                     s_capture_frame->ox[s_capture_slot]=(int16_t)(cam+x);
                     s_capture_frame->oy[s_capture_slot]=(int16_t)(ram16(0xF704)+y);
                 }
