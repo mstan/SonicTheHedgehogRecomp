@@ -1328,16 +1328,13 @@ static void capture_objects(void)
             } else {
                 x=(int16_t)ram16(o+8)-128;y=(int16_t)ram16(o+10)-128;
                 if(pylon) {
-                    /* Pyl_Display uses twice the native camera. Reproject
-                     * its phase through the expanded view's camera too,
-                     * so a clamped view keeps its foreground stationary. */
+                    /* Pyl_Display can precede camera deformation. Derive
+                     * its 2x phase from this displayed view, rather than
+                     * mixing the old object X with the updated camera. */
                     int view_camera=left+(s_requested_width-320)/2;
-                    /* The native actor doubles the full 16.16 camera, so
-                     * its X includes a carry from the fractional half. A
-                     * clamped view has no such fractional movement. */
-                    int carry=ram16(0xF702)>>15;
-                    if(view_camera==cam && scene_left(video_ram,cam+1,s_requested_width)!=left)carry=0;
-                    x=((ram16(o+8)+cam-view_camera+carry)&511)-128;hud=0;s_capture_space=4;
+                    int carry=view_camera==cam && scene_left(video_ram,cam+1,s_requested_width)!=left?
+                        ram16(0xF702)>>15:0;
+                    x=((-cam-view_camera-carry)&511)-128;hud=0;s_capture_space=4;
                     s_capture_frame->ox[s_capture_slot]=(int16_t)(cam+x);
                     s_capture_frame->oy[s_capture_slot]=(int16_t)(ram16(0xF704)+y);
                 }

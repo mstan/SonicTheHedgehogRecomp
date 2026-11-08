@@ -1635,10 +1635,12 @@ int main(int argc,char **argv)
     sonic1_video.presentation_configure(1);
     for(unsigned tick=0;tick<128;++tick) {
         unsigned camera_fixed=(32u<<16)+tick*0x11000u;
+        unsigned previous_fixed=tick?(32u<<16)+(tick-1)*0x11000u:camera_fixed;
         int camera=(int)(camera_fixed>>16);
         word(g_ram,0xF700,camera);word(g_ram,0xF702,camera_fixed);
         word(g_ram,0xFF10,camera);word(g_ram,0xFE04,tick+100);
-        word(g_ram,0xD808,-(int)(camera_fixed>>15));word(v.vram,0xFC00,-camera);
+        /* Object execution precedes camera deformation in the level loop. */
+        word(g_ram,0xD808,-(int)(previous_fixed>>15));word(v.vram,0xFC00,-camera);
         s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
         for(int y=0;y<224;++y) {
             sonic1_video.scanline(&v,y,native,320,out,796);
