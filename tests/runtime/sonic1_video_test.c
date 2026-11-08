@@ -1410,19 +1410,32 @@ int main(int argc,char **argv)
     m68k_write32(0xD804,0x1000);word(g_ram,0xD802,1);
     word(g_ram,0xD808,600);word(g_ram,0xD80C,8);word(g_ram,0xD810,-512);
     word(g_ram,0xAC00+6*128,2);word(g_ram,0xAC02+6*128,0xD800);
+    static uint32_t animal_fractional[796*224];
+    sonic1_video.presentation_configure(1);word(g_ram,0xFE04,1);
     memcpy(ram_before,g_ram,sizeof g_ram);
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    for(int y=0;y<224;++y) {
+        sonic1_video.scanline(&v,y,native,320,out,796);
+        sonic1_video.presentation_capture(&v,y,out,796,320,NULL);
+    }
     memset(g_ram+0xD800,0,64);word(g_ram,0xAC00+6*128,0);word(g_ram,0xFE04,2);
     memcpy(ram_before,g_ram,sizeof g_ram);
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
     sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
     CHECK(out[36]==0xFF0000FFu);
+    for(int y=0;y<224;++y) {
+        sonic1_video.scanline(&v,y,native,320,out,796);
+        sonic1_video.presentation_capture(&v,y,out,796,320,NULL);
+    }
+    /* The first retired pose must interpolate from its last native slot,
+     * before subsequent frames can use the new host slot's history. */
+    CHECK(sonic1_video.interpolate(.5,animal_fractional,796,224));
+    CHECK(animal_fractional[8*796+36]==0xFF000000u);
+    CHECK(animal_fractional[8*796+37]==0xFF0000FFu);
     /* A retired margin animal still moves at fractional presentation
      * phases, after its reusable native object slot has been deleted. */
-    static uint32_t animal_fractional[796*224];
-    sonic1_video.presentation_configure(1);
     for(unsigned tick=3;tick<=4;++tick) {
         word(g_ram,0xFE04,tick);s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
         for(int y=0;y<224;++y) {
@@ -1602,6 +1615,31 @@ int main(int argc,char **argv)
         sonic1_video.presentation_configure(0);
     }
     word(g_ram,0xF702,0);
+    /* Consecutive fractional camera updates, including half-pixel carries,
+     * keep a fixed expanded foreground fixed at every presentation phase. */
+    static uint32_t pylon_motion[796*224];
+    sonic1_video.presentation_configure(1);
+    for(unsigned tick=0;tick<128;++tick) {
+        unsigned camera_fixed=(32u<<16)+tick*0x11000u;
+        int camera=(int)(camera_fixed>>16);
+        word(g_ram,0xF700,camera);word(g_ram,0xF702,camera_fixed);
+        word(g_ram,0xFF10,camera);word(g_ram,0xFE04,tick+100);
+        word(g_ram,0xD808,-(int)(camera_fixed>>15));word(v.vram,0xFC00,-camera);
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        for(int y=0;y<224;++y) {
+            sonic1_video.scanline(&v,y,native,320,out,796);
+            if(y==8) {
+                if(!tick)memcpy(pylon_locked,out,sizeof pylon_locked);
+                else CHECK(!memcmp(pylon_locked,out,sizeof pylon_locked));
+            }
+            sonic1_video.presentation_capture(&v,y,out,796,320,NULL);
+        }
+        if(tick)for(unsigned phase=1;phase<4;++phase) {
+            CHECK(sonic1_video.interpolate(phase*.25,pylon_motion,796,224));
+            CHECK(!memcmp(pylon_locked,pylon_motion+8*796,sizeof pylon_locked));
+        }
+    }
+    sonic1_video.presentation_configure(0);word(g_ram,0xF702,0);
     /* Interpolate through the hardware's X wrap without taking a 512px
      * excursion. Sixteen pixels of camera movement moves each column 32px. */
     sonic1_video.presentation_configure(1);

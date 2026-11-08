@@ -997,7 +997,6 @@ static void retire_capsule_animal(const SceneTail *tail)
 {
     for(unsigned n=97;n<128;++n)if(!s_actor_tails[n].seen || !s_actor_tails[n].tail) {
         s_actor_tails[n]=*tail;
-        s_actor_tails[n].generation=s_scene_tick;
         return;
     }
 }
@@ -1019,7 +1018,10 @@ static void capsule_animals_present(unsigned priority,int camera,int left)
             retire_capsule_animal(tail);
             memset(tail,0,sizeof *tail);
         }
-        if(live)remember_tail(tail,o);
+        if(live) {
+            if(!tail->seen)tail->generation=((s_scene_tick<<7)|n)&0xFFFFFFu;
+            remember_tail(tail,o);
+        }
     }
     for(unsigned n=97;n<128;++n) {
         SceneTail *tail=&s_actor_tails[n];
@@ -1313,6 +1315,11 @@ static void capture_objects(void)
             s_capture_frame->ox[s_capture_slot]=(int16_t)object_x;
             s_capture_frame->oy[s_capture_slot]=(int16_t)object_y;
             s_capture_frame->identity[s_capture_slot]=((uint32_t)video_ram[o]<<24)|scene_read32(0xFF0000u+o+4);
+            if(!s_capture_readonly && s_requested_width>320 && o>=0xD800 &&
+               video_ram[o]==0x28 && !video_ram[o+0x28] && capsule_animals()) {
+                const SceneTail *tail=&s_actor_tails[1+(o-0xD800)/64];
+                if(tail->seen)s_capture_frame->identity[s_capture_slot]=0x28000000u|tail->generation;
+            }
             int x,y,hud=video_ram[o]==0x21?1:space?0:2;
             if(space) {
                 unsigned scroll=space==4?0xF700:space==8?0xF708:0xF718;
@@ -2074,10 +2081,17 @@ static int interpolate_background_correction(int line,int margin,int current)
 static void interpolation_sprite_delta(const SceneSprite *sprite,int line,int *dx,int *dy)
 {
     const InterpFrame *a=ix_previous(),*b=ix_current();
-    unsigned slot=sprite->slot;
+    unsigned slot=sprite->slot,previous_slot=slot;
+    /* A capsule animal changes storage when its guest slot is deleted.
+     * Keep its generation across that handoff, including the first frame;
+     * a newly allocated animal in the old slot has a different generation. */
+    if(slot && slot<SCENE_SLOTS && b->scene.identity[slot]>>24==0x28 &&
+       a->scene.identity[slot]!=b->scene.identity[slot])
+        for(unsigned n=1;n<SCENE_SLOTS;++n)
+            if(a->scene.identity[n]==b->scene.identity[slot]){previous_slot=n;break;}
     if(slot && slot<SCENE_SLOTS && b->scene.identity[slot] &&
-       a->scene.identity[slot]==b->scene.identity[slot]) {
-        int ax=a->scene.ox[slot],ay=a->scene.oy[slot];
+       a->scene.identity[previous_slot]==b->scene.identity[slot]) {
+        int ax=a->scene.ox[previous_slot],ay=a->scene.oy[previous_slot];
         if(sprite->space==4 && b->scene.identity[slot]>>24==0x5C) {
             ax=b->scene.ox[slot]+((ax-b->scene.ox[slot]+256)&511)-256;
             ay=b->scene.oy[slot]+((ay-b->scene.oy[slot]+32)&63)-32;
