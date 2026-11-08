@@ -576,7 +576,7 @@ static void marble_present(unsigned priority,int camera,int left)
                             (int)ram16(o+8)-camera,(int)ram16(o+12)-ram16(0xF704),0,0);
                 continue;
             }
-        } else if(!native)continue;
+        } else if(!native && (p->id!=0x2F || p->loaded))continue;
         unsigned type=p->subtype&7,frame=0,map,gfx;
         int y=p->y&4095,offset=0;
         if(p->id==0x2F) {
@@ -1055,11 +1055,13 @@ static void spawn_scene(void)
     load_placements(); adopt_rings(); s_loader_active=1;
     int camera=ram16(0xF700), w=enabled()?s_requested_width:320;
     int lo,hi;activation_bounds(camera,w,&lo,&hi);
+    int stair_lo,stair_hi;activation_bounds(camera,320,&stair_lo,&stair_hi);
     int player=ram16(0xD008);
     s_pool_pressure=0;
     for (unsigned i=0;i<s_placement_count;++i) {
         Placement *p=&s_placements[i];
-        if ((int)p->x<lo || (int)p->x>=hi) p->loaded=0;
+        int begin=p->id==0x5B?stair_lo:lo,end=p->id==0x5B?stair_hi:hi;
+        if ((int)p->x<begin || (int)p->x>=end) p->loaded=0;
         else if (!p->loaded && placement_alive(p)) p->loaded=1;
     }
     /* Fill closest to the player first, reserving space for collision-relevant
@@ -1068,7 +1070,8 @@ static void spawn_scene(void)
         int best=-1, distance=INT_MAX;
         for (unsigned i=0;i<s_placement_count;++i) {
             Placement *p=&s_placements[i];
-            if (p->loaded || (enabled() && p->id==0x25) || (int)p->x<lo || (int)p->x>=hi) continue;
+            int begin=p->id==0x5B?stair_lo:lo,end=p->id==0x5B?stair_hi:hi;
+            if (p->loaded || (enabled() && p->id==0x25) || (int)p->x<begin || (int)p->x>=end) continue;
             if (p->state && (video_ram[0xFC02+p->state]&128)) { p->loaded=1; continue; }
             int d=abs((int)p->x-player);
             if (d<distance) { best=(int)i; distance=d; }
@@ -1176,6 +1179,24 @@ static void entry_placements_present(unsigned priority,int camera,int left)
             add_mapping(map,0,gfx,(p->y>>14)&3,(int)p->x-camera,
                         (p->y&4095)-ram16(0xF704),0,0);
         }
+    }
+}
+/* Keep resettable stairs on native activation/lifetime bounds. Their resting
+ * cubes can still be shown in a wide margin before the native group exists. */
+static void starlight_stairs_present(unsigned priority,int camera,int left)
+{
+    if(priority!=3 || !gameplay() || video_ram[0xFE10]!=3 || s_requested_width<=320)return;
+    load_placements();s_capture_slot=0;s_capture_space=4;
+    for(unsigned i=0;i<s_placement_count;++i) {
+        const Placement *p=&s_placements[i];
+        if(p->id!=0x5B || p->x+112<left || (int)p->x-16>=left+s_requested_width)continue;
+        unsigned o;
+        for(o=0xD800;o<0xF000;o+=64)
+            if(video_ram[o]==0x5B && video_ram[o+0x24] && ram16(o+0x30)==p->x)break;
+        if(o<0xF000)continue;
+        for(unsigned n=0;n<4;++n)
+            add_mapping(0x1103C,0,0x4000,0,(int)p->x+(int)n*32-camera,
+                        (p->y&4095)-ram16(0xF704),0,0);
     }
 }
 static void capture_objects(void)
@@ -1331,6 +1352,7 @@ static void capture_objects(void)
             if(!results_world() && video_ram[0xD5C0]!=0x3A) {
                 marble_present(pri,cam,left);
                 springyard_present(pri,cam,left);
+                starlight_stairs_present(pri,cam,left);
             }
             final_cylinders_present(pri,cam,left);
             labyrinth_boss_present(pri,cam,left);
@@ -1462,6 +1484,10 @@ int s1_video_hook(uint32_t pc)
         }
         return 0;
     }
+    case 0x10EB4:
+        /* Staircase lowering resets on the original unload path. A larger
+         * lifetime window can prevent that reset even after it leaves view. */
+        return 0;
     default:
         if(gameplay()) {
             /* All remaining configured sites are out_of_range's CMP. D0

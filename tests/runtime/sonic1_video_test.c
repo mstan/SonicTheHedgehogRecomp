@@ -534,6 +534,9 @@ int main(int argc,char **argv)
     /* Card departure can allocate the platform before its first display
      * submission. The visual preview must survive that loader handoff. */
     g_ram[0xF600]=12;word(g_ram,0xFFF0,0);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,8,native,320,out,796);CHECK(out[38]==0xFF0000FFu);
     g_ram[0xD800]=0x2F;word(g_ram,0xD808,600);word(g_ram,0xD80C,8);
     memcpy(ram_before,g_ram,sizeof g_ram);
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
@@ -1524,5 +1527,27 @@ int main(int argc,char **argv)
     word(g_ram,0xF700,128);word(g_ram,0xD808,500);CHECK(s1_video_hook(0xD980));
     unsigned pylons=0;for(unsigned o=0xD800;o<0xF000;o+=64)pylons+=g_ram[o]==0x5C;
     CHECK(pylons==1);
+    /* A lowered staircase must use native unload/reset bounds, even when
+     * the wider activation buffer still contains its placement. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
+    CHECK(sonic1_video.configure("32:9"));CHECK(sonic1_video.width(3200,900,320,224)==796);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;word(g_ram,0xFE10,0x300);
+    for(int n=0;n<20;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,0xE00);word(g_rom,0x6B030,0x600);
+    word(g_rom,0x6B600,0xC90);word(g_rom,0x6B602,8);g_rom[0x6B604]=0x5B;
+    g_rom[0x6B605]=0;word(g_rom,0x6B606,65535);
+    g_cpu.D[0]=0xC0DEFF00;g_cpu.SR=0x230F;cpu_before=g_cpu;
+    CHECK(!s1_video_hook(0x10EB4));CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD800]==0);
+    /* Its last visible margin cube is presentation only until reactivation. */
+    word(g_ram,0xF700,0xDD0);word(g_ram,0xFF10,0xDD0);
+    word(g_rom,0x1103C,2);g_rom[0x1103E]=1;memset(g_rom+0x1103F,0,5);word(g_rom,0x11041,1);
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;
+    word(v.vram,0xFC00,-0xDD0);v.cram[33]=0xE00;memset(v.vram+32,0x11,32);
+    memcpy(ram_before,g_ram,sizeof g_ram);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
+    CHECK(out[14]==0xFF0000FFu);CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    word(g_ram,0xF700,0xBF0);CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD800]==0x5B);
     return 0;
 }
