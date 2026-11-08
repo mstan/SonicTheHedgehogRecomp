@@ -1135,7 +1135,7 @@ static void collect_host_rings(void)
 static void entry_placements_present(unsigned priority,int camera,int left)
 {
     if(!gameplay() || results_world() || video_ram[0xD5C0]==0x3A || s_requested_width<=320 ||
-       (priority!=2 && priority!=3 && priority!=4))return;
+       (priority<2 || priority>5))return;
     int entry=(video_ram[0xF600]&128)!=0;
     for(unsigned o=0xD080;o<0xD200;o+=64)if(video_ram[o]==0x34)entry=1;
     load_placements();s_capture_slot=0;s_capture_space=4;
@@ -1167,6 +1167,26 @@ static void entry_placements_present(unsigned priority,int camera,int left)
                        s_capture_frame->identity[1+(o-0xD000)/64])break;
                 if(o<0xF000)continue;
                 add_mapping(0x9F92,video_ram[0xFEC3]&3,0x27B2,0,x-camera,y-ram16(0xF704),0,0);
+            }
+        } else if(entry && p->id==0x78 && (priority==4 || priority==5)) {
+            if(p->x+48<left || (int)p->x-48>=left+s_requested_width)continue;
+            unsigned o=placement_object(p);
+            if(p->state && !o && (video_ram[0xFC02+p->state]&128))continue;
+            int x=o?ram16(o+8):p->x,y=o?ram16(o+12):(p->y&4095);
+            unsigned flags=(p->y>>14)&3;
+            if(o && video_ram[o+0x24]) {
+                /* Body slots already belong to the initialized native head. */
+                if(priority!=4 || s_capture_frame->identity[1+(o-0xD000)/64])continue;
+                add_mapping(scene_read32(0xFF0000u+o+4),video_ram[o+0x1A],
+                            ram16(o+2),video_ram[o+1],x-camera,y-ram16(0xF704),0,0);
+            } else {
+                /* Cat_Main waits for floor contact before allocating its
+                 * three segments. Preview them while that work is frozen. */
+                unsigned gfx=video_ram[0xFE10]==5?0x22B0:0x24FF;
+                if(priority==4)add_mapping(0x16D6E,0,gfx,flags,x-camera,y-ram16(0xF704),0,0);
+                else for(int n=1;n<=3;++n)
+                    add_mapping(0x16D6E,8,gfx,flags,x+(flags&1?-12:12)*n-camera,
+                                y-ram16(0xF704),0,0);
             }
         } else if(entry && video_ram[0xFE10]==0 && priority==4 &&
                   (p->id==0x3B || (p->id==0x41 && !(p->subtype&0x30)))) {

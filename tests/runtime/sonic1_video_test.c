@@ -713,6 +713,41 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,0,native,320,out,796);
     s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":4"));
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    /* Caterkiller's floor-search initialization leaves its head and body
+     * unqueued during the frozen entry. Preview the complete initial pose,
+     * follow its falling head, then hand off without duplicate segments. */
+    memset(g_ram,0,sizeof g_ram);g_ram[0xF600]=0x8C;
+    g_ram[0xD000]=1;g_ram[0xD080]=0x34;word(g_ram,0xFE10,0x201);
+    for(unsigned n=0;n<8;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF704,512);word(g_rom,0x6B024,0x600);
+    word(g_rom,0x6B600,512);word(g_rom,0x6B602,680);
+    g_rom[0x6B604]=0xF8;g_rom[0x6B605]=0;word(g_rom,0x6B606,65535);
+    for(unsigned frame=0;frame<32;++frame)word(g_rom,0x16D6E+frame*2,0x82);
+    g_rom[0x16DF0]=1;memset(g_rom+0x16DF1,0,5);
+    g_ram[0xD800]=0x78;g_ram[0xD823]=1;
+    word(g_ram,0xD808,512);word(g_ram,0xD80C,680);
+    s1_video_hook(0xD8DA);
+    for(unsigned pass=0;pass<3;++pass) {
+        if(pass==1)word(g_ram,0xD80C,686);
+        if(pass==2)for(unsigned n=0;n<4;++n) {
+            unsigned o=0xD800+n*64,pri=n?5:4;
+            g_ram[o]=0x78;g_ram[o+1]=4;g_ram[o+0x24]=(uint8_t)(2+n*2);
+            m68k_write32(o+4,0x16D6E);word(g_ram,o+8,512+n*12);
+            word(g_ram,o+12,696);g_ram[o+0x1A]=n?8:0;
+            word(g_ram,0xAC00+pri*128,n?6:2);
+            word(g_ram,0xAC02+pri*128+(n?n-1:0)*2,o);
+        }
+        memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+        CHECK(strstr(reply,"\"sprites\":4"));
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    }
+    memset(g_ram+0xD800,0,256);memset(g_ram+0xAC00,0,1024);g_ram[0xFC03]=128;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+    CHECK(strstr(reply,"\"sprites\":0"));
+
     /* Ending animals hand off from a resting preview to their live sprite,
      * then retain a draw-only tail after native deletion. No guest lifetime
      * or visibility changes, and a consumed tail must not return. */
