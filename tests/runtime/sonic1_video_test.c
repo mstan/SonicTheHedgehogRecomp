@@ -964,7 +964,7 @@ int main(int argc,char **argv)
     s1_video_hook(0xD8DA);
     CHECK(sonic1_video.configure("32:9"));
     CHECK(sonic1_video.width(3200,900,320,224)==796);
-    g_ram[0xF600]=12;word(g_ram,0xFE10,0x501);g_ram[0xF742]=2;
+    g_ram[0xF600]=12;word(g_ram,0xFE10,0x501);g_ram[0xF742]=0;
     g_ram[0xD000]=1;g_ram[0xD001]=0x84;word(g_ram,0xD002,0x8001);
     m68k_write32(0xFFD004,0x1000);word(g_ram,0xD008,0x1FA8);
     word(g_ram,0xD00C,0x574);g_ram[0xD5C0]=0x3A;
@@ -992,6 +992,7 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,100,native,320,out,796);
     CHECK(out[604]==0xFFFF0000u && out[598]==0xFF000000u);
     s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":5"));
+    g_ram[0xF742]=2;
     size_t runoff_size=s1_video_rb_save(NULL,0);void *runoff_state=malloc(runoff_size);
     CHECK(runoff_state && s1_video_rb_save(runoff_state,runoff_size)==runoff_size);
     word(g_ram,0xFE04,2);s1_video_hook(0xD65E);s1_video_hook(0xD746);
@@ -1122,6 +1123,34 @@ int main(int argc,char **argv)
         s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
         sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
         CHECK(strstr(reply,"\"sprites\":0"));
+    }
+    /* SLZ3's ship and weapon are visible before the native music/PLC gate.
+     * Keep their initial pose complete, then hand it to native objects. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;word(g_ram,0xFE10,0x302);g_ram[0xF742]=2;
+    for(unsigned i=0;i<40;++i)g_ram[0xA400+i]=1;
+    word(g_ram,0xF700,0x1F80);word(g_ram,0xFF10,0x1F80);word(g_ram,0xF704,0x220);
+    const unsigned slz_frames[]={0,1,8};
+    for(unsigned i=0;i<3;++i) {
+        unsigned p=0x17D40+i*6;word(g_rom,0x17D0C+slz_frames[i]*2,p-0x17D0C);
+        g_rom[p]=1;memset(g_rom+p+1,0,5);g_rom[p+5]=(uint8_t)(i*8);
+    }
+    word(g_rom,0x17DD4+6,12);g_rom[0x17DE0]=1;memset(g_rom+0x17DE1,0,5);g_rom[0x17DE5]=24;
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-0x1F80);
+    v.cram[1]=v.cram[17]=0xE00;memset(v.vram+0x400*32,0x11,32);memset(v.vram+0x46C*32,0x11,32);
+    memcpy(ram_before,g_ram,sizeof g_ram);ship_cpu=g_cpu;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
+    CHECK(out[758]==0xFF0000FFu && out[766]==0xFF0000FFu && out[774]==0xFF0000FFu && out[782]==0xFF0000FFu);
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&ship_cpu,&g_cpu,sizeof g_cpu));
+    g_ram[0xD800]=0x7A;g_ram[0xF742]=4;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":4"));
+    for(unsigned stop=0;stop<3;++stop) {
+        g_ram[0xD800]=stop==0?0x7A:0;g_ram[0xD824]=2;g_ram[0xF742]=stop==2?6:4;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":0"));
     }
     /* An early world sprite must not borrow a title card's centered origin
      * before its level scene is installed. The screen-space card stays. */

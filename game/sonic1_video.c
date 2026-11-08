@@ -165,7 +165,7 @@ static uint8_t pattern_pixel(const GVDP *v, uint16_t attr, int x, int y)
  * guest VRAM, PLC order and simulation clocks remain untouched. Format and
  * XOR rows follow REV00 NemDec ($1440), not a second machine execution. */
 typedef struct { uint8_t pixels[8192];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
-enum { SPRITE_ART_COUNT=16 };
+enum { SPRITE_ART_COUNT=18 };
 static SpriteArt s_sprite_art[SPRITE_ART_COUNT];
 static unsigned art_bits(unsigned bit,unsigned count)
 {
@@ -209,9 +209,9 @@ static uint8_t sprite_pixel(const GVDP *v,unsigned asset,uint16_t attr,int x,int
 {
     if(!asset || asset>SPRITE_ART_COUNT || !enabled() || s_requested_width<=320)return pattern_pixel(v,attr,x,y);
     static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324,0x5CC62,0x339DA,
-        0x3B3DA,0x3B532,0x3B68E,0x3B80A,0x3B926,0x3BA5C,0x3BB96};
+        0x3B3DA,0x3B532,0x3B68E,0x3B80A,0x3B926,0x3BA5C,0x3BB96,0x3401A,0x5D4C6};
     static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400,0x400,0x3CC,
-        0x580,0x592,0x580,0x592,0x580,0x592,0x580};
+        0x580,0x592,0x580,0x592,0x580,0x592,0x580,0x4A0,0x46C};
     SpriteArt *art=&s_sprite_art[asset-1];
     if(!art->ready) {
         art->base=bases[asset-1];
@@ -492,7 +492,8 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
         }
         /* The shared Eggmobile mappings include the exhaust. Wider object
          * activation can expose them before their PLC completes as well. */
-        s->asset=(uint8_t)(owner==0x5C?9:map==0x17D0C?8:owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:animal);
+        s->asset=(uint8_t)(owner==0x5C?9:map==0x17D0C?8:map==0x17DD4?18:
+            owner==0x82 && map==0xBEA4?17:owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:animal);
     }
 }
 static void load_placements(void)
@@ -661,6 +662,28 @@ static void labyrinth_boss_present(unsigned priority,int camera,int left)
         add_mapping(0x17D0C,frames[i],0x400,4,
                     x-camera,y-ram16(0xF704),0,0);
 }
+static void starlight_boss_present(unsigned priority,int camera,int left)
+{
+    /* The stationary ship is visible before DLE_SLZ3's music/PLC gate.
+     * Publish only its initial pose until the real boss initializes. */
+    unsigned event=video_ram[0xF742],pending=0;
+    if((priority!=3 && priority!=4) || !gameplay() || s_requested_width<=320 ||
+       ram16(0xFE10)!=0x302 || event>4)return;
+    for(unsigned o=0xD800;o<0xF000;o+=64)if(video_ram[o]==0x7A) {
+        if(video_ram[o+0x24]>=2)return;
+        pending=1;
+    }
+    if(event==4 && !pending)return;
+    const int x=0x2188,y=0x228;
+    if(x+48<=left || x-48>=left+s_requested_width)return;
+    s_capture_slot=0;s_capture_space=4;
+    if(priority==3)add_mapping(0x17DD4,3,0x246C,4,x-camera,y-ram16(0xF704),0,0);
+    else {
+        static const unsigned frames[]={0,1,8};
+        for(unsigned i=0;i<3;++i)
+            add_mapping(0x17D0C,frames[i],0x400,4,x-camera,y-ram16(0xF704),0,0);
+    }
+}
 /* Orb_Main initializes the head but only its satellites queue sprites in
  * the first object pass. During the frozen level fade, show that already
  * initialized head too. The next ordinary object pass owns it again. */
@@ -734,7 +757,7 @@ static int act_runoff_x(void)
 static void scrap_floor_present(unsigned priority,int camera,int left)
 {
     if(priority!=3 || !gameplay() || ram16(0xFE10)!=0x501 ||
-       video_ram[0xF742]<2 || video_ram[0xF742]>4)return;
+       video_ram[0xF742]>4)return;
     unsigned map=scene_read32(0x19BBA),gfx=scene_read16(0x19BC2);
     s_capture_slot=0;s_capture_space=4;
     for(int i=0;i<8;++i) {
@@ -749,6 +772,15 @@ static void scrap_floor_present(unsigned priority,int camera,int left)
         add_mapping(map,0,gfx,4,x-camera,0x5D0-ram16(0xF704),0,0);
         for(unsigned n=first;n<s_capture_frame->count;++n)s_capture_frame->sprites[n].asset=5;
     }
+    /* The switch's PLC is also delayed until the native boss gate. */
+    int x=0x2130;
+    if(x+16<=left || x-16>=left+s_requested_width)return;
+    for(unsigned o=0xD800;o<0xF000;o+=64)
+        if(video_ram[o]==0x82 && scene_read32(0xFF0000u+o+4)==0xBEA4 &&
+           s_capture_frame->identity[1+(o-0xD000)/64])return;
+    unsigned first=s_capture_frame->count;
+    add_mapping(0xBEA4,0,0x4A4,4,x-camera,0x5BC-ram16(0xF704),0,0);
+    for(unsigned n=first;n<s_capture_frame->count;++n)s_capture_frame->sprites[n].asset=17;
 }
 static void final_escape_present(unsigned priority,int camera)
 {
@@ -1276,6 +1308,7 @@ static void capture_objects(void)
             }
             final_cylinders_present(pri,cam,left);
             labyrinth_boss_present(pri,cam,left);
+            starlight_boss_present(pri,cam,left);
             scrap_floor_present(pri,cam,left);
             final_escape_present(pri,cam);
             initial_orbinauts_present(pri,cam);
