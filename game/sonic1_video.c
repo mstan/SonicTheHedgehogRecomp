@@ -165,7 +165,8 @@ static uint8_t pattern_pixel(const GVDP *v, uint16_t attr, int x, int y)
  * guest VRAM, PLC order and simulation clocks remain untouched. Format and
  * XOR rows follow REV00 NemDec ($1440), not a second machine execution. */
 typedef struct { uint8_t pixels[8192];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
-static SpriteArt s_sprite_art[9];
+enum { SPRITE_ART_COUNT=16 };
+static SpriteArt s_sprite_art[SPRITE_ART_COUNT];
 static unsigned art_bits(unsigned bit,unsigned count)
 {
     unsigned value=0;
@@ -206,9 +207,11 @@ static int decode_sprite_art(SpriteArt *art,unsigned address)
 }
 static uint8_t sprite_pixel(const GVDP *v,unsigned asset,uint16_t attr,int x,int y)
 {
-    if(!asset || !enabled() || s_requested_width<=320)return pattern_pixel(v,attr,x,y);
-    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324,0x5CC62,0x339DA};
-    static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400,0x400,0x3CC};
+    if(!asset || asset>SPRITE_ART_COUNT || !enabled() || s_requested_width<=320)return pattern_pixel(v,attr,x,y);
+    static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324,0x5CC62,0x339DA,
+        0x3B3DA,0x3B532,0x3B68E,0x3B80A,0x3B926,0x3BA5C,0x3BB96};
+    static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400,0x400,0x3CC,
+        0x580,0x592,0x580,0x592,0x580,0x592,0x580};
     SpriteArt *art=&s_sprite_art[asset-1];
     if(!art->ready) {
         art->base=bases[asset-1];
@@ -360,7 +363,7 @@ static int video_state_load(const void *src,size_t len,int apply)
         sprites[n]=in;in+=bytes;left-=bytes;
         for(unsigned k=0;k<counts[n];++k) {
             SceneSprite sprite;memcpy(&sprite,sprites[n]+k*sizeof sprite,sizeof sprite);
-            if(sprite.asset>9 || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
+            if(sprite.asset>SPRITE_ART_COUNT || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
         }
     }
     if(left)return 0;
@@ -482,9 +485,14 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
         SceneSprite *s=&s_capture_frame->sprites[s_capture_frame->count++];
         s->x=x+dx; s->y=y+dy; s->attr=attr; s->size=(uint8_t)size; s->hud=(uint8_t)hud;s->slot=(uint8_t)s_capture_slot;s->space=(uint8_t)s_capture_space;
         unsigned owner=s_capture_slot?video_ram[0xD000+(s_capture_slot-1)*64]:0;
+        unsigned animal=0;
+        if(owner==0x28) {
+            unsigned o=0xD000+(s_capture_slot-1)*64;
+            if(!video_ram[o+0x28] && video_ram[o+0x30]<7)animal=10+video_ram[o+0x30];
+        }
         /* The shared Eggmobile mappings include the exhaust. Wider object
          * activation can expose them before their PLC completes as well. */
-        s->asset=(uint8_t)(owner==0x5C?9:map==0x17D0C?8:owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:0);
+        s->asset=(uint8_t)(owner==0x5C?9:map==0x17D0C?8:owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:animal);
     }
 }
 static void load_placements(void)
@@ -891,44 +899,63 @@ static int capsule_animals(void)
     return gameplay() && !recorded_demo() && video_ram[0xFE11]==2 &&
         video_ram[0xFE10]<5 && video_ram[0xF7A7]==2;
 }
+static void retire_capsule_animal(const SceneTail *tail)
+{
+    for(unsigned n=97;n<128;++n)if(!s_actor_tails[n].seen || !s_actor_tails[n].tail) {
+        s_actor_tails[n]=*tail;
+        return;
+    }
+}
 /* The capsule waits for guest animals to be deleted. Keep that native
- * visibility/lifetime contract and continue only their margin graphics. */
+ * visibility/lifetime contract and continue only their margin graphics.
+ * Retired poses have independent storage because guest slots are reusable. */
 static void capsule_animals_present(unsigned priority,int camera,int left)
 {
     if(s_requested_width<=320 || !capsule_animals())return;
     unsigned frame=ram16(0xFE04);int advance=frame!=s_tail_frame;
     if(priority==0)s_tail_frame=frame;
-    for(unsigned n=1;n<=96;++n) {
+    if(priority==0)for(unsigned n=1;n<=96;++n) {
         unsigned o=0xD800+(n-1)*64;SceneTail *tail=&s_actor_tails[n];
         int live=video_ram[o]==0x28 && !video_ram[o+0x28] && video_ram[o+0x24];
-        if(priority==0) {
-            if(live)remember_tail(tail,o);
-            else if(tail->seen && tail->tail && tail->object[0]==0x28 && advance) {
-                uint8_t *a=tail->object;
-                if(a[0x24]==18) {
-                    unsigned wait=actor_word(a,0x36);
-                    if(wait)actor_put(a,0x36,--wait);
-                    if(!wait){a[0x24]=2;a[0x18]=3;}
-                } else if(a[0x24]==2) {
-                    animal_move(a);actor_put(a,0x12,actor_word(a,0x12)+56);
-                    int d=animal_floor((int16_t)actor_word(a,8),(int16_t)actor_word(a,12)+12);
-                    if((int16_t)actor_word(a,0x12)>=0 && d<0) {
-                        actor_put(a,12,actor_word(a,12)+d);
-                        actor_put(a,0x10,actor_word(a,0x32));actor_put(a,0x12,actor_word(a,0x34));
-                        a[0x1A]=1;a[0x24]=(uint8_t)(4+2*a[0x30]);
-                        if(video_ram[0xFE05]&16){actor_put(a,0x10,-(int16_t)actor_word(a,0x10));a[1]^=1;}
-                    }
-                } else animal_continue(a);
-            }
+        int replaced=live && tail->seen &&
+            (abs((int16_t)(ram16(o+8)-actor_word(tail->object,8)))>32 ||
+             abs((int16_t)(ram16(o+12)-actor_word(tail->object,12)))>32);
+        if(tail->seen && tail->tail && tail->object[0]==0x28 && (!live || replaced)) {
+            retire_capsule_animal(tail);
+            memset(tail,0,sizeof *tail);
         }
-        if(live || !tail->seen || !tail->tail || tail->object[0]!=0x28)continue;
+        if(live)remember_tail(tail,o);
+    }
+    for(unsigned n=97;n<128;++n) {
+        SceneTail *tail=&s_actor_tails[n];
+        if(!tail->seen || !tail->tail || tail->object[0]!=0x28)continue;
+        if(priority==0 && advance) {
+            uint8_t *a=tail->object;
+            if(a[0x24]==18) {
+                unsigned wait=actor_word(a,0x36);
+                if(wait)actor_put(a,0x36,--wait);
+                if(!wait){a[0x24]=2;a[0x18]=3;}
+            } else if(a[0x24]==2) {
+                animal_move(a);actor_put(a,0x12,actor_word(a,0x12)+56);
+                int d=animal_floor((int16_t)actor_word(a,8),(int16_t)actor_word(a,12)+12);
+                if((int16_t)actor_word(a,0x12)>=0 && d<0) {
+                    actor_put(a,12,actor_word(a,12)+d);
+                    actor_put(a,0x10,actor_word(a,0x32));actor_put(a,0x12,actor_word(a,0x34));
+                    a[0x1A]=1;a[0x24]=(uint8_t)(4+2*a[0x30]);
+                    if(video_ram[0xFE05]&16){actor_put(a,0x10,-(int16_t)actor_word(a,0x10));a[1]^=1;}
+                }
+            } else animal_continue(a);
+        }
         uint8_t *a=tail->object;int x=(int16_t)actor_word(a,8),y=(int16_t)actor_word(a,12)-ram16(0xF704);
         if(x+32<left || x-32>=left+s_requested_width || y+32<0 || y-32>=224) {
             tail->tail=0;continue;
         }
         if(a[0x18]!=priority)continue;
         s_capture_slot=0;s_capture_space=4;
+        unsigned first=s_capture_frame->count;
         add_mapping(((uint32_t)actor_word(a,4)<<16)|actor_word(a,6),a[0x1A],actor_word(a,2),a[1],x-camera,y,0,0);
+        if(a[0x30]<7)for(unsigned k=first;k<s_capture_frame->count;++k)
+            s_capture_frame->sprites[k].asset=(uint8_t)(10+a[0x30]);
     }
 }
 /* Preview resting poses before original activation; continue only the visible

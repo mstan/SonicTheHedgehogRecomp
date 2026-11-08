@@ -1218,6 +1218,45 @@ int main(int argc,char **argv)
         sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,100,native,320,out,796);
         CHECK(out[676]==0xFF000000u);
     }
+    /* Retired capsule animals keep their ink when results reuse VRAM, and
+     * a new native animal in the same slot must not erase a visible tail. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;word(g_ram,0xFE10,0x302);g_ram[0xF7A7]=2;
+    for(int n=0;n<8;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,800);word(g_ram,0xFF10,800);word(g_ram,0xFE04,1);
+    word(g_rom,0x1000,4);word(g_rom,0x1002,4);g_rom[0x1004]=1;
+    memset(g_rom+0x1005,0,5);
+    word(g_rom,0x3B926,1);g_rom[0x3B928]=0x82;g_rom[0x3B929]=0x71;
+    g_rom[0x3B92A]=0;g_rom[0x3B92B]=255;memset(g_rom+0x3B92C,0,8);
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-800);
+    v.cram[2]=0xE0;v.cram[3]=0xE;memset(v.vram+0x580*32,0x22,32);
+    g_ram[0xD800]=0x28;g_ram[0xD801]=4;g_ram[0xD818]=6;
+    g_ram[0xD824]=4;g_ram[0xD830]=4;
+    m68k_write32(0xD804,0x1000);word(g_ram,0xD802,0x580);
+    word(g_ram,0xD808,1260);word(g_ram,0xD80C,8);
+    word(g_ram,0xAC00+6*128,2);word(g_ram,0xAC02+6*128,0xD800);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
+    CHECK(out[698]==0xFF00FF00u);
+    uint8_t replacement_animal[64];memcpy(replacement_animal,g_ram+0xD800,64);
+    memset(g_ram+0xD800,0,64);word(g_ram,0xAC00+6*128,0);word(g_ram,0xFE04,2);
+    memset(v.vram+0x580*32,0x33,32);memcpy(ram_before,g_ram,sizeof g_ram);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
+    CHECK(out[698]==0xFF00FF00u);
+    memcpy(g_ram+0xD800,replacement_animal,64);word(g_ram,0xD808,1200);
+    word(g_ram,0xAC00+6*128,2);word(g_ram,0xFE04,3);
+    memcpy(ram_before,g_ram,sizeof g_ram);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
+    CHECK(out[638]==0xFF00FF00u && out[698]==0xFF00FF00u);
+    size_t animals_state_size=s1_video_rb_save(NULL,0);
+    void *animals_state=malloc(animals_state_size);CHECK(animals_state);
+    CHECK(s1_video_rb_save(animals_state,animals_state_size)==animals_state_size);
+    CHECK(s1_video_rb_load(animals_state,animals_state_size));free(animals_state);
     /* Capsule animal lifetime stays native. Its last margin pose continues
      * without promoting the guest visibility bit or changing guest RAM. */
     memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
