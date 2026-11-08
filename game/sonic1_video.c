@@ -1257,16 +1257,6 @@ static void entry_placements_present(unsigned priority,int camera,int left)
                     add_mapping(0x16D6E,8,gfx,flags,x+(flags&1?-12:12)*n-camera,
                                 y-ram16(0xF704),0,0);
             }
-        } else if((entry || recorded_demo()) && video_ram[0xFE10]==0 &&
-                  priority==4 && p->id==0x40) {
-            if(p->x+32<left || (int)p->x-32>=left+s_requested_width)continue;
-            unsigned o=placement_object(p);
-            if(p->state && !o && (video_ram[0xFC02+p->state]&128))continue;
-            if(o && s_capture_frame->identity[1+(o-0xD000)/64])continue;
-            if(o && video_ram[o+0x24])continue;
-            int y=resting_preview_y(p->x,p->y&4095,14);
-            add_mapping(scene_read32(0xF632),0,scene_read16(0xF63A),
-                        (p->y>>14)&3,(int)p->x-camera,y-ram16(0xF704),0,0);
         } else if(entry && video_ram[0xFE10]==0 && priority==4 &&
                   (p->id==0x3B || (p->id==0x41 && !(p->subtype&0x30)))) {
             if(p->x+32<left || (int)p->x-32>=left+s_requested_width)continue;

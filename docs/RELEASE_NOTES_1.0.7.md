@@ -5,7 +5,6 @@
 - Grounds resting enemy previews during their invisible floor-search setup.
 - Animates Buzz Bomber wing previews without starting enemy movement early.
 - Includes Sonic and the HUD in widescreen level-entry fades.
-- Previews Motobug artwork during recorded level entry without changing activation.
 
 Original game logic, collisions and native 4:3 presentation remain unchanged.
 Fresh installations use adaptive Fit to screen; saved settings are retained.
