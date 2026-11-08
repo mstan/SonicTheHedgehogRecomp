@@ -740,7 +740,8 @@ static int runoff_floor(const uint8_t *p,int x,int y)
     return right<left?right:left;
 }
 /* Keep the scripted run-off moving after Sonic reaches the native boundary.
- * Preserve its entry velocity. SBZ2's pan catches this pose until the real
+ * Preserve moving entry velocity, or accelerate a stopped pose from rest.
+ * SBZ2's pan catches this pose until the real
  * player reaches it, then ordinary presentation resumes without a position
  * jump. Reuse the serialized, level-local continuation storage. */
 static int act_runoff_x(int *display_y)
@@ -765,8 +766,8 @@ static int act_runoff_x(int *display_y)
         if(target<=x)return x;
         remember_tail(tail,0xD000);
         int velocity=(int16_t)actor_word(tail->object,0x10);
-        if(velocity<=0)velocity=ram16(0xF760);
-        actor_put(tail->object,0x10,velocity>0?velocity:0x600);
+        actor_put(tail->object,0x10,velocity>0?velocity:0);
+        actor_put(tail->object,0x36,velocity<=0);
         actor_put(tail->object,0x30,(unsigned)target);
         actor_put(tail->object,0x32,ram16(0xFE04));
     }
@@ -782,7 +783,15 @@ static int act_runoff_x(int *display_y)
          * Follow both original foot sensors, falling when support ends,
          * without moving the guest player or altering the results timing. */
         do {
-            unsigned steps=zone==0x202?1:dt;
+            unsigned steps=zone==0x202 || actor_word(p,0x36)?1:dt;
+            if(actor_word(p,0x36)) {
+                int speed=actor_word(p,0x10);
+                int maximum=ram16(0xF760),acceleration=ram16(0xF762);
+                if(!maximum)maximum=0x600;
+                if(!acceleration)acceleration=0xC;
+                speed+=acceleration;if(speed>maximum)speed=maximum;
+                actor_put(p,0x10,speed);
+            }
             position+=(uint64_t)actor_word(p,0x10)*256*steps;
             if(position>limit)position=limit;
             if(position<(uint64_t)x<<16)position=(uint64_t)x<<16;
@@ -970,7 +979,7 @@ static void animal_continue(uint8_t *p)
     int stationary=routine==24 || routine==28 || routine==32 || routine==36;
     if(stationary){actor_put(p,0x10,0);actor_put(p,0x32,0);}
     animal_move(p);
-    int flying=routine==6 || routine==10 || routine==14 || routine==24 || routine==38;
+    int flying=routine==6 || routine==14 || routine==24 || routine==38;
     actor_put(p,0x12,actor_word(p,0x12)+(flying?24:56));
     int falling=(int16_t)actor_word(p,0x12)>=0;
     if(!flying)p[0x1A]=(uint8_t)!falling;
@@ -992,6 +1001,18 @@ static int capsule_animals(void)
 {
     return gameplay() && !recorded_demo() && video_ram[0xFE11]==2 &&
         video_ram[0xFE10]<5 && video_ram[0xF7A7]==2;
+}
+/* Native floor-search initialization stays invisible. Ground only the
+ * resting preview; native placements, falling and collisions still run. */
+static int resting_preview_y(int x,int y,int height)
+{
+    int start=y;
+    for(unsigned n=0;n<128 && y<2048;++n) {
+        int distance=animal_floor(x,y+height);
+        if(distance<0)return y+distance;
+        y+=distance+1;
+    }
+    return start;
 }
 static void retire_capsule_animal(const SceneTail *tail)
 {
@@ -1193,7 +1214,8 @@ static void entry_placements_present(unsigned priority,int camera,int left)
             if(p->state && !o && (video_ram[0xFC02+p->state]&128))continue;
             if(o && s_capture_frame->identity[1+(o-0xD000)/64])continue;
             unsigned map=p->id==0x1F?0x9750:0x9A36,gfx=p->id==0x1F?0x400:0x444;
-            unsigned frame=0,flags=(p->y>>14)&3;int x=p->x,y=p->y&4095;
+            unsigned frame=p->id==0x22?(video_ram[0xFE0F]>>1)&1:0;
+            unsigned flags=(p->y>>14)&3;int x=p->x,y=p->y&4095;
             if(o && video_ram[o+0x24] && scene_read32(0xFF0000u+o+4)) {
                 map=scene_read32(0xFF0000u+o+4);gfx=ram16(o+2);
                 frame=video_ram[o+0x1A];flags=video_ram[o+1];
@@ -1226,13 +1248,25 @@ static void entry_placements_present(unsigned priority,int camera,int left)
                             ram16(o+2),video_ram[o+1],x-camera,y-ram16(0xF704),0,0);
             } else {
                 /* Cat_Main waits for floor contact before allocating its
-                 * three segments. Preview them while that work is frozen. */
+                 * three segments. Keep their resting preview grounded while
+                 * that invisible initialization runs. */
+                y=resting_preview_y(x,y,7);
                 unsigned gfx=video_ram[0xFE10]==5?0x22B0:0x24FF;
                 if(priority==4)add_mapping(0x16D6E,0,gfx,flags,x-camera,y-ram16(0xF704),0,0);
                 else for(int n=1;n<=3;++n)
                     add_mapping(0x16D6E,8,gfx,flags,x+(flags&1?-12:12)*n-camera,
                                 y-ram16(0xF704),0,0);
             }
+        } else if((entry || recorded_demo()) && video_ram[0xFE10]==0 &&
+                  priority==4 && p->id==0x40) {
+            if(p->x+32<left || (int)p->x-32>=left+s_requested_width)continue;
+            unsigned o=placement_object(p);
+            if(p->state && !o && (video_ram[0xFC02+p->state]&128))continue;
+            if(o && s_capture_frame->identity[1+(o-0xD000)/64])continue;
+            if(o && video_ram[o+0x24])continue;
+            int y=resting_preview_y(p->x,p->y&4095,14);
+            add_mapping(scene_read32(0xF632),0,scene_read16(0xF63A),
+                        (p->y>>14)&3,(int)p->x-camera,y-ram16(0xF704),0,0);
         } else if(entry && video_ram[0xFE10]==0 && priority==4 &&
                   (p->id==0x3B || (p->id==0x41 && !(p->subtype&0x30)))) {
             if(p->x+32<left || (int)p->x-32>=left+s_requested_width)continue;
@@ -1674,8 +1708,7 @@ static void draw_scene_sprites(const GVDP *v,int line,uint32_t *out,int width,
          * the level planes reach VBlank. Their world origin is not installed
          * yet; wait for that scene instead of centering them with the card. */
         if(width>320 && s_display->scene==3 && s->space)continue;
-        unsigned owner=s->slot?s_display->identity[s->slot]>>24:0;
-        int fade_world=world_palette && s->space && !s->hud && owner!=1 && owner!=0x87;
+        int fade_world=world_palette && (s->space || s->hud==1);
         int cw=((s->size>>2)&3)+1,ch=(s->size&3)+1;
         int dx=0,dy=0;
         if(s_interpolating && !s->hud)interpolation_sprite_delta(s,line,&dx,&dy);
