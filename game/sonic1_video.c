@@ -2029,6 +2029,7 @@ typedef struct {
 } InterpFrame;
 static InterpFrame s_ix[2];
 static unsigned s_ix_front;
+static uint8_t s_interp_previous_slot[SCENE_SLOTS];
 static InterpFrame *ix_current(void){return &s_ix[s_ix_front];}
 static InterpFrame *ix_previous(void){return &s_ix[s_ix_front^1u];}
 static void interpolation_reset(void)
@@ -2081,14 +2082,7 @@ static int interpolate_background_correction(int line,int margin,int current)
 static void interpolation_sprite_delta(const SceneSprite *sprite,int line,int *dx,int *dy)
 {
     const InterpFrame *a=ix_previous(),*b=ix_current();
-    unsigned slot=sprite->slot,previous_slot=slot;
-    /* A capsule animal changes storage when its guest slot is deleted.
-     * Keep its generation across that handoff, including the first frame;
-     * a newly allocated animal in the old slot has a different generation. */
-    if(slot && slot<SCENE_SLOTS && b->scene.identity[slot]>>24==0x28 &&
-       a->scene.identity[slot]!=b->scene.identity[slot])
-        for(unsigned n=1;n<SCENE_SLOTS;++n)
-            if(a->scene.identity[n]==b->scene.identity[slot]){previous_slot=n;break;}
+    unsigned slot=sprite->slot,previous_slot=slot<SCENE_SLOTS?s_interp_previous_slot[slot]:slot;
     if(slot && slot<SCENE_SLOTS && b->scene.identity[slot] &&
        a->scene.identity[previous_slot]==b->scene.identity[slot]) {
         int ax=a->scene.ox[previous_slot],ay=a->scene.oy[previous_slot];
@@ -2176,6 +2170,18 @@ static int interpolate(double phase,uint32_t *image,int stride,int height)
     }
     int saved[]={s_width,s_left,s_camera,s_stage_width,s_native_x,s_requested_width,s_title_world};
     const SceneFrame *scene=s_display;
+    /* Resolve native-to-host animal handoffs once per presentation. Doing
+     * the same search for every sprite on every scanline adds needless work
+     * precisely on the handoff frames that need smooth motion. */
+    for(unsigned slot=0;slot<SCENE_SLOTS;++slot) {
+        s_interp_previous_slot[slot]=(uint8_t)slot;
+        if(f->scene.identity[slot]>>24!=0x28 ||
+           p->scene.identity[slot]==f->scene.identity[slot])continue;
+        for(unsigned previous=1;previous<SCENE_SLOTS;++previous)
+            if(p->scene.identity[previous]==f->scene.identity[slot]) {
+                s_interp_previous_slot[slot]=(uint8_t)previous;break;
+            }
+    }
     s_display=&f->scene;s_interpolating=1;s_phase=phase;s_read_ram=f->ram;s_title_world=0;
     for(int y=0;y<IX_LINES;++y) {
         memcpy(f->video.cram,f->cram[y],sizeof f->cram[y]);
