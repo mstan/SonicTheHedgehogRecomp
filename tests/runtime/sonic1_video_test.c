@@ -156,7 +156,21 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,200,native,320,out,796);
     CHECK(out[246]==native[8] && out[254]==native[16]);
     CHECK(out[270]==0xFF0000FFu); /* masked sprite must not preserve stale BG */
-    word(v.vram,0xC000+25*128+2,0);memset(v.vram+0xA000,0,24);
+    /* Offscreen cells still consume the native 40-cell fetch budget. The
+     * title uses that limit to hide the lower part of Sonic as he rises. */
+    memset(v.vram+0xA000,0,88);
+    for(unsigned n=0;n<11;++n) {
+        unsigned a=0xA000+n*8;word(v.vram,a,328);
+        v.vram[a+2]=(uint8_t)(n<10?15:0);v.vram[a+3]=(uint8_t)(n<10?n+1:0);
+        word(v.vram,a+4,1);word(v.vram,a+6,n<10?80:160);
+    }
+    sonic1_video.scanline(&v,200,native,320,out,796);
+    CHECK(out[270]==0xFF0000FFu);
+    /* Match the native compositor's whole final sprite before exhaustion. */
+    v.vram[0xA000+9*8+2]=11;v.vram[0xA000+10*8+2]=4;
+    sonic1_video.scanline(&v,200,native,320,out,796);
+    CHECK(out[270]==native[32] && out[278]==native[40]);
+    word(v.vram,0xC000+25*128+2,0);memset(v.vram+0xA000,0,88);
     memset(v.vram+0xE000+25*128,0,128);
     g_ram[0xA441]=g_ram[0xA442]=0;memset(g_ram+512,0,512);
     memset(g_ram+0xB008,0,8);word(v.vram,0xFC02,0);

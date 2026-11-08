@@ -1719,18 +1719,21 @@ static int attributes_differ(const GVDP *v,uint16_t a,uint16_t b,int x,int y)
     }
     return 0;
 }
-/* Coverage of the original linked SAT, including its X=0 mask. Keep native
+/* Coverage of the original SAT, including fetch limits and its X=0 mask. Keep native
  * overlay pixels while replacing the title's incomplete cached water layer. */
 static void title_sprite_coverage(const GVDP *v,int line,uint8_t *keep)
 {
     memset(keep,0,320);
-    unsigned base=(v->reg[5]&127u)<<9,link=0,on_line=0;
+    unsigned base=(v->reg[5]&127u)<<9,link=0,on_line=0,pixels=0;
     for(unsigned n=0;n<80;++n) {
         unsigned e=base+link*8,size=v->vram[(e+2)&65535u];
         int y=(vram16(v,e)&1023)-128,cw=((size>>2)&3)+1,ch=(size&3)+1;
         if(line>=y && line<y+ch*8) {
             unsigned xword=vram16(v,e+6)&1023u;
-            if(++on_line>20 || (!xword && on_line>1))break;
+            if(++on_line>20 || pixels>=320 || (!xword && on_line>1))break;
+            /* Offscreen pieces consume the same fetch width as native VDP
+             * rendering. They deliberately hide the title's lower torso. */
+            pixels+=(unsigned)cw*8;
             unsigned attr=vram16(v,e+4);int iy=line-y;
             if(attr&0x1000)iy=ch*8-1-iy;
             for(int i=0;i<cw*8;++i) {
