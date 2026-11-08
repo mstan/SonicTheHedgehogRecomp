@@ -1336,19 +1336,28 @@ int main(int argc,char **argv)
      * native coordinates and the guest layout remain untouched. */
     memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
     g_ram[0xF600]=12;g_ram[0xD000]=1;word(g_ram,0xFE10,0x200);
-    for(int n=0;n<8;++n)g_ram[0xA400+n]=1;
-    word(g_ram,0xF700,800);word(g_ram,0xFF10,800);
-    word(g_ram,4,1);word(g_ram,12,2);
-    for(int n=0;n<4;++n){word(g_ram,0xB008+n*2,0xE2D2);word(g_ram,0xB010+n*2,0x8002);}
+    g_ram[0xA408]=2;g_ram[0xA409]=1;g_ram[0xA40B]=2;
+    word(g_ram,0xF700,0x970);word(g_ram,0xFF10,0x970);
+    word(g_ram,0,1);word(g_ram,2,2);word(g_ram,528,3);
+    for(int n=0;n<4;++n){word(g_ram,0xB008+n*2,0xE2D2);word(g_ram,0xB010+n*2,0xE2D3);word(g_ram,0xB018+n*2,0x8002);}
     v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
-    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-800);
-    v.cram[49]=0xE00;v.cram[2]=0xE0;
-    memset(v.vram+0x2D2*32,0x11,32);memset(v.vram+64,0x22,32);
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-0x970);
+    v.cram[49]=0xE00;v.cram[50]=0xE;v.cram[2]=0xE0;
+    memset(v.vram+0x2D2*32,0x11,32);memset(v.vram+0x2D3*32,0x22,32);memset(v.vram+64,0x22,32);
     memcpy(ram_before,g_ram,sizeof g_ram);
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
-    CHECK(out[38]==0xFF0000FFu && out[46]==0xFF00FF00u);
+    CHECK(out[0]==0xFF00FF00u && out[30]==0xFF0000FFu && out[46]==0xFFFF0000u);
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    /* Leaving the native curtain column must not truncate its visible tail. */
+    word(g_ram,0xF700,0x9D0);word(g_ram,0xFF10,0x9D0);word(v.vram,0xFC00,-0x9D0);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
+    CHECK(out[14]==0xFFFF0000u);
+    /* Identical pool tiles in MZ3 do not create a new curtain in empty space. */
+    word(g_ram,0xFE10,0x202);s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
+    CHECK(out[14]==0xFF000000u);
     /* The moving wall extends only its flat rear fill. Its forward boundary
      * remains in place, and capture/publish do not change guest data. */
     memset(g_ram,0,sizeof g_ram);s1_video_hook(0xD8DA);

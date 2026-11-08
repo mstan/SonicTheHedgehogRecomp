@@ -1786,19 +1786,22 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         if(background_x<0)background_x+=bg_width;
     }
     GenesisTileRow fg = {0}, bg = {0};
-    unsigned magma=level && width>320 && (zone>>8)==2?
-        world_attr(camera,wy,0)&2047u:0;
-    int magma_margin=magma>=0x2D2 && magma<0x2E2;
+    /* REV00's two vertical curtains end at finite layout columns. Extend
+     * those curtains while visible, using their complete 32px repeat.
+     * Horizontal pools elsewhere must retain their actual empty surroundings. */
+    int curtain=level && width>320?(zone==0x200?0x900:zone==0x201?0x100:-1):-1;
+    int curtain_width=zone==0x200?0xC0:0x100;
+    if(curtain>=0 && (camera<curtain || s_left>=curtain+curtain_width ||
+                     s_left+width<=curtain))curtain=-1;
     for(int x=0;x<width;++x) {
         int nx=x-origin,wx=level?s_left+x:nx-hs_a;
         int reference_bx=nx-hs_b,bx=bg_base+x;
         if (!fg.remaining) {
             uint16_t attr=level?world_attr(wx,wy,0):plane_attr(v,base_a,nx-hs_a,line+(v->vsram[0]&1023));
-            /* A fixed magma curtain also stops at a finite layout column.
-             * Fill only blank foreground cells outside the native left edge;
-             * retain foreground stonework and all original layout/collision. */
-            if(magma_margin && wx<camera && !(attr&2047u))
-                attr=world_attr((camera&~15)|(wx&15),wy,0);
+            if(curtain>=0 && wx<curtain && !(attr&2047u)) {
+                uint16_t fill=world_attr(curtain+(wx&31),wy,0);
+                if((fill&2047u)>=0x2D2 && (fill&2047u)<0x2E2)attr=fill;
+            }
             gtile_row_begin(&fg,v->vram,attr,level?wx:nx-hs_a,level?wy:line+(v->vsram[0]&1023));
         }
         if (!bg.remaining) {
