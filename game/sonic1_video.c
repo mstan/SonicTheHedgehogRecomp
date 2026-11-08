@@ -732,11 +732,18 @@ static void remember_tail(SceneTail *tail,unsigned object)
     memcpy(tail->object,video_ram+object,64);tail->slot=(uint16_t)object;
     tail->seen=tail->tail=1;
 }
+static int animal_floor(int x,int y);
+static int runoff_floor(const uint8_t *p,int x,int y)
+{
+    int right=animal_floor(x+p[0x17],y+p[0x16]);
+    int left=animal_floor(x-p[0x17],y+p[0x16]);
+    return right<left?right:left;
+}
 /* Keep the scripted run-off moving after Sonic reaches the native boundary.
- * Only the displayed X advances. SBZ2's pan catches this pose until the real
+ * Preserve its entry velocity. SBZ2's pan catches this pose until the real
  * player reaches it, then ordinary presentation resumes without a position
  * jump. Reuse the serialized, level-local continuation storage. */
-static int act_runoff_x(void)
+static int act_runoff_x(int *display_y)
 {
     int x=ram16(0xD008),zone=ram16(0xFE10);
     SceneTail *tail=&s_actor_tails[0];
@@ -757,6 +764,9 @@ static int act_runoff_x(void)
         if(zone==0x501 && target>0x20F0)target=0x20F0;
         if(target<=x)return x;
         remember_tail(tail,0xD000);
+        int velocity=(int16_t)actor_word(tail->object,0x10);
+        if(velocity<=0)velocity=ram16(0xF760);
+        actor_put(tail->object,0x10,velocity>0?velocity:0x600);
         actor_put(tail->object,0x30,(unsigned)target);
         actor_put(tail->object,0x32,ram16(0xFE04));
     }
@@ -765,11 +775,42 @@ static int act_runoff_x(void)
     unsigned frame=ram16(0xFE04),dt=(uint16_t)(frame-actor_word(tail->object,0x32));
     int shown=actor_word(tail->object,8);
     if(dt) {
-        shown+=(int)dt*6;if(shown>target)shown=target;
-        if(shown<x)shown=x;
-        actor_put(tail->object,8,(unsigned)shown);
+        uint8_t *p=tail->object;
+        uint64_t position=((uint64_t)shown<<16)|actor_word(p,10);
+        uint64_t limit=(uint64_t)target<<16;
+        /* Marble's end terrain changes height beyond the native boundary.
+         * Follow both original foot sensors, falling when support ends,
+         * without moving the guest player or altering the results timing. */
+        do {
+            unsigned steps=zone==0x202?1:dt;
+            position+=(uint64_t)actor_word(p,0x10)*256*steps;
+            if(position>limit)position=limit;
+            if(position<(uint64_t)x<<16)position=(uint64_t)x<<16;
+            shown=(int)(position>>16);
+            if(zone==0x202) {
+                int y=(int16_t)actor_word(p,12);
+                if(p[0x22]&2) {
+                    uint32_t yp=((uint32_t)actor_word(p,12)<<16)|actor_word(p,14);
+                    yp+=(uint32_t)((int16_t)actor_word(p,0x12)*256);
+                    y=(int16_t)(yp>>16);actor_put(p,14,yp);
+                    actor_put(p,0x12,actor_word(p,0x12)+56);
+                    int d=runoff_floor(p,shown,y);
+                    if((int16_t)actor_word(p,0x12)>=0 && d<0) {
+                        y+=d;p[0x22]&=(uint8_t)~2u;actor_put(p,0x12,0);
+                    }
+                } else {
+                    int d=runoff_floor(p,shown,y);
+                    if(d>=-14 && d<=14)y+=d;
+                    else {p[0x22]|=2;actor_put(p,0x12,0);}
+                }
+                actor_put(p,12,(unsigned)y);
+            }
+            dt-=steps;
+        } while(dt && position<limit);
+        actor_put(p,8,(unsigned)shown);actor_put(p,10,(unsigned)position);
         actor_put(tail->object,0x32,frame);
     }
+    if(zone==0x202)*display_y=(int16_t)actor_word(tail->object,12);
     return shown;
 }
 /* DLE_SBZ2 creates the floor at the native camera threshold. Its initial
@@ -1248,7 +1289,7 @@ static void capture_objects(void)
     }
     int left=level?scene_left(video_ram,cam,s_requested_width):cam-(s_requested_width-320)/2;
     int guest_left=level?view_left(cam,s_requested_width):left;
-    int runoff_x=act_runoff_x();
+    int runoff_y=(int16_t)ram16(0xD00C),runoff_x=act_runoff_x(&runoff_y);
     for(unsigned pri=0;pri<8;++pri) {
         unsigned queue=0xAC00+pri*128, bytes=ram16(queue);
         if(bytes>126)bytes=126;
@@ -1268,14 +1309,15 @@ static void capture_objects(void)
                 video_ram[o]==0x5C && !space;
             s_capture_slot=1+(o-0xD000)/0x40;s_capture_space=space;
             int object_x=o==0xD000?runoff_x:ram16(o+8);
+            int object_y=o==0xD000?runoff_y:ram16(o+12);
             s_capture_frame->ox[s_capture_slot]=(int16_t)object_x;
-            s_capture_frame->oy[s_capture_slot]=(int16_t)ram16(o+12);
+            s_capture_frame->oy[s_capture_slot]=(int16_t)object_y;
             s_capture_frame->identity[s_capture_slot]=((uint32_t)video_ram[o]<<24)|scene_read32(0xFF0000u+o+4);
             int x,y,hud=video_ram[o]==0x21?1:space?0:2;
             if(space) {
                 unsigned scroll=space==4?0xF700:space==8?0xF708:0xF718;
                 x=(int16_t)(object_x-ram16(scroll));
-                y=(int16_t)(ram16(o+12)-ram16(scroll+4));
+                y=(int16_t)(object_y-ram16(scroll+4));
             } else {
                 x=(int16_t)ram16(o+8)-128;y=(int16_t)ram16(o+10)-128;
                 if(pylon) {

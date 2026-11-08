@@ -1088,6 +1088,36 @@ int main(int argc,char **argv)
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
     CHECK(strstr(reply,"\"sprites\":1"));
+    /* A runoff continuation keeps a fractional entry speed and follows a
+     * lower floor instead of sliding horizontally above it. The original
+     * player, collision layout and result timing remain untouched. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;g_ram[0xD001]=0x84;
+    word(g_ram,0xFE10,0x202);g_ram[0xF742]=4;g_ram[0xF7CC]=1;
+    for(unsigned n=0;n<8;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,1024);word(g_ram,0xFF10,1024);word(g_ram,0xF704,96);
+    word(g_ram,0xF72A,1024);word(g_ram,0xD008,1384);word(g_ram,0xD00C,108);
+    word(g_ram,0xD010,0x480);g_ram[0xD016]=19;g_ram[0xD017]=9;
+    word(g_ram,0xD002,0x8001);m68k_write32(0xD004,0x1000);
+    word(g_rom,0x1000,2);g_rom[0x1002]=1;memset(g_rom+0x1003,0,5);
+    word(g_ram,0xAD00,2);word(g_ram,0xAD02,0xD000);
+    m68k_write32(0xF796,0x2000);g_rom[0x2001]=1;memset(g_rom+0x62A10,16,16);
+    for(unsigned col=0;col<16;++col)word(g_ram,(col<8?128:144)*2+col*2,0x2001);
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;
+    v.cram[1]=0xE;memset(v.vram+32,0x11,32);word(v.vram,0xFC00,-1024);
+    for(unsigned frame=0;frame<=30;++frame) {
+        word(g_ram,0xFE04,frame);memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+        sonic1_video.scanline(&v,0,native,320,out,796);
+        if(frame==1) {
+            sonic1_video.scanline(&v,12,native,320,out,796);
+            CHECK(out[602]==0xFFFF0000u && out[610]==0xFF000000u);
+        }
+    }
+    sonic1_video.scanline(&v,28,native,320,out,796);CHECK(out[733]==0xFFFF0000u);
+    sonic1_video.scanline(&v,12,native,320,out,796);CHECK(out[733]==0xFF000000u);
     /* Early wide-view capsule/ring pixels come from complete ROM art even
      * while those VRAM tiles contain another asset. Capsule ink also stays
      * black during the shared boss hit flash, without changing CRAM/RAM. */
