@@ -681,22 +681,24 @@ static void labyrinth_boss_present(unsigned priority,int camera,int left)
         add_mapping(0x17D0C,frames[i],0x400,4,
                     x-camera,y-ram16(0xF704),0,0);
 }
-static void starlight_boss_present(unsigned priority,int camera,int left)
+static void stationary_boss_present(unsigned priority,int camera,int left)
 {
-    /* The stationary ship is visible before DLE_SLZ3's music/PLC gate.
+    /* The stationary ship is visible before the native music/PLC gate.
      * Publish only its initial pose until the real boss initializes. */
-    unsigned event=video_ram[0xF742],pending=0;
+    unsigned zone=ram16(0xFE10),event=video_ram[0xF742],pending=0;
+    int marble=zone==0x202;
+    unsigned id=marble?0x73:0x7A,gate=marble?2:4;
     if((priority!=3 && priority!=4) || !gameplay() || s_requested_width<=320 ||
-       ram16(0xFE10)!=0x302 || event>4)return;
-    for(unsigned o=0xD800;o<0xF000;o+=64)if(video_ram[o]==0x7A) {
+       (zone!=0x302 && !marble) || event>gate)return;
+    for(unsigned o=0xD800;o<0xF000;o+=64)if(video_ram[o]==id) {
         if(video_ram[o+0x24]>=2)return;
         pending=1;
     }
-    if(event==4 && !pending)return;
-    const int x=0x2188,y=0x228;
+    if(event==gate && !pending)return;
+    const int x=marble?0x19F0:0x2188,y=marble?0x22C:0x228;
     if(x+48<=left || x-48>=left+s_requested_width)return;
     s_capture_slot=0;s_capture_space=4;
-    if(priority==3)add_mapping(0x17DD4,3,0x246C,4,x-camera,y-ram16(0xF704),0,0);
+    if(priority==3)add_mapping(0x17DD4,marble?4:3,0x246C,4,x-camera,y-ram16(0xF704),0,0);
     else {
         static const unsigned frames[]={0,1,8};
         for(unsigned i=0;i<3;++i)
@@ -730,11 +732,18 @@ static void remember_tail(SceneTail *tail,unsigned object)
     memcpy(tail->object,video_ram+object,64);tail->slot=(uint16_t)object;
     tail->seen=tail->tail=1;
 }
+static int animal_floor(int x,int y);
+static int runoff_floor(const uint8_t *p,int x,int y)
+{
+    int right=animal_floor(x+p[0x17],y+p[0x16]);
+    int left=animal_floor(x-p[0x17],y+p[0x16]);
+    return right<left?right:left;
+}
 /* Keep the scripted run-off moving after Sonic reaches the native boundary.
- * Only the displayed X advances. SBZ2's pan catches this pose until the real
+ * Preserve its entry velocity. SBZ2's pan catches this pose until the real
  * player reaches it, then ordinary presentation resumes without a position
  * jump. Reuse the serialized, level-local continuation storage. */
-static int act_runoff_x(void)
+static int act_runoff_x(int *display_y)
 {
     int x=ram16(0xD008),zone=ram16(0xFE10);
     SceneTail *tail=&s_actor_tails[0];
@@ -755,6 +764,9 @@ static int act_runoff_x(void)
         if(zone==0x501 && target>0x20F0)target=0x20F0;
         if(target<=x)return x;
         remember_tail(tail,0xD000);
+        int velocity=(int16_t)actor_word(tail->object,0x10);
+        if(velocity<=0)velocity=ram16(0xF760);
+        actor_put(tail->object,0x10,velocity>0?velocity:0x600);
         actor_put(tail->object,0x30,(unsigned)target);
         actor_put(tail->object,0x32,ram16(0xFE04));
     }
@@ -763,11 +775,42 @@ static int act_runoff_x(void)
     unsigned frame=ram16(0xFE04),dt=(uint16_t)(frame-actor_word(tail->object,0x32));
     int shown=actor_word(tail->object,8);
     if(dt) {
-        shown+=(int)dt*6;if(shown>target)shown=target;
-        if(shown<x)shown=x;
-        actor_put(tail->object,8,(unsigned)shown);
+        uint8_t *p=tail->object;
+        uint64_t position=((uint64_t)shown<<16)|actor_word(p,10);
+        uint64_t limit=(uint64_t)target<<16;
+        /* Marble's end terrain changes height beyond the native boundary.
+         * Follow both original foot sensors, falling when support ends,
+         * without moving the guest player or altering the results timing. */
+        do {
+            unsigned steps=zone==0x202?1:dt;
+            position+=(uint64_t)actor_word(p,0x10)*256*steps;
+            if(position>limit)position=limit;
+            if(position<(uint64_t)x<<16)position=(uint64_t)x<<16;
+            shown=(int)(position>>16);
+            if(zone==0x202) {
+                int y=(int16_t)actor_word(p,12);
+                if(p[0x22]&2) {
+                    uint32_t yp=((uint32_t)actor_word(p,12)<<16)|actor_word(p,14);
+                    yp+=(uint32_t)((int16_t)actor_word(p,0x12)*256);
+                    y=(int16_t)(yp>>16);actor_put(p,14,yp);
+                    actor_put(p,0x12,actor_word(p,0x12)+56);
+                    int d=runoff_floor(p,shown,y);
+                    if((int16_t)actor_word(p,0x12)>=0 && d<0) {
+                        y+=d;p[0x22]&=(uint8_t)~2u;actor_put(p,0x12,0);
+                    }
+                } else {
+                    int d=runoff_floor(p,shown,y);
+                    if(d>=-14 && d<=14)y+=d;
+                    else {p[0x22]|=2;actor_put(p,0x12,0);}
+                }
+                actor_put(p,12,(unsigned)y);
+            }
+            dt-=steps;
+        } while(dt && position<limit);
+        actor_put(p,8,(unsigned)shown);actor_put(p,10,(unsigned)position);
         actor_put(tail->object,0x32,frame);
     }
+    if(zone==0x202)*display_y=(int16_t)actor_word(tail->object,12);
     return shown;
 }
 /* DLE_SBZ2 creates the floor at the native camera threshold. Its initial
@@ -954,7 +997,6 @@ static void retire_capsule_animal(const SceneTail *tail)
 {
     for(unsigned n=97;n<128;++n)if(!s_actor_tails[n].seen || !s_actor_tails[n].tail) {
         s_actor_tails[n]=*tail;
-        s_actor_tails[n].generation=s_scene_tick;
         return;
     }
 }
@@ -976,7 +1018,10 @@ static void capsule_animals_present(unsigned priority,int camera,int left)
             retire_capsule_animal(tail);
             memset(tail,0,sizeof *tail);
         }
-        if(live)remember_tail(tail,o);
+        if(live) {
+            if(!tail->seen)tail->generation=((s_scene_tick<<7)|n)&0xFFFFFFu;
+            remember_tail(tail,o);
+        }
     }
     for(unsigned n=97;n<128;++n) {
         SceneTail *tail=&s_actor_tails[n];
@@ -1135,7 +1180,7 @@ static void collect_host_rings(void)
 static void entry_placements_present(unsigned priority,int camera,int left)
 {
     if(!gameplay() || results_world() || video_ram[0xD5C0]==0x3A || s_requested_width<=320 ||
-       (priority!=2 && priority!=3 && priority!=4))return;
+       (priority<2 || priority>5))return;
     int entry=(video_ram[0xF600]&128)!=0;
     for(unsigned o=0xD080;o<0xD200;o+=64)if(video_ram[o]==0x34)entry=1;
     load_placements();s_capture_slot=0;s_capture_space=4;
@@ -1167,6 +1212,26 @@ static void entry_placements_present(unsigned priority,int camera,int left)
                        s_capture_frame->identity[1+(o-0xD000)/64])break;
                 if(o<0xF000)continue;
                 add_mapping(0x9F92,video_ram[0xFEC3]&3,0x27B2,0,x-camera,y-ram16(0xF704),0,0);
+            }
+        } else if(entry && p->id==0x78 && (priority==4 || priority==5)) {
+            if(p->x+48<left || (int)p->x-48>=left+s_requested_width)continue;
+            unsigned o=placement_object(p);
+            if(p->state && !o && (video_ram[0xFC02+p->state]&128))continue;
+            int x=o?ram16(o+8):p->x,y=o?ram16(o+12):(p->y&4095);
+            unsigned flags=(p->y>>14)&3;
+            if(o && video_ram[o+0x24]) {
+                /* Body slots already belong to the initialized native head. */
+                if(priority!=4 || s_capture_frame->identity[1+(o-0xD000)/64])continue;
+                add_mapping(scene_read32(0xFF0000u+o+4),video_ram[o+0x1A],
+                            ram16(o+2),video_ram[o+1],x-camera,y-ram16(0xF704),0,0);
+            } else {
+                /* Cat_Main waits for floor contact before allocating its
+                 * three segments. Preview them while that work is frozen. */
+                unsigned gfx=video_ram[0xFE10]==5?0x22B0:0x24FF;
+                if(priority==4)add_mapping(0x16D6E,0,gfx,flags,x-camera,y-ram16(0xF704),0,0);
+                else for(int n=1;n<=3;++n)
+                    add_mapping(0x16D6E,8,gfx,flags,x+(flags&1?-12:12)*n-camera,
+                                y-ram16(0xF704),0,0);
             }
         } else if(entry && video_ram[0xFE10]==0 && priority==4 &&
                   (p->id==0x3B || (p->id==0x41 && !(p->subtype&0x30)))) {
@@ -1226,7 +1291,7 @@ static void capture_objects(void)
     }
     int left=level?scene_left(video_ram,cam,s_requested_width):cam-(s_requested_width-320)/2;
     int guest_left=level?view_left(cam,s_requested_width):left;
-    int runoff_x=act_runoff_x();
+    int runoff_y=(int16_t)ram16(0xD00C),runoff_x=act_runoff_x(&runoff_y);
     for(unsigned pri=0;pri<8;++pri) {
         unsigned queue=0xAC00+pri*128, bytes=ram16(queue);
         if(bytes>126)bytes=126;
@@ -1246,22 +1311,30 @@ static void capture_objects(void)
                 video_ram[o]==0x5C && !space;
             s_capture_slot=1+(o-0xD000)/0x40;s_capture_space=space;
             int object_x=o==0xD000?runoff_x:ram16(o+8);
+            int object_y=o==0xD000?runoff_y:ram16(o+12);
             s_capture_frame->ox[s_capture_slot]=(int16_t)object_x;
-            s_capture_frame->oy[s_capture_slot]=(int16_t)ram16(o+12);
+            s_capture_frame->oy[s_capture_slot]=(int16_t)object_y;
             s_capture_frame->identity[s_capture_slot]=((uint32_t)video_ram[o]<<24)|scene_read32(0xFF0000u+o+4);
+            if(!s_capture_readonly && s_requested_width>320 && o>=0xD800 &&
+               video_ram[o]==0x28 && !video_ram[o+0x28] && capsule_animals()) {
+                const SceneTail *tail=&s_actor_tails[1+(o-0xD800)/64];
+                if(tail->seen)s_capture_frame->identity[s_capture_slot]=0x28000000u|tail->generation;
+            }
             int x,y,hud=video_ram[o]==0x21?1:space?0:2;
             if(space) {
                 unsigned scroll=space==4?0xF700:space==8?0xF708:0xF718;
                 x=(int16_t)(object_x-ram16(scroll));
-                y=(int16_t)(ram16(o+12)-ram16(scroll+4));
+                y=(int16_t)(object_y-ram16(scroll+4));
             } else {
                 x=(int16_t)ram16(o+8)-128;y=(int16_t)ram16(o+10)-128;
                 if(pylon) {
-                    /* Pyl_Display uses twice the native camera. Reproject
-                     * its phase through the expanded view's camera too,
-                     * so a clamped view keeps its foreground stationary. */
+                    /* Pyl_Display can precede camera deformation. Derive
+                     * its 2x phase from this displayed view, rather than
+                     * mixing the old object X with the updated camera. */
                     int view_camera=left+(s_requested_width-320)/2;
-                    x=((ram16(o+8)+cam-view_camera)&511)-128;hud=0;s_capture_space=4;
+                    int carry=view_camera==cam && scene_left(video_ram,cam+1,s_requested_width)!=left?
+                        ram16(0xF702)>>15:0;
+                    x=((-cam-view_camera-carry)&511)-128;hud=0;s_capture_space=4;
                     s_capture_frame->ox[s_capture_slot]=(int16_t)(cam+x);
                     s_capture_frame->oy[s_capture_slot]=(int16_t)(ram16(0xF704)+y);
                 }
@@ -1356,7 +1429,7 @@ static void capture_objects(void)
             }
             final_cylinders_present(pri,cam,left);
             labyrinth_boss_present(pri,cam,left);
-            starlight_boss_present(pri,cam,left);
+            stationary_boss_present(pri,cam,left);
             scrap_floor_present(pri,cam,left);
             final_escape_present(pri,cam);
             initial_orbinauts_present(pri,cam);
@@ -1364,7 +1437,11 @@ static void capture_objects(void)
             capsule_animals_present(pri,cam,left);
             entry_placements_present(pri,cam,left);
         }
-        if(!s_capture_readonly && pri==2 && gameplay() && !native_activation()) {
+        /* The outgoing level still owns adopted rings after activation is
+         * frozen for a Title/SEGA fade. Draw them without resuming guest work. */
+        int outgoing=(video_ram[0xF600]&127)==0 || (video_ram[0xF600]&127)==4;
+        if(!s_capture_readonly && pri==2 && gameplay() &&
+           (!native_activation() || (s_rings_adopted && outgoing && !recorded_demo()))) {
             s_capture_slot=0;s_capture_space=4;
             for(unsigned n=0;n<s_placement_count;++n) {
                 Placement *p=&s_placements[n]; if(p->id!=0x25)continue;
@@ -1639,18 +1716,21 @@ static int attributes_differ(const GVDP *v,uint16_t a,uint16_t b,int x,int y)
     }
     return 0;
 }
-/* Coverage of the original linked SAT, including its X=0 mask. Keep native
+/* Coverage of the original SAT, including fetch limits and its X=0 mask. Keep native
  * overlay pixels while replacing the title's incomplete cached water layer. */
 static void title_sprite_coverage(const GVDP *v,int line,uint8_t *keep)
 {
     memset(keep,0,320);
-    unsigned base=(v->reg[5]&127u)<<9,link=0,on_line=0;
+    unsigned base=(v->reg[5]&127u)<<9,link=0,on_line=0,pixels=0;
     for(unsigned n=0;n<80;++n) {
         unsigned e=base+link*8,size=v->vram[(e+2)&65535u];
         int y=(vram16(v,e)&1023)-128,cw=((size>>2)&3)+1,ch=(size&3)+1;
         if(line>=y && line<y+ch*8) {
             unsigned xword=vram16(v,e+6)&1023u;
-            if(++on_line>20 || (!xword && on_line>1))break;
+            if(++on_line>20 || pixels>=320 || (!xword && on_line>1))break;
+            /* Offscreen pieces consume the same fetch width as native VDP
+             * rendering. They deliberately hide the title's lower torso. */
+            pixels+=(unsigned)cw*8;
             unsigned attr=vram16(v,e+4);int iy=line-y;
             if(attr&0x1000)iy=ch*8-1-iy;
             for(int i=0;i<cw*8;++i) {
@@ -1949,6 +2029,7 @@ typedef struct {
 } InterpFrame;
 static InterpFrame s_ix[2];
 static unsigned s_ix_front;
+static uint8_t s_interp_previous_slot[SCENE_SLOTS];
 static InterpFrame *ix_current(void){return &s_ix[s_ix_front];}
 static InterpFrame *ix_previous(void){return &s_ix[s_ix_front^1u];}
 static void interpolation_reset(void)
@@ -2001,10 +2082,10 @@ static int interpolate_background_correction(int line,int margin,int current)
 static void interpolation_sprite_delta(const SceneSprite *sprite,int line,int *dx,int *dy)
 {
     const InterpFrame *a=ix_previous(),*b=ix_current();
-    unsigned slot=sprite->slot;
+    unsigned slot=sprite->slot,previous_slot=slot<SCENE_SLOTS?s_interp_previous_slot[slot]:slot;
     if(slot && slot<SCENE_SLOTS && b->scene.identity[slot] &&
-       a->scene.identity[slot]==b->scene.identity[slot]) {
-        int ax=a->scene.ox[slot],ay=a->scene.oy[slot];
+       a->scene.identity[previous_slot]==b->scene.identity[slot]) {
+        int ax=a->scene.ox[previous_slot],ay=a->scene.oy[previous_slot];
         if(sprite->space==4 && b->scene.identity[slot]>>24==0x5C) {
             ax=b->scene.ox[slot]+((ax-b->scene.ox[slot]+256)&511)-256;
             ay=b->scene.oy[slot]+((ay-b->scene.oy[slot]+32)&63)-32;
@@ -2089,6 +2170,18 @@ static int interpolate(double phase,uint32_t *image,int stride,int height)
     }
     int saved[]={s_width,s_left,s_camera,s_stage_width,s_native_x,s_requested_width,s_title_world};
     const SceneFrame *scene=s_display;
+    /* Resolve native-to-host animal handoffs once per presentation. Doing
+     * the same search for every sprite on every scanline adds needless work
+     * precisely on the handoff frames that need smooth motion. */
+    for(unsigned slot=0;slot<SCENE_SLOTS;++slot) {
+        s_interp_previous_slot[slot]=(uint8_t)slot;
+        if(f->scene.identity[slot]>>24!=0x28 ||
+           p->scene.identity[slot]==f->scene.identity[slot])continue;
+        for(unsigned previous=1;previous<SCENE_SLOTS;++previous)
+            if(p->scene.identity[previous]==f->scene.identity[slot]) {
+                s_interp_previous_slot[slot]=(uint8_t)previous;break;
+            }
+    }
     s_display=&f->scene;s_interpolating=1;s_phase=phase;s_read_ram=f->ram;s_title_world=0;
     for(int y=0;y<IX_LINES;++y) {
         memcpy(f->video.cram,f->cram[y],sizeof f->cram[y]);

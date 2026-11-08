@@ -156,7 +156,21 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,200,native,320,out,796);
     CHECK(out[246]==native[8] && out[254]==native[16]);
     CHECK(out[270]==0xFF0000FFu); /* masked sprite must not preserve stale BG */
-    word(v.vram,0xC000+25*128+2,0);memset(v.vram+0xA000,0,24);
+    /* Offscreen cells still consume the native 40-cell fetch budget. The
+     * title uses that limit to hide the lower part of Sonic as he rises. */
+    memset(v.vram+0xA000,0,88);
+    for(unsigned n=0;n<11;++n) {
+        unsigned a=0xA000+n*8;word(v.vram,a,328);
+        v.vram[a+2]=(uint8_t)(n<10?15:0);v.vram[a+3]=(uint8_t)(n<10?n+1:0);
+        word(v.vram,a+4,1);word(v.vram,a+6,n<10?80:160);
+    }
+    sonic1_video.scanline(&v,200,native,320,out,796);
+    CHECK(out[270]==0xFF0000FFu);
+    /* Match the native compositor's whole final sprite before exhaustion. */
+    v.vram[0xA000+9*8+2]=11;v.vram[0xA000+10*8+2]=4;
+    sonic1_video.scanline(&v,200,native,320,out,796);
+    CHECK(out[270]==native[32] && out[278]==native[40]);
+    word(v.vram,0xC000+25*128+2,0);memset(v.vram+0xA000,0,88);
     memset(v.vram+0xE000+25*128,0,128);
     g_ram[0xA441]=g_ram[0xA442]=0;memset(g_ram+512,0,512);
     memset(g_ram+0xB008,0,8);word(v.vram,0xFC02,0);
@@ -300,6 +314,26 @@ int main(int argc,char **argv)
     CHECK(!s1_video_hook(0x1ADE4));CHECK(ring_calls==1);CHECK(g_ram[0xFC03]&1);
     CHECK(!s1_video_hook(0x1ADE4));CHECK(ring_calls==1); /* no duplicate collection */
     CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD840]==0); /* no duplicate spawn */
+
+    /* Adopted rings remain visible while the live level fades to Title or
+     * SEGA. Freezing activation must not remove their presentation owner. */
+    for(unsigned frame=0;frame<4;++frame)word(g_rom,0x9F92+frame*2,8);
+    g_rom[0x9F9A]=1;
+    for(unsigned n=1;n<=5;++n)g_rom[0x9F9A+n]=0;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    upload_sat(&v);sonic1_video.scanline(&v,0,native,320,out,1593);
+    s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":3"));
+    for(unsigned mode=0;mode<=4;mode+=4) {
+        g_ram[0xF600]=(uint8_t)mode;
+        memcpy(ram_before,g_ram,sizeof g_ram);M68KState cpu_before=g_cpu;
+        CHECK(!s1_video_hook(0xD980));
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);
+        upload_sat(&v);sonic1_video.scanline(&v,0,native,320,out,1593);
+        s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":3"));
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+        CHECK(!memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    }
+    g_ram[0xF600]=12;memset(g_rom+0x9F92,0,14);
 
     /* MZ's first grassy platform is at X=640. A smooth camera at X=1
      * previously spawned it, then the 128px-rounded culler deleted it and
@@ -693,6 +727,41 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,0,native,320,out,796);
     s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":4"));
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    /* Caterkiller's floor-search initialization leaves its head and body
+     * unqueued during the frozen entry. Preview the complete initial pose,
+     * follow its falling head, then hand off without duplicate segments. */
+    memset(g_ram,0,sizeof g_ram);g_ram[0xF600]=0x8C;
+    g_ram[0xD000]=1;g_ram[0xD080]=0x34;word(g_ram,0xFE10,0x201);
+    for(unsigned n=0;n<8;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF704,512);word(g_rom,0x6B024,0x600);
+    word(g_rom,0x6B600,512);word(g_rom,0x6B602,680);
+    g_rom[0x6B604]=0xF8;g_rom[0x6B605]=0;word(g_rom,0x6B606,65535);
+    for(unsigned frame=0;frame<32;++frame)word(g_rom,0x16D6E+frame*2,0x82);
+    g_rom[0x16DF0]=1;memset(g_rom+0x16DF1,0,5);
+    g_ram[0xD800]=0x78;g_ram[0xD823]=1;
+    word(g_ram,0xD808,512);word(g_ram,0xD80C,680);
+    s1_video_hook(0xD8DA);
+    for(unsigned pass=0;pass<3;++pass) {
+        if(pass==1)word(g_ram,0xD80C,686);
+        if(pass==2)for(unsigned n=0;n<4;++n) {
+            unsigned o=0xD800+n*64,pri=n?5:4;
+            g_ram[o]=0x78;g_ram[o+1]=4;g_ram[o+0x24]=(uint8_t)(2+n*2);
+            m68k_write32(o+4,0x16D6E);word(g_ram,o+8,512+n*12);
+            word(g_ram,o+12,696);g_ram[o+0x1A]=n?8:0;
+            word(g_ram,0xAC00+pri*128,n?6:2);
+            word(g_ram,0xAC02+pri*128+(n?n-1:0)*2,o);
+        }
+        memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+        CHECK(strstr(reply,"\"sprites\":4"));
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    }
+    memset(g_ram+0xD800,0,256);memset(g_ram+0xAC00,0,1024);g_ram[0xFC03]=128;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+    CHECK(strstr(reply,"\"sprites\":0"));
+
     /* Ending animals hand off from a resting preview to their live sprite,
      * then retain a draw-only tail after native deletion. No guest lifetime
      * or visibility changes, and a consumed tail must not return. */
@@ -1033,6 +1102,36 @@ int main(int argc,char **argv)
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
     CHECK(strstr(reply,"\"sprites\":1"));
+    /* A runoff continuation keeps a fractional entry speed and follows a
+     * lower floor instead of sliding horizontally above it. The original
+     * player, collision layout and result timing remain untouched. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;g_ram[0xD001]=0x84;
+    word(g_ram,0xFE10,0x202);g_ram[0xF742]=4;g_ram[0xF7CC]=1;
+    for(unsigned n=0;n<8;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,1024);word(g_ram,0xFF10,1024);word(g_ram,0xF704,96);
+    word(g_ram,0xF72A,1024);word(g_ram,0xD008,1384);word(g_ram,0xD00C,108);
+    word(g_ram,0xD010,0x480);g_ram[0xD016]=19;g_ram[0xD017]=9;
+    word(g_ram,0xD002,0x8001);m68k_write32(0xD004,0x1000);
+    word(g_rom,0x1000,2);g_rom[0x1002]=1;memset(g_rom+0x1003,0,5);
+    word(g_ram,0xAD00,2);word(g_ram,0xAD02,0xD000);
+    m68k_write32(0xF796,0x2000);g_rom[0x2001]=1;memset(g_rom+0x62A10,16,16);
+    for(unsigned col=0;col<16;++col)word(g_ram,(col<8?128:144)*2+col*2,0x2001);
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;
+    v.cram[1]=0xE;memset(v.vram+32,0x11,32);word(v.vram,0xFC00,-1024);
+    for(unsigned frame=0;frame<=30;++frame) {
+        word(g_ram,0xFE04,frame);memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+        sonic1_video.scanline(&v,0,native,320,out,796);
+        if(frame==1) {
+            sonic1_video.scanline(&v,12,native,320,out,796);
+            CHECK(out[602]==0xFFFF0000u && out[610]==0xFF000000u);
+        }
+    }
+    sonic1_video.scanline(&v,28,native,320,out,796);CHECK(out[733]==0xFFFF0000u);
+    sonic1_video.scanline(&v,12,native,320,out,796);CHECK(out[733]==0xFF000000u);
     /* Early wide-view capsule/ring pixels come from complete ROM art even
      * while those VRAM tiles contain another asset. Capsule ink also stays
      * black during the shared boss hit flash, without changing CRAM/RAM. */
@@ -1163,6 +1262,20 @@ int main(int argc,char **argv)
         g_ram[0xD800]=stop==0?0x7A:0;g_ram[0xD824]=2;g_ram[0xF742]=stop==2?6:4;
         s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
         sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":0"));
+    }
+    /* Marble's initial ship and tube obey the same visual-only handoff,
+     * with their own authored pose and earlier native event gate. */
+    memset(g_ram+0xD800,0,64);word(g_ram,0xFE10,0x202);g_ram[0xF742]=0;
+    word(g_ram,0xF700,0x17D0);word(g_ram,0xFF10,0x17D0);word(g_ram,0xF704,0x224);
+    word(v.vram,0xFC00,-0x17D0);word(g_rom,0x17DD4+8,12);
+    for(unsigned phase=0;phase<4;++phase) {
+        g_ram[0xD800]=phase==1 || phase==2?0x73:0;
+        g_ram[0xD824]=phase==2?2:0;g_ram[0xF742]=phase?2:0;
+        memcpy(ram_before,g_ram,sizeof g_ram);ship_cpu=g_cpu;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+        CHECK(strstr(reply,phase<2?"\"sprites\":4":"\"sprites\":0"));
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&ship_cpu,&g_cpu,sizeof g_cpu));
     }
     /* An early world sprite must not borrow a title card's centered origin
      * before its level scene is installed. The screen-space card stays. */
@@ -1311,19 +1424,32 @@ int main(int argc,char **argv)
     m68k_write32(0xD804,0x1000);word(g_ram,0xD802,1);
     word(g_ram,0xD808,600);word(g_ram,0xD80C,8);word(g_ram,0xD810,-512);
     word(g_ram,0xAC00+6*128,2);word(g_ram,0xAC02+6*128,0xD800);
+    static uint32_t animal_fractional[796*224];
+    sonic1_video.presentation_configure(1);word(g_ram,0xFE04,1);
     memcpy(ram_before,g_ram,sizeof g_ram);
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    for(int y=0;y<224;++y) {
+        sonic1_video.scanline(&v,y,native,320,out,796);
+        sonic1_video.presentation_capture(&v,y,out,796,320,NULL);
+    }
     memset(g_ram+0xD800,0,64);word(g_ram,0xAC00+6*128,0);word(g_ram,0xFE04,2);
     memcpy(ram_before,g_ram,sizeof g_ram);
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
     sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
     CHECK(out[36]==0xFF0000FFu);
+    for(int y=0;y<224;++y) {
+        sonic1_video.scanline(&v,y,native,320,out,796);
+        sonic1_video.presentation_capture(&v,y,out,796,320,NULL);
+    }
+    /* The first retired pose must interpolate from its last native slot,
+     * before subsequent frames can use the new host slot's history. */
+    CHECK(sonic1_video.interpolate(.5,animal_fractional,796,224));
+    CHECK(animal_fractional[8*796+36]==0xFF000000u);
+    CHECK(animal_fractional[8*796+37]==0xFF0000FFu);
     /* A retired margin animal still moves at fractional presentation
      * phases, after its reusable native object slot has been deleted. */
-    static uint32_t animal_fractional[796*224];
-    sonic1_video.presentation_configure(1);
     for(unsigned tick=3;tick<=4;++tick) {
         word(g_ram,0xFE04,tick);s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
         for(int y=0;y<224;++y) {
@@ -1472,14 +1598,17 @@ int main(int argc,char **argv)
     }
     /* A clamped expanded view keeps its foreground fixed while the native
      * camera catches up. Cover both ends and fractional presentation. */
-    const int clamp_cameras[2][4]={{0,64,128,176},{978,1000,1100,1216}};
+    const int clamp_cameras[2][5]={{0,64,128,176,176},{978,978,1000,1100,1216}};
     uint32_t pylon_locked[796];
     for(unsigned edge=0;edge<2;++edge) {
         sonic1_video.presentation_configure(1);
-        for(unsigned tick=0;tick<4;++tick) {
+        for(unsigned tick=0;tick<5;++tick) {
             int camera=clamp_cameras[edge][tick];
             word(g_ram,0xF700,camera);word(g_ram,0xFF10,camera);word(g_ram,0xFE04,tick+10);
-            word(g_ram,0xD808,-2*camera);word(v.vram,0xFC00,-camera);
+            /* Pyl_Display doubles the full 16.16 camera before taking its
+             * integer part. A half-pixel carry must not shake a fixed view. */
+            word(g_ram,0xF702,tick&1?0x9000:0x7000);
+            word(g_ram,0xD808,-2*camera-(tick&1));word(v.vram,0xFC00,-camera);
             memcpy(ram_before,g_ram,sizeof g_ram);
             s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
             CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
@@ -1499,6 +1628,34 @@ int main(int argc,char **argv)
         }
         sonic1_video.presentation_configure(0);
     }
+    word(g_ram,0xF702,0);
+    /* Consecutive fractional camera updates, including half-pixel carries,
+     * keep a fixed expanded foreground fixed at every presentation phase. */
+    static uint32_t pylon_motion[796*224];
+    sonic1_video.presentation_configure(1);
+    for(unsigned tick=0;tick<128;++tick) {
+        unsigned camera_fixed=(32u<<16)+tick*0x11000u;
+        unsigned previous_fixed=tick?(32u<<16)+(tick-1)*0x11000u:camera_fixed;
+        int camera=(int)(camera_fixed>>16);
+        word(g_ram,0xF700,camera);word(g_ram,0xF702,camera_fixed);
+        word(g_ram,0xFF10,camera);word(g_ram,0xFE04,tick+100);
+        /* Object execution precedes camera deformation in the level loop. */
+        word(g_ram,0xD808,-(int)(previous_fixed>>15));word(v.vram,0xFC00,-camera);
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        for(int y=0;y<224;++y) {
+            sonic1_video.scanline(&v,y,native,320,out,796);
+            if(y==8) {
+                if(!tick)memcpy(pylon_locked,out,sizeof pylon_locked);
+                else CHECK(!memcmp(pylon_locked,out,sizeof pylon_locked));
+            }
+            sonic1_video.presentation_capture(&v,y,out,796,320,NULL);
+        }
+        if(tick)for(unsigned phase=1;phase<4;++phase) {
+            CHECK(sonic1_video.interpolate(phase*.25,pylon_motion,796,224));
+            CHECK(!memcmp(pylon_locked,pylon_motion+8*796,sizeof pylon_locked));
+        }
+    }
+    sonic1_video.presentation_configure(0);word(g_ram,0xF702,0);
     /* Interpolate through the hardware's X wrap without taking a 512px
      * excursion. Sixteen pixels of camera movement moves each column 32px. */
     sonic1_video.presentation_configure(1);
