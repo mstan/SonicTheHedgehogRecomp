@@ -749,6 +749,41 @@ int main(int argc,char **argv)
         CHECK(out[38]==(phase?0xFF00FF00u:0xFF0000FFu));
         CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
     }
+    /* A Moto preview covers the fade and both initialization passes, then
+     * yields exactly once to the original sprite. Its removal is permanent. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
+    g_ram[0xF600]=0x88;g_ram[0xD000]=1;word(g_ram,0xFFF0,1);
+    for(unsigned n=0;n<8;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,800);word(g_ram,0xFF10,800);
+    word(g_rom,0x6B000,0x600);word(g_rom,0x6B600,600);word(g_rom,0x6B602,8);
+    g_rom[0x6B604]=0xC0;g_rom[0x6B605]=0;word(g_rom,0x6B606,65535);
+    word(g_rom,0xF7A0,2);g_rom[0xF7A2]=1;memset(g_rom+0xF7A3,0,5);
+    word(g_rom,0x37582,1);g_rom[0x37584]=0x82;g_rom[0x37585]=0x71;
+    g_rom[0x37586]=0;g_rom[0x37587]=255;memset(g_rom+0x37588,0,8);
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-800);
+    v.cram[1]=0xE00;v.cram[2]=0xE0;memset(v.vram+0x4F0*32,0,32);
+    for(unsigned phase=0;phase<5;++phase) {
+        if(phase==1) {
+            g_ram[0xF600]=8;g_ram[0xD800]=0x40;g_ram[0xD801]=4;g_ram[0xD823]=1;
+            word(g_ram,0xD808,600);word(g_ram,0xD80C,8);
+            m68k_write32(0xD804,0xF7A0);word(g_ram,0xD802,0x4F0);
+        }
+        if(phase==2)g_ram[0xD824]=2;
+        if(phase==3){
+            /* The native sprite's installed DMA owns its art at takeover. */
+            memset(v.vram+0x4F0*32,0x22,32);
+            word(g_ram,0xAC00+4*128,2);word(g_ram,0xAC02+4*128,0xD800);
+        }
+        if(phase==4){memset(g_ram+0xD800,0,64);word(g_ram,0xAC00+4*128,0);}
+        memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
+        CHECK(strstr(reply,phase<4?"\"sprites\":1":"\"sprites\":0"));
+        sonic1_video.scanline(&v,8,native,320,out,796);
+        if(phase<4)CHECK(out[38]==0xFF00FF00u);
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    }
     /* Caterkiller's floor-search initialization leaves its head and body
      * unqueued during the frozen entry. Preview the complete grounded pose,
      * including while the hidden native head falls, without extra segments. */
@@ -1157,12 +1192,14 @@ int main(int argc,char **argv)
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
     CHECK(strstr(reply,"\"sprites\":1"));
-    /* A runoff continuation keeps a fractional entry speed and follows a
-     * lower floor instead of sliding horizontally above it. The original
+    /* A runoff continuation accelerates from fractional entry speeds and follows a
+     * lower floor in every zone. The original
      * player, collision layout and result timing remain untouched. */
+    const unsigned runoff_zones[]={0,0x100,0x200,0x202,0x300,0x400,0x500,0x501};
+    for(unsigned runoff_zone=0;runoff_zone<sizeof runoff_zones/sizeof runoff_zones[0];++runoff_zone) {
     memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
     g_ram[0xF600]=12;g_ram[0xD000]=1;g_ram[0xD001]=0x84;
-    word(g_ram,0xFE10,0x202);g_ram[0xF742]=4;g_ram[0xF7CC]=1;
+    word(g_ram,0xFE10,runoff_zones[runoff_zone]);g_ram[0xF742]=4;g_ram[0xF7CC]=1;
     for(unsigned n=0;n<8;++n)g_ram[0xA400+n]=1;
     word(g_ram,0xF700,1024);word(g_ram,0xFF10,1024);word(g_ram,0xF704,96);
     word(g_ram,0xF72A,1024);word(g_ram,0xD008,1384);word(g_ram,0xD00C,108);
@@ -1175,7 +1212,7 @@ int main(int argc,char **argv)
     v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
     v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;
     v.cram[1]=0xE;memset(v.vram+32,0x11,32);word(v.vram,0xFC00,-1024);
-    for(unsigned frame=0;frame<=30;++frame) {
+    for(unsigned frame=0;frame<=20;++frame) {
         word(g_ram,0xFE04,frame);memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
         s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
         CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
@@ -1185,8 +1222,9 @@ int main(int argc,char **argv)
             CHECK(out[602]==0xFFFF0000u && out[610]==0xFF000000u);
         }
     }
-    sonic1_video.scanline(&v,28,native,320,out,796);CHECK(out[733]==0xFFFF0000u);
-    sonic1_video.scanline(&v,12,native,320,out,796);CHECK(out[733]==0xFF000000u);
+    sonic1_video.scanline(&v,28,native,320,out,796);CHECK(out[697]==0xFFFF0000u);
+    sonic1_video.scanline(&v,12,native,320,out,796);CHECK(out[697]==0xFF000000u);
+    }
     /* Early wide-view capsule/ring pixels come from complete ROM art even
      * while those VRAM tiles contain another asset. Capsule ink also stays
      * black during the shared boss hit flash, without changing CRAM/RAM. */
@@ -1430,12 +1468,17 @@ int main(int argc,char **argv)
     }
     /* A signpost reached while already stopped at the boundary accelerates
      * from rest instead of replacing zero velocity with full running speed. */
+    for(unsigned tiny_speed=0;tiny_speed<2;++tiny_speed) {
     memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
     g_ram[0xF600]=12;g_ram[0xD000]=1;g_ram[0xD001]=132;
     g_ram[0xD5C0]=0x3A;g_ram[0xF7CC]=1;
     for(unsigned n=0;n<8;++n)g_ram[0xA400+n]=1;
     word(g_ram,0xF700,800);word(g_ram,0xFF10,800);word(g_ram,0xF72A,800);
-    word(g_ram,0xD008,1160);word(g_ram,0xD00C,100);
+    word(g_ram,0xD008,1160);word(g_ram,0xD00C,108);
+    word(g_ram,0xD010,tiny_speed?12:0);word(g_ram,0xFE10,tiny_speed?0x501:0);
+    g_ram[0xD016]=19;g_ram[0xD017]=9;
+    m68k_write32(0xF796,0x2000);g_rom[0x2001]=1;memset(g_rom+0x62A10,16,16);
+    for(unsigned col=0;col<16;++col)word(g_ram,128*2+col*2,0x2001);
     word(g_ram,0xF760,0x600);word(g_ram,0xF762,0xC);
     m68k_write32(0xD004,0x1000);word(g_ram,0xD002,1);
     word(g_rom,0x1000,2);g_rom[0x1002]=1;memset(g_rom+0x1003,0,5);
@@ -1448,8 +1491,78 @@ int main(int argc,char **argv)
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
     sonic1_video.scanline(&v,0,native,320,out,796);
-    sonic1_video.scanline(&v,100,native,320,out,796);
-    CHECK(out[619]==0xFF0000FFu && out[778]==0xFF000000u);
+    sonic1_video.scanline(&v,108,native,320,out,796);
+    CHECK(out[tiny_speed?621:619]==0xFF0000FFu && out[778]==0xFF000000u);
+    }
+    /* SBZ's visible trap floor supports the displayed runner before its
+     * native parent exists, then only the parent's surviving solid span.
+     * Moving/falling out of view must retain original guest visibility. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;g_ram[0xD001]=4;
+    g_ram[0xD5C0]=0x3A;g_ram[0xF7CC]=1;word(g_ram,0xFE10,0x501);
+    g_ram[0xD016]=19;g_ram[0xD017]=9;
+    g_ram[0xA400+47]=1;g_ram[0xA400+5*128+0x1E]=g_ram[0xA400+5*128+0x1F]=1;
+    word(g_ram,0xF700,0x1E40);word(g_ram,0xFF10,0x1E40);word(g_ram,0xF72A,0x1E40);
+    word(g_ram,0xF704,0x510);word(g_ram,0xD008,0x1FA8);word(g_ram,0xD00C,0x5AC);
+    word(g_ram,0xD010,0x600);word(g_ram,0xD002,1);m68k_write32(0xD004,0x1800);
+    for(unsigned pose=0;pose<46;++pose)word(g_rom,0x1800+pose*2,0x100);
+    g_rom[0x1900]=1;memset(g_rom+0x1901,0,5);
+    m68k_write32(0xF796,0x2000);g_rom[0x2001]=1;memset(g_rom+0x62A10,16,16);
+    for(unsigned col=0;col<16;++col)word(g_ram,384+col*2,0x2001);
+    word(g_ram,0xAC00,2);word(g_ram,0xAC02,0xD000);
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-0x1E40);
+    v.cram[1]=0xE00;memset(v.vram+32,0x11,32);
+    for(unsigned frame=0;frame<=90;++frame) {
+        if(frame==21) {
+            g_ram[0xF742]=6;g_ram[0xD840]=0x83;g_ram[0xD864]=4;
+            word(g_ram,0xD848,0x20C0);word(g_ram,0xD84C,0x5D0);g_ram[0xD859]=0x40;
+        }
+        g_ram[0xD001]=4;word(g_ram,0xFE04,frame);cpu_before=g_cpu;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        CHECK(g_ram[0xD001]==132 && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+        sonic1_video.scanline(&v,0,native,320,out,796);
+        if(frame==20){sonic1_video.scanline(&v,156,native,320,out,796);CHECK(out[718]==0xFF0000FFu);}
+        if(frame==30){
+            sonic1_video.scanline(&v,156,native,320,out,796);CHECK(out[778]==0xFF000000u);
+            sonic1_video.scanline(&v,163,native,320,out,796);CHECK(out[778]==0xFF0000FFu);
+        }
+    }
+    /* At running speed the continuation owns its run pose and original DPLC
+     * tiles, even while the clamped native object has a walking frame.
+     * Existing above-maximum entry velocity must not be reduced. */
+    for(unsigned fast_entry=0;fast_entry<2;++fast_entry) {
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;g_ram[0xD001]=132;
+    g_ram[0xD5C0]=0x3A;g_ram[0xF7CC]=1;g_ram[0xD01A]=6;
+    g_ram[0xD016]=19;g_ram[0xD017]=9;
+    for(unsigned n=0;n<8;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,800);word(g_ram,0xFF10,800);word(g_ram,0xF72A,800);
+    word(g_ram,0xD008,1160);word(g_ram,0xD00C,108);word(g_ram,0xD010,fast_entry?0x800:0x600);
+    word(g_ram,0xF760,0x600);word(g_ram,0xF762,0xC);
+    m68k_write32(0xF796,0x2000);g_rom[0x2001]=1;memset(g_rom+0x62A10,16,16);
+    for(unsigned col=0;col<16;++col)word(g_ram,128*2+col*2,0x2001);
+    word(g_ram,0xD002,0x780);m68k_write32(0xD004,0x1800);
+    for(unsigned pose=0;pose<46;++pose) {
+        word(g_rom,0x1800+pose*2,0x100);
+        unsigned cue=0x217FE+0x400+pose*3;
+        word(g_rom,0x217FE+pose*2,0x400+pose*3);
+        g_rom[cue]=1;word(g_rom,cue+1,pose>=30?1:0);
+    }
+    g_rom[0x1900]=1;memset(g_rom+0x1901,0,5);
+    g_rom[0x13B8F]=30;g_rom[0x13B90]=31;g_rom[0x13B91]=32;g_rom[0x13B92]=33;g_rom[0x13B93]=255;
+    memset(g_rom+0x21AFE,0x11,32);memset(g_rom+0x21AFE+32,0x22,32);
+    word(g_ram,0xAC00,2);word(g_ram,0xAC02,0xD000);
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-800);
+    v.cram[1]=0xE00;v.cram[2]=0xE0;memset(v.vram+0x780*32,0x11,32);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);
+    word(g_ram,0xFE04,1);memcpy(ram_before,g_ram,sizeof g_ram);before=v;cpu_before=g_cpu;
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,108,native,320,out,796);
+    CHECK(out[fast_entry?606:604]==0xFF00FF00u);
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(before.vram,v.vram,sizeof v.vram) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+    }
     /* Retired capsule animals keep their ink when results reuse VRAM, and
      * a new native animal in the same slot must not erase a visible tail. */
     memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);

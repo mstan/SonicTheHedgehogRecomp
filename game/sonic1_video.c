@@ -72,15 +72,19 @@ static int recorded_demo(void)
 /* Scripted activation/timing stays native through title-card loading and
  * departure as well as recorded demos. Avoid aspect-dependent guest work
  * shifting ROM animation steps across VBlank. */
+static int entry_active(void)
+{
+    if(video_ram[0xF600]&128)return 1;
+    for(unsigned o=0xD080;o<0xD200;o+=64)if(video_ram[o]==0x34)return 1;
+    return 0;
+}
 static int native_activation(void)
 {
     if(recorded_demo())return 1;
     if(!gameplay())return 0;
     if((video_ram[0xF600]&127)==0 || (video_ram[0xF600]&127)==4)return 1;
     if(results_world())return 1; /* no player: presentation only, no host rings/activation */
-    if(video_ram[0xF600]&128)return 1;
-    for(unsigned o=0xD080;o<0xD200;o+=64)if(video_ram[o]==0x34)return 1;
-    return 0;
+    return entry_active();
 }
 static int stage_width(void)
 {
@@ -166,8 +170,36 @@ static uint8_t pattern_pixel(const GVDP *v, uint16_t attr, int x, int y)
  * guest VRAM, PLC order and simulation clocks remain untouched. Format and
  * XOR rows follow REV00 NemDec ($1440), not a second machine execution. */
 typedef struct { uint8_t pixels[8192];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
-enum { SPRITE_ART_COUNT=21 };
-static SpriteArt s_sprite_art[SPRITE_ART_COUNT];
+enum { STATIC_SPRITE_ART_COUNT=22, SONIC_POSE_ART=23, SPRITE_ART_COUNT=23 };
+static SpriteArt s_sprite_art[STATIC_SPRITE_ART_COUNT];
+/* Sonic's dynamic patterns are assembled from immutable ROM tiles for each
+ * displayed pose. Keep the guest's DPLC buffer and VRAM upload unchanged. */
+static uint16_t s_sonic_pose_tiles[88][32];
+static uint8_t s_sonic_pose_counts[88];
+static uint8_t sonic_pose_pixel(const GVDP *v,unsigned pose,uint16_t attr,int x,int y)
+{
+    if(pose>=88)return pattern_pixel(v,attr,x,y);
+    unsigned count=s_sonic_pose_counts[pose];
+    if(!count) {
+        unsigned p=0x217FEu+((g_rom[0x217FE+pose*2]<<8)|g_rom[0x217FF+pose*2]);
+        if(p>=0x80000u)return pattern_pixel(v,attr,x,y);
+        unsigned entries=g_rom[p++];
+        if(entries>16 || p+entries*2>0x80000u)return pattern_pixel(v,attr,x,y);
+        for(unsigned i=0;i<entries;++i,p+=2) {
+            unsigned cue=(g_rom[p]<<8)|g_rom[p+1],tiles=(cue>>12)+1;
+            if(count+tiles>32)return pattern_pixel(v,attr,x,y);
+            for(unsigned n=0;n<tiles;++n)s_sonic_pose_tiles[pose][count++]=(uint16_t)((cue&4095)+n);
+        }
+        s_sonic_pose_counts[pose]=(uint8_t)count;
+    }
+    int tile=(int)(attr&2047u)-0x780;
+    if(tile<0 || (unsigned)tile>=count)return pattern_pixel(v,attr,x,y);
+    int fx=x&7,fy=y&7;if(attr&0x800)fx^=7;if(attr&0x1000)fy^=7;
+    unsigned address=0x21AFEu+s_sonic_pose_tiles[pose][tile]*32u+fy*4u+fx/2u;
+    if(address>=0x80000u)return pattern_pixel(v,attr,x,y);
+    unsigned byte=g_rom[address],pixel=fx&1?byte&15:byte>>4;
+    return pixel?(uint8_t)(((attr>>9)&48)|pixel):0;
+}
 static unsigned art_bits(unsigned bit,unsigned count)
 {
     unsigned value=0;
@@ -206,14 +238,15 @@ static int decode_sprite_art(SpriteArt *art,unsigned address)
     for(unsigned n=art->base==0x50F?128:0;n<size;++n)art->display_hash=(art->display_hash^art->pixels[n])*16777619u;
     return 1;
 }
-static uint8_t sprite_pixel(const GVDP *v,unsigned asset,uint16_t attr,int x,int y)
+static uint8_t sprite_pixel(const GVDP *v,unsigned asset,unsigned pose,uint16_t attr,int x,int y)
 {
     if(!asset || asset>SPRITE_ART_COUNT || !enabled() || s_requested_width<=320)return pattern_pixel(v,attr,x,y);
+    if(asset==SONIC_POSE_ART)return sonic_pose_pixel(v,pose,attr,x,y);
     static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324,0x5CC62,0x339DA,
         0x3B3DA,0x3B532,0x3B68E,0x3B80A,0x3B926,0x3BA5C,0x3BB96,0x3401A,0x5D4C6,
-        0x36DD4,0x3A360,0x3A462};
+        0x36DD4,0x3A360,0x3A462,0x37582};
     static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400,0x400,0x3CC,
-        0x580,0x592,0x580,0x592,0x580,0x592,0x580,0x4A0,0x46C,0x486,0x523,0x533};
+        0x580,0x592,0x580,0x592,0x580,0x592,0x580,0x4A0,0x46C,0x486,0x523,0x533,0x4F0};
     SpriteArt *art=&s_sprite_art[asset-1];
     if(!art->ready) {
         art->base=bases[asset-1];
@@ -241,7 +274,7 @@ static uint16_t plane_attr(const GVDP *v, unsigned base, int x, int y)
  * ceiling, or 20-sprites-per-line ceiling. Native BuildSprites still executes
  * for the hardware pass and publishes a signature used to align our list
  * with the exact VBlank upload displayed by the VDP. */
-typedef struct { int x, y; uint16_t attr; uint8_t size, hud,slot,space,asset; } SceneSprite;
+typedef struct { int x, y; uint16_t attr; uint8_t size, hud,slot,space,asset,pose; } SceneSprite;
 enum { SCENE_SPRITES = 32768, SCENE_PLACEMENTS = 1024, SCENE_SLOTS=160 };
 typedef struct {
     SceneSprite sprites[SCENE_SPRITES];
@@ -365,7 +398,8 @@ static int video_state_load(const void *src,size_t len,int apply)
         sprites[n]=in;in+=bytes;left-=bytes;
         for(unsigned k=0;k<counts[n];++k) {
             SceneSprite sprite;memcpy(&sprite,sprites[n]+k*sizeof sprite,sizeof sprite);
-            if(sprite.asset>SPRITE_ART_COUNT || sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
+            if(sprite.asset>SPRITE_ART_COUNT || (sprite.asset==SONIC_POSE_ART && sprite.pose>=88) ||
+               sprite.size>15 || sprite.hud>2 || sprite.slot>=SCENE_SLOTS)return 0;
         }
     }
     if(left)return 0;
@@ -486,6 +520,7 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
         if (y+dy>=224 || y+dy+((size&3)+1)*8<=0) continue;
         SceneSprite *s=&s_capture_frame->sprites[s_capture_frame->count++];
         s->x=x+dx; s->y=y+dy; s->attr=attr; s->size=(uint8_t)size; s->hud=(uint8_t)hud;s->slot=(uint8_t)s_capture_slot;s->space=(uint8_t)s_capture_space;
+        s->pose=0;
         unsigned owner=s_capture_slot && s_capture_slot<=128?video_ram[0xD000+(s_capture_slot-1)*64]:0;
         unsigned animal=0;
         if(owner==0x28) {
@@ -496,8 +531,21 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
          * activation can expose them before their PLC completes as well. */
         s->asset=(uint8_t)(map==0xAC70?19:map==0xDD1A?((gfx&2047u)==0x533?21:20):
             owner==0x5C?9:map==0x17D0C?8:map==0x17DD4?18:
-            owner==0x82 && map==0xBEA4?17:owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:animal);
+            owner==0x82 && map==0xBEA4?17:
+            owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:animal);
     }
+}
+static int mapping_visible(unsigned map,unsigned frame,unsigned flags,int x,int y,int lo,int hi)
+{
+    unsigned p=map;int count=1;
+    if(!(flags&32)){p+=(int16_t)scene_read16(p+(frame&127u)*2u);count=scene_read8(p++);}
+    for(int n=0;n<count;++n,p+=5) {
+        int dy=(int8_t)scene_read8(p),size=scene_read8(p+1)&15,dx=(int8_t)scene_read8(p+4);
+        int w=(((size>>2)&3)+1)*8,h=((size&3)+1)*8;
+        if(flags&1)dx=-dx-w;if(flags&2)dy=-dy-h;
+        if(y+dy<224 && y+dy+h>0 && x+dx+w>lo && x+dx<hi)return 1;
+    }
+    return 0;
 }
 static void load_placements(void)
 {
@@ -733,11 +781,52 @@ static void remember_tail(SceneTail *tail,unsigned object)
     tail->seen=tail->tail=1;
 }
 static int animal_floor(int x,int y);
+static int collision_height(int x,int y,unsigned *angle);
+static int runoff_sensor_floor(int x,int y)
+{
+    int distance=animal_floor(x,y);
+    if(ram16(0xFE10)!=0x501)return distance;
+    int parent=0;
+    for(unsigned o=0xD800;o<0xF000;o+=64) {
+        if(video_ram[o]!=0x83 || (video_ram[o+0x24]!=2 && video_ram[o+0x24]!=4))continue;
+        parent=1;
+        int cx=ram16(o+8),half=video_ram[o+0x19];
+        if(x>=cx-half && x<cx+half) {
+            int d=(int16_t)ram16(o+12)-17-y;
+            if(d>=-16 && d<distance)distance=d;
+        }
+    }
+    /* The stationary floor is already visible before its native event gate.
+     * Once its solid parent exists, follow the parent's shrinking support. */
+    if(!parent && video_ram[0xF742]<=4 && x>=0x2000 && x<0x2100) {
+        int d=0x5BF-y;if(d>=-16 && d<distance)distance=d;
+    }
+    return distance;
+}
 static int runoff_floor(const uint8_t *p,int x,int y)
 {
-    int right=animal_floor(x+p[0x17],y+p[0x16]);
-    int left=animal_floor(x-p[0x17],y+p[0x16]);
+    int right=runoff_sensor_floor(x+p[0x17],y+p[0x16]);
+    int left=runoff_sensor_floor(x-p[0x17],y+p[0x16]);
     return right<left?right:left;
+}
+static void runoff_animate(uint8_t *p)
+{
+    /* REV00 Sonic_Animate's speed-dependent walk/run path, operating only
+     * on the displayed continuation after the native camera clamp. */
+    if(p[0x1C] || p[0x1D]) {p[0x1C]=p[0x1D]=p[0x1B]=p[0x1E]=0;}
+    if((int8_t)--p[0x1E]>=0)return;
+    unsigned angle=p[0x26],flip=p[0x22]&1;
+    if(!flip)angle=(uint8_t)~angle;
+    angle=(uint8_t)(angle+16);
+    p[1]=(uint8_t)((p[1]&~3u)|(flip^((int8_t)angle<0?3:0)));
+    unsigned octant=(angle>>4)&6;
+    int speed=abs((int16_t)actor_word(p,0x10));
+    unsigned table=speed>=0x600?0x13B8E:0x13B86;
+    unsigned offset=speed>=0x600?octant*2:octant*3;
+    p[0x1E]=(uint8_t)((speed<0x800?0x800-speed:0)>>8);
+    unsigned frame=scene_read8(table+1+p[0x1B]);
+    if(frame&128){p[0x1B]=0;frame=scene_read8(table+1);}
+    p[0x1A]=(uint8_t)(frame+offset);++p[0x1B];
 }
 /* Keep the scripted run-off moving after Sonic reaches the native boundary.
  * Preserve moving entry velocity, or accelerate a stopped pose from rest.
@@ -767,7 +856,6 @@ static int act_runoff_x(int *display_y)
         remember_tail(tail,0xD000);
         int velocity=(int16_t)actor_word(tail->object,0x10);
         actor_put(tail->object,0x10,velocity>0?velocity:0);
-        actor_put(tail->object,0x36,velocity<=0);
         actor_put(tail->object,0x30,(unsigned)target);
         actor_put(tail->object,0x32,ram16(0xFE04));
     }
@@ -779,24 +867,23 @@ static int act_runoff_x(int *display_y)
         uint8_t *p=tail->object;
         uint64_t position=((uint64_t)shown<<16)|actor_word(p,10);
         uint64_t limit=(uint64_t)target<<16;
-        /* Marble's end terrain changes height beyond the native boundary.
-         * Follow both original foot sensors, falling when support ends,
+        /* Follow both original foot sensors in every zone, falling when support ends,
          * without moving the guest player or altering the results timing. */
         do {
-            unsigned steps=zone==0x202 || actor_word(p,0x36)?1:dt;
-            if(actor_word(p,0x36)) {
+            unsigned steps=1;
+            {
                 int speed=actor_word(p,0x10);
                 int maximum=ram16(0xF760),acceleration=ram16(0xF762);
                 if(!maximum)maximum=0x600;
                 if(!acceleration)acceleration=0xC;
-                speed+=acceleration;if(speed>maximum)speed=maximum;
+                if(speed<maximum) {speed+=acceleration;if(speed>maximum)speed=maximum;}
                 actor_put(p,0x10,speed);
             }
             position+=(uint64_t)actor_word(p,0x10)*256*steps;
             if(position>limit)position=limit;
             if(position<(uint64_t)x<<16)position=(uint64_t)x<<16;
             shown=(int)(position>>16);
-            if(zone==0x202) {
+            {
                 int y=(int16_t)actor_word(p,12);
                 if(p[0x22]&2) {
                     uint32_t yp=((uint32_t)actor_word(p,12)<<16)|actor_word(p,14);
@@ -809,17 +896,24 @@ static int act_runoff_x(int *display_y)
                     }
                 } else {
                     int d=runoff_floor(p,shown,y);
-                    if(d>=-14 && d<=14)y+=d;
+                    if(d>=-14 && d<=14) {
+                        y+=d;
+                        unsigned angle=0;
+                        int rx=shown+p[0x17],lx=shown-p[0x17],foot=y+p[0x16]+1;
+                        if(animal_floor(rx,y+p[0x16])>animal_floor(lx,y+p[0x16]))rx=lx;
+                        collision_height(rx,foot,&angle);p[0x26]=(uint8_t)angle;
+                    }
                     else {p[0x22]|=2;actor_put(p,0x12,0);}
                 }
                 actor_put(p,12,(unsigned)y);
             }
+            runoff_animate(p);
             dt-=steps;
         } while(dt && position<limit);
         actor_put(p,8,(unsigned)shown);actor_put(p,10,(unsigned)position);
         actor_put(tail->object,0x32,frame);
     }
-    if(zone==0x202)*display_y=(int16_t)actor_word(tail->object,12);
+    *display_y=(int16_t)actor_word(tail->object,12);
     return shown;
 }
 /* DLE_SBZ2 creates the floor at the native camera threshold. Its initial
@@ -926,10 +1020,10 @@ static void final_escape_present(unsigned priority,int camera)
                     (int16_t)actor_word(a,8)-camera,(int16_t)actor_word(a,12)-ram16(0xF704),0,0);
     }
 }
-/* Read-only GHZ FindFloor/FindFloor2, including neighboring blocks and flips.
+/* Read-only REV00 FindFloor/FindFloor2, including neighboring blocks and flips.
  * These continuation poses must not execute guest instructions or charge
  * cycles: the cutscene's native object list and timing remain authoritative. */
-static int animal_height(int x,int y)
+static int collision_height(int x,int y,unsigned *angle)
 {
     unsigned chunk=video_ram[0xA400+(((unsigned)y>>8)&7)*128+(((unsigned)x>>8)&127)]&127;
     if(!chunk)return 0;
@@ -937,9 +1031,16 @@ static int animal_height(int x,int y)
     unsigned block=ram16(a),index=block&2047;
     if(!index || !(block&0x2000))return 0;
     index=scene_read8(scene_read32(0xFFF796)+index);if(!index)return 0;
+    if(angle) {
+        unsigned a=scene_read8(0x62900+index);
+        if(block&0x800)a=(uint8_t)(-(int)a);
+        if(block&0x1000)a=(uint8_t)(-(int)(uint8_t)(a+64)-64);
+        *angle=a;
+    }
     int h=(int8_t)scene_read8(0x62A00+index*16+((block&0x800?~x:x)&15));
     return block&0x1000?-h:h;
 }
+static int animal_height(int x,int y) {return collision_height(x,y,NULL);}
 static int animal_floor2(int x,int y)
 {
     int h=animal_height(x,y),low=y&15;
@@ -1202,8 +1303,7 @@ static void entry_placements_present(unsigned priority,int camera,int left)
 {
     if(!gameplay() || results_world() || video_ram[0xD5C0]==0x3A || s_requested_width<=320 ||
        (priority<2 || priority>5))return;
-    int entry=(video_ram[0xF600]&128)!=0;
-    for(unsigned o=0xD080;o<0xD200;o+=64)if(video_ram[o]==0x34)entry=1;
+    int entry=entry_active();
     load_placements();s_capture_slot=0;s_capture_space=4;
     for(unsigned i=0;i<s_placement_count;++i) {
         const Placement *p=&s_placements[i];
@@ -1222,6 +1322,23 @@ static void entry_placements_present(unsigned priority,int camera,int left)
                 x=ram16(o+8);y=ram16(o+12);
             }
             add_mapping(map,frame,gfx,flags,x-camera,y-ram16(0xF704),0,0);
+        } else if(p->id==0x40 && video_ram[0xFE10]==0 && priority==4) {
+            /* Keep the resting Moto visible through native floor-search
+             * initialization. After entry, only a live original object can
+             * own this preview; an expired placement must never reappear. */
+            unsigned o=placement_object(p);
+            if((!entry && !o) || (o && video_ram[o]!=0x40))continue;
+            if(p->state && !o && (video_ram[0xFC02+p->state]&128))continue;
+            if(o && s_capture_frame->identity[1+(o-0xD000)/64])continue;
+            int x=o?ram16(o+8):p->x,y=resting_preview_y(x,p->y&4095,14);
+            unsigned flags=(p->y>>14)&3,frame=0;
+            if(o && video_ram[o+0x24]>=2) {
+                y=ram16(o+12);flags=video_ram[o+1];frame=video_ram[o+0x1A];
+            }
+            if(x+32<left || x-32>=left+s_requested_width)continue;
+            unsigned first=s_capture_frame->count;
+            add_mapping(0xF7A0,frame,0x4F0,flags,x-camera,y-ram16(0xF704),0,0);
+            for(unsigned n=first;n<s_capture_frame->count;++n)s_capture_frame->sprites[n].asset=22;
         } else if(entry && p->id==0x25 && priority==2) {
             int count=(p->subtype&7)+1;if(count>7)count=7;
             for(int n=0;n<count;++n) {
@@ -1372,7 +1489,16 @@ static void capture_objects(void)
                 }
             }
             unsigned first=s_capture_frame->count;
-            add_mapping(scene_read32(0xFF0000u+o+4),video_ram[o+0x1A],ram16(o+2),flags,x,y,hud,(flags&32)!=0);
+            int continued=!s_capture_readonly && enabled() && s_requested_width>320 &&
+                o==0xD000 && s_actor_tails[0].seen && s_actor_tails[0].object[0]==1;
+            const uint8_t *pose=continued?s_actor_tails[0].object:video_ram+o;
+            if(continued)flags=pose[1];
+            unsigned displayed_frame=pose[0x1A];
+            add_mapping(scene_read32(0xFF0000u+o+4),displayed_frame,ram16(o+2),flags,x,y,hud,(flags&32)!=0);
+            if(continued)for(unsigned n=first;n<s_capture_frame->count;++n) {
+                s_capture_frame->sprites[n].asset=SONIC_POSE_ART;
+                s_capture_frame->sprites[n].pose=pose[0x1A];
+            }
             unsigned mapped_end=s_capture_frame->count;
             if(pylon)for(unsigned n=first;n<mapped_end;++n) {
                 const SceneSprite source=s_capture_frame->sprites[n];
@@ -1436,6 +1562,10 @@ static void capture_objects(void)
                     int guest_x=p->x+(int)ram16(o+8)-object_x;
                     if(n<mapped_end && guest_x+w>guest_lo && guest_x<guest_hi)guest_visible=1;
                 }
+                if(continued)
+                    guest_visible=mapping_visible(scene_read32(0xFF0000u+o+4),video_ram[o+0x1A],
+                        video_ram[o+1],(int16_t)(ram16(o+8)-cam),
+                        (int16_t)(ram16(o+12)-ram16(0xF704)),guest_lo,guest_hi);
                 /* Presentation-only reframing retains the existing guest
                  * visibility flags, lifetimes and event timing. */
                 if(guest_visible && k<native_count && !s_capture_readonly && s_visible_count<128 &&
@@ -1714,7 +1844,7 @@ static void draw_scene_sprites(const GVDP *v,int line,uint32_t *out,int width,
             int ix=(s->attr&0x800)?cw*8-1-i:i;
             uint16_t cell=(uint16_t)((s->attr&0xE000u)|
                 (((s->attr&2047u)+(unsigned)(ix/8*ch+iy/8))&2047u));
-            uint8_t p=sprite_pixel(v,s->asset,cell,ix,iy);
+            uint8_t p=sprite_pixel(v,s->asset,s->pose,cell,ix,iy);
             if(!p)continue;
             s_priority[x]|=2;
             if(s->hud==1 || (s->attr&0x8000) || !(s_priority[x]&1)) {
