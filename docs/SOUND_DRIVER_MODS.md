@@ -6,8 +6,9 @@ uses the engine's existing Z80, YM2612, PSG and audio scheduling. Turning it
 off retains the original driver and its existing correctness fixes.
 
 The game repository owns the adapter, launcher package and generation inputs.
-The engine and recomp-ui require no source changes. Sonic 2 and Sonic 3 are
-outside this prototype's scope.
+The shared engine supplies the generic Z80/audio execution and the FM latch
+correction described below. The launcher uses recomp-ui's existing mod
+interface. Sonic 2 and Sonic 3 are outside this prototype's scope.
 
 ## Enable the mod
 
