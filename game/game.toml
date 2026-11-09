@@ -583,6 +583,14 @@ blacklist = [
     0x014CA2,
 ]
 
+# Debug flight must not acquire a teleporter's persistent control lock.
+[[widescreen_site]]
+addr = 0x16668
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x166C8
+kind = "game_hook"
+
 # Optional sound driver entry points and pause writes, audited against REV00.
 [[widescreen_site]]
 addr = 0x1352

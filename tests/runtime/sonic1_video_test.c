@@ -13,6 +13,9 @@ M68KState g_cpu;
 void m68k_write8(uint32_t a,uint8_t v) { g_ram[a&65535]=v; }
 void m68k_write16(uint32_t a,uint16_t v) { m68k_write8(a,v>>8);m68k_write8(a+1,v); }
 void m68k_write32(uint32_t a,uint32_t v) { m68k_write16(a,v>>16);m68k_write16(a+2,v); }
+/* This renderer/stock-audio fixture does not activate replacement sound. */
+int s1_sound_hook(uint32_t pc) { (void)pc;return 0; }
+int s1_sound_active(void) { return 0; }
 /* Host-side writes from the video adapter (glue_poke*, genesis_host_mem.h). */
 void glue_poke8(uint32_t a,uint8_t v){m68k_write8(a,v);}
 void glue_poke16(uint32_t a,uint16_t v){m68k_write16(a,v);}
@@ -1939,5 +1942,51 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,16,native,320,out,796);
     CHECK(out[398]==0xFFFF0000u && out[16]==0xFF000000u);
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    /* An outgoing level can publish Sonic's last pose without a following
+     * Sonic DPLC DMA. In the left margin, those mappings must use that pose's
+     * ROM patterns instead of the preceding pose still in guest VRAM. */
+    CHECK(sonic1_video.configure("32:9"));
+    for(unsigned phase=0;phase<4;++phase) {
+        memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
+        g_ram[0xF600]=phase==0?12:phase==2?0:4;
+        g_ram[0xD000]=1;g_ram[0xD001]=132;g_ram[0xD01A]=87;
+        word(g_ram,0xFE10,0x501);word(g_ram,0xD002,0x780);
+        for(unsigned col=0;col<40;++col)g_ram[0xA400+col]=1;
+        word(g_ram,0xF700,0x1E40);word(g_ram,0xFF10,0x1E40);
+        word(g_ram,0xF728,0x1D40);word(g_ram,0xF72A,0x1E40);
+        word(g_ram,0xD008,0x1D5B);word(g_ram,0xD00C,108);
+        unsigned map=phase==3?0x2000:0x211E2;
+        m68k_write32(0xD004,map);word(g_rom,map+87*2,0x200);
+        g_rom[map+0x200]=1;memset(g_rom+map+0x201,0,5);
+        word(g_rom,0x217FE+87*2,0x100);g_rom[0x218FE]=1;word(g_rom,0x218FF,160);
+        memset(g_rom+0x21AFE+160*32,0x22,32);
+        word(g_ram,0xAC00,2);word(g_ram,0xAC02,0xD000);
+        v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+        v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-0x1E40);
+        v.cram[1]=0xE00;v.cram[2]=0xE0;memset(v.vram+0x780*32,0x11,32);
+        memcpy(ram_before,g_ram,sizeof g_ram);before=v;M68KState saved_cpu=g_cpu;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);
+        sonic1_video.scanline(&v,108,native,320,out,796);
+        CHECK(out[9]==(phase==1 || phase==2?0xFF00FF00u:0xFF0000FFu));
+        if(phase==1) {
+            uint32_t *smooth=malloc(796*224*sizeof *smooth);CHECK(smooth);
+            sonic1_video.presentation_configure(1);
+            for(unsigned tick=1;tick<=2;++tick) {
+                word(g_ram,0xFE04,tick);
+                for(int y=0;y<224;++y) {
+                    sonic1_video.scanline(&v,y,native,320,out,796);
+                    sonic1_video.presentation_capture(&v,y,out,796,320,NULL);
+                }
+            }
+            CHECK(sonic1_video.interpolate(0.5,smooth,796,224));
+            CHECK(smooth[108*796+9]==0xFF00FF00u);
+            free(smooth);sonic1_video.presentation_configure(0);
+            word(g_ram,0xFE04,0);
+        }
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+        CHECK(!memcmp(before.vram,v.vram,sizeof v.vram));
+        CHECK(!memcmp(&saved_cpu,&g_cpu,sizeof g_cpu));
+    }
     return 0;
 }

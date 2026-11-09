@@ -1503,8 +1503,15 @@ static void capture_objects(void)
             const uint8_t *pose=continued?s_actor_tails[0].object:video_ram+o;
             if(continued)flags=pose[1];
             unsigned displayed_frame=scrap_wait?1:pose[0x1A];
+            /* A final level update can change Sonic's pose after Title is
+             * selected. Fade VBlanks do not upload that last DPLC, while
+             * the wider view still displays its captured mappings outside
+             * the native screen. Pair that pose with its own ROM patterns. */
+            int outgoing_player=o==0xD000 && video_ram[o]==1 &&
+                ((video_ram[0xF600]&127)==0 || (video_ram[0xF600]&127)==4) &&
+                scene_read32(0xFF0000u+o+4)==0x211E2 && (ram16(o+2)&2047u)==0x780;
             add_mapping(scene_read32(0xFF0000u+o+4),displayed_frame,ram16(o+2),flags,x,y,hud,(flags&32)!=0);
-            if(continued || scrap_wait)for(unsigned n=first;n<s_capture_frame->count;++n) {
+            if(continued || scrap_wait || outgoing_player)for(unsigned n=first;n<s_capture_frame->count;++n) {
                 s_capture_frame->sprites[n].asset=SONIC_POSE_ART;
                 s_capture_frame->sprites[n].pose=(uint8_t)displayed_frame;
             }

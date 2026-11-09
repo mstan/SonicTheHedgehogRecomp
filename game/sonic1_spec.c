@@ -10,6 +10,7 @@
 #include "genesis_runtime.h"
 #include "sonic1_video.h"
 #include "sonic1_audio.h"
+#include "sonic1_debug.h"
 #include "sonic1_sound_driver.h"
 #include "audio/event_queue.h"
 
@@ -33,6 +34,7 @@ static void s1_call_vblank(void)      { recomp_call_addr(0x000B10u); }
 static void s1_call_hblank(void)      { recomp_call_addr(0x001126u); }
 static int s1_instruction_hook(uint32_t pc)
 {
+    if(s1_debug_hook(pc))return 1;
     if(s1_audio_hook(pc))return 1;
     return s1_video_hook(pc);
 }

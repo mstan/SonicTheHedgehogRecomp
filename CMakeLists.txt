@@ -191,6 +191,7 @@ set(SONIC_SHARED_SOURCES
     ${SONIC_GENERATED_SOURCES}
     "${CMAKE_SOURCE_DIR}/game/sonic1_spec.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_audio.c"
+    "${CMAKE_SOURCE_DIR}/game/sonic1_debug.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_sound_driver.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_sound_assets.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_sound_mods.c"
