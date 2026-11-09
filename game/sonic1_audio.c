@@ -1,8 +1,11 @@
 #include "sonic1_audio.h"
 #include "genesis_runtime.h"
+#include "sonic1_sound_driver.h"
 
 int s1_audio_hook(uint32_t pc)
 {
+    if(s1_sound_hook(pc))return 1;
+    if(s1_sound_active())return 0;
     /* REV00 cfFadeInToPrevious, immediately after the music RAM restore.
      * The 1-UP uses DAC percussion; SS/SLZ use FM6 instead. Restoring their
      * track data without clearing YM $2B leaves that instrument inaudible.

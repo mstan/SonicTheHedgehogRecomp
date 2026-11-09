@@ -12,11 +12,11 @@ import subprocess
 SOURCE_URL = "https://github.com/TheBlad768/s1disasm-clone-driver"
 SOURCE_COMMIT = "9c6e99358c510fa640868ce21b5fd6aea6cd01f5"
 LOAD_ADDRESS = 0x80000
-HEADER = struct.Struct(">4s13I")
+HEADER = struct.Struct(">4s14I")
 FIELDS = (
     "payload_size", "initialise", "update", "queue_music", "queue_sfx",
     "queue_extra", "ram_address", "ram_size", "queue_offset", "pause_offset",
-    "megapcm_load_driver", "megapcm_load_table", "sample_table",
+    "megapcm_load_driver", "megapcm_load_table", "sample_table", "guarded_update",
 )
 
 
@@ -83,7 +83,7 @@ def main() -> None:
     if info["ram_address"] & 0xFFFFFF != 0xFFF000 or not 0 < info["ram_size"] <= 0x400:
         raise ValueError("driver does not fit the proposed $FFF000-$FFF3FF RAM range")
     for name in ("initialise", "update", "queue_music", "queue_sfx", "queue_extra",
-                 "megapcm_load_driver", "megapcm_load_table", "sample_table"):
+                 "megapcm_load_driver", "megapcm_load_table", "sample_table", "guarded_update"):
         if not LOAD_ADDRESS + HEADER.size <= info[name] < len(raw) or info[name] & 1:
             raise ValueError(f"invalid image pointer: {name}")
     if not 0 <= info["queue_offset"] <= info["ram_size"] - 8:

@@ -582,3 +582,29 @@ blacklist = [
     # boundary-split promoted but nothing actually calls.
     0x014CA2,
 ]
+
+# Optional sound driver entry points and pause writes, audited against REV00.
+[[widescreen_site]]
+addr = 0x1352
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x1396
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x139C
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x13A2
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x13C4
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x1404
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x1418
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x71B4C
+kind = "game_hook"

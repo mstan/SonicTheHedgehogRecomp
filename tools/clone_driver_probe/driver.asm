@@ -32,6 +32,10 @@ ProbeStart:
     dc.l SMPS_RAM.variables.queue,SMPS_RAM.f_pause
     dc.l MegaPCM_LoadDriver,MegaPCM_LoadSampleTable
     dc.l MegaPCM_DAC_Table
+    dc.l Clone_GuardedUpdate
+Clone_GuardedUpdate:
+    SMPS_UpdateSoundDriver
+    rts
     include "sound/engine/Functions.asm"
     include "sound/engine/MegaPCM.asm"
     include "sound/MegaPCM - DAC Table.asm"
