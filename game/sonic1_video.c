@@ -170,7 +170,7 @@ static uint8_t pattern_pixel(const GVDP *v, uint16_t attr, int x, int y)
  * guest VRAM, PLC order and simulation clocks remain untouched. Format and
  * XOR rows follow REV00 NemDec ($1440), not a second machine execution. */
 typedef struct { uint8_t pixels[8192];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
-enum { STATIC_SPRITE_ART_COUNT=22, SONIC_POSE_ART=23, SPRITE_ART_COUNT=23 };
+enum { STATIC_SPRITE_ART_COUNT=23, SONIC_POSE_ART=24, SPRITE_ART_COUNT=24 };
 static SpriteArt s_sprite_art[STATIC_SPRITE_ART_COUNT];
 /* Sonic's dynamic patterns are assembled from immutable ROM tiles for each
  * displayed pose. Keep the guest's DPLC buffer and VRAM upload unchanged. */
@@ -244,9 +244,9 @@ static uint8_t sprite_pixel(const GVDP *v,unsigned asset,unsigned pose,uint16_t 
     if(asset==SONIC_POSE_ART)return sonic_pose_pixel(v,pose,attr,x,y);
     static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324,0x5CC62,0x339DA,
         0x3B3DA,0x3B532,0x3B68E,0x3B80A,0x3B926,0x3BA5C,0x3BB96,0x3401A,0x5D4C6,
-        0x36DD4,0x3A360,0x3A462,0x37582};
+        0x36DD4,0x3A360,0x3A462,0x37582,0x5E034};
     static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400,0x400,0x3CC,
-        0x580,0x592,0x580,0x592,0x580,0x592,0x580,0x4A0,0x46C,0x486,0x523,0x533,0x4F0};
+        0x580,0x592,0x580,0x592,0x580,0x592,0x580,0x4A0,0x46C,0x486,0x523,0x533,0x4F0,0x400};
     SpriteArt *art=&s_sprite_art[asset-1];
     if(!art->ready) {
         art->base=bases[asset-1];
@@ -531,7 +531,7 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
          * activation can expose them before their PLC completes as well. */
         s->asset=(uint8_t)(map==0xAC70?19:map==0xDD1A?((gfx&2047u)==0x533?21:20):
             owner==0x5C?9:map==0x17D0C?8:map==0x17DD4?18:
-            owner==0x82 && map==0xBEA4?17:
+            owner==0x82 && map==0xBEA4?17:owner==0x82 && map==0x19A34 && frame<3?23:
             owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:animal);
     }
 }
@@ -782,31 +782,10 @@ static void remember_tail(SceneTail *tail,unsigned object)
 }
 static int animal_floor(int x,int y);
 static int collision_height(int x,int y,unsigned *angle);
-static int runoff_sensor_floor(int x,int y)
-{
-    int distance=animal_floor(x,y);
-    if(ram16(0xFE10)!=0x501)return distance;
-    int parent=0;
-    for(unsigned o=0xD800;o<0xF000;o+=64) {
-        if(video_ram[o]!=0x83 || (video_ram[o+0x24]!=2 && video_ram[o+0x24]!=4))continue;
-        parent=1;
-        int cx=ram16(o+8),half=video_ram[o+0x19];
-        if(x>=cx-half && x<cx+half) {
-            int d=(int16_t)ram16(o+12)-17-y;
-            if(d>=-16 && d<distance)distance=d;
-        }
-    }
-    /* The stationary floor is already visible before its native event gate.
-     * Once its solid parent exists, follow the parent's shrinking support. */
-    if(!parent && video_ram[0xF742]<=4 && x>=0x2000 && x<0x2100) {
-        int d=0x5BF-y;if(d>=-16 && d<distance)distance=d;
-    }
-    return distance;
-}
 static int runoff_floor(const uint8_t *p,int x,int y)
 {
-    int right=runoff_sensor_floor(x+p[0x17],y+p[0x16]);
-    int left=runoff_sensor_floor(x-p[0x17],y+p[0x16]);
+    int right=animal_floor(x+p[0x17],y+p[0x16]);
+    int left=animal_floor(x-p[0x17],y+p[0x16]);
     return right<left?right:left;
 }
 static void runoff_animate(uint8_t *p)
@@ -830,15 +809,14 @@ static void runoff_animate(uint8_t *p)
 }
 /* Keep the scripted run-off moving after Sonic reaches the native boundary.
  * Preserve moving entry velocity, or accelerate a stopped pose from rest.
- * SBZ2's pan catches this pose until the real
- * player reaches it, then ordinary presentation resumes without a position
- * jump. Reuse the serialized, level-local continuation storage. */
+ * SBZ2 instead returns control inside the same level for its trap sequence;
+ * its displayed player must remain at the actual controllable position. */
 static int act_runoff_x(int *display_y)
 {
     int x=ram16(0xD008),zone=ram16(0xFE10);
     SceneTail *tail=&s_actor_tails[0];
     if(s_capture_readonly || !enabled() || s_requested_width<=320)return x;
-    if(zone>0x501 || video_ram[0xD000]!=1 || recorded_demo()) {
+    if(zone>=0x501 || video_ram[0xD000]!=1 || recorded_demo()) {
         if(tail->seen && tail->object[0]==1)memset(tail,0,sizeof *tail);
         return x;
     }
@@ -849,9 +827,6 @@ static int act_runoff_x(int *display_y)
         int target=extra>65535-x?65535:x+extra;
         int edge=scene_left(video_ram,ram16(0xF700),s_requested_width)+s_requested_width+32;
         if(edge>target)target=edge>65535?65535:edge;
-        /* Stay within SBZ2's approach so the original player catches this
-         * pose before the scripted stop and floor collapse. */
-        if(zone==0x501 && target>0x20F0)target=0x20F0;
         if(target<=x)return x;
         remember_tail(tail,0xD000);
         int velocity=(int16_t)actor_word(tail->object,0x10);
@@ -922,10 +897,10 @@ static int act_runoff_x(int *display_y)
 static void scrap_floor_present(unsigned priority,int camera,int left)
 {
     if(priority!=3 || !gameplay() || ram16(0xFE10)!=0x501 ||
-       video_ram[0xF742]>4)return;
+       video_ram[0xF742]>6)return;
     unsigned map=scene_read32(0x19BBA),gfx=scene_read16(0x19BC2);
     s_capture_slot=0;s_capture_space=4;
-    for(int i=0;i<8;++i) {
+    for(int i=0;video_ram[0xF742]<=4 && i<8;++i) {
         int x=0x2010+i*32;
         if(x+16<=left || x-16>=left+s_requested_width)continue;
         unsigned o;
@@ -938,6 +913,14 @@ static void scrap_floor_present(unsigned priority,int camera,int left)
         for(unsigned n=first;n<s_capture_frame->count;++n)s_capture_frame->sprites[n].asset=5;
     }
     /* The switch's PLC is also delayed until the native boss gate. */
+    if(video_ram[0xF742]>4) {
+        int pending=0,alive=0;
+        for(unsigned o=0xD800;o<0xF000;o+=64)if(video_ram[o]==0x82) {
+            if(!video_ram[o+0x24])pending=1;
+            if(scene_read32(0xFF0000u+o+4)==0xBEA4)alive=1;
+        }
+        if(!pending && !alive)return;
+    }
     int x=0x2130;
     if(x+16<=left || x-16>=left+s_requested_width)return;
     for(unsigned o=0xD800;o<0xF000;o+=64)
@@ -946,6 +929,29 @@ static void scrap_floor_present(unsigned priority,int camera,int left)
     unsigned first=s_capture_frame->count;
     add_mapping(0xBEA4,0,0x4A4,4,x-camera,0x5BC-ram16(0xF704),0,0);
     for(unsigned n=first;n<s_capture_frame->count;++n)s_capture_frame->sprites[n].asset=17;
+}
+static void scrap_eggman_present(unsigned priority,int camera,int left)
+{
+    if(priority!=3 || !gameplay() || ram16(0xFE10)!=0x501 ||
+       s_requested_width<=320)return;
+    unsigned owner=0;
+    for(unsigned o=0xD800;o<0xF000;o+=64)
+        if(video_ram[o]==0x82 && (!video_ram[o+0x24] ||
+           scene_read32(0xFF0000u+o+4)==0x19A34)){owner=o;break;}
+    if(video_ram[0xF742]>4 && !owner)return;
+    int x=0x2160,y=0x5A4;unsigned frame=0,flags=4;
+    if(owner) {
+        if(s_capture_frame->identity[1+(owner-0xD000)/64])return;
+        if(video_ram[owner+0x24]) {
+            frame=video_ram[owner+0x1A];if(frame>=3)return;
+            x=ram16(owner+8);y=ram16(owner+12);flags=video_ram[owner+1];
+        }
+    }
+    if(x+32<=left || x-32>=left+s_requested_width)return;
+    s_capture_slot=0;s_capture_space=4;unsigned first=s_capture_frame->count;
+    add_mapping(scene_read32(0x19880),frame,scene_read16(0x19888),flags,
+        x-camera,y-ram16(0xF704),0,0);
+    for(unsigned n=first;n<s_capture_frame->count;++n)s_capture_frame->sprites[n].asset=23;
 }
 static void final_escape_present(unsigned priority,int camera)
 {
@@ -1491,13 +1497,16 @@ static void capture_objects(void)
             unsigned first=s_capture_frame->count;
             int continued=!s_capture_readonly && enabled() && s_requested_width>320 &&
                 o==0xD000 && s_actor_tails[0].seen && s_actor_tails[0].object[0]==1;
+            int scrap_wait=!s_capture_readonly && enabled() && s_requested_width>320 &&
+                o==0xD000 && ram16(0xFE10)==0x501 && video_ram[0xF7CC] &&
+                !ram16(o+0x10) && ram16(o+8)>=(int)ram16(0xF72A)+352;
             const uint8_t *pose=continued?s_actor_tails[0].object:video_ram+o;
             if(continued)flags=pose[1];
-            unsigned displayed_frame=pose[0x1A];
+            unsigned displayed_frame=scrap_wait?1:pose[0x1A];
             add_mapping(scene_read32(0xFF0000u+o+4),displayed_frame,ram16(o+2),flags,x,y,hud,(flags&32)!=0);
-            if(continued)for(unsigned n=first;n<s_capture_frame->count;++n) {
+            if(continued || scrap_wait)for(unsigned n=first;n<s_capture_frame->count;++n) {
                 s_capture_frame->sprites[n].asset=SONIC_POSE_ART;
-                s_capture_frame->sprites[n].pose=pose[0x1A];
+                s_capture_frame->sprites[n].pose=(uint8_t)displayed_frame;
             }
             unsigned mapped_end=s_capture_frame->count;
             if(pylon)for(unsigned n=first;n<mapped_end;++n) {
@@ -1562,7 +1571,7 @@ static void capture_objects(void)
                     int guest_x=p->x+(int)ram16(o+8)-object_x;
                     if(n<mapped_end && guest_x+w>guest_lo && guest_x<guest_hi)guest_visible=1;
                 }
-                if(continued)
+                if(continued || scrap_wait)
                     guest_visible=mapping_visible(scene_read32(0xFF0000u+o+4),video_ram[o+0x1A],
                         video_ram[o+1],(int16_t)(ram16(o+8)-cam),
                         (int16_t)(ram16(o+12)-ram16(0xF704)),guest_lo,guest_hi);
@@ -1585,6 +1594,7 @@ static void capture_objects(void)
             labyrinth_boss_present(pri,cam,left);
             stationary_boss_present(pri,cam,left);
             scrap_floor_present(pri,cam,left);
+            scrap_eggman_present(pri,cam,left);
             final_escape_present(pri,cam);
             initial_orbinauts_present(pri,cam);
             ending_animals_present(pri,cam,left);

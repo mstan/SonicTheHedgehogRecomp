@@ -1127,9 +1127,8 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
     CHECK(strstr(reply,"\"camera\":3160,"));
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
-    /* SBZ's scripted exit moves only the displayed player. Its continuation
-     * survives rollback, joins the real player during the pan, and hands the
-     * initial floor to native pieces without duplicating or resurrecting it. */
+    /* SBZ2 retains the native controllable position through results and its
+     * camera pan. The floor still hands over without duplicate pieces. */
     memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);
     s1_video_hook(0xD8DA);
     CHECK(sonic1_video.configure("32:9"));
@@ -1161,7 +1160,7 @@ int main(int argc,char **argv)
     CHECK(!memcmp(&before,&v,sizeof v) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
     sonic1_video.scanline(&v,0,native,320,out,796);
     sonic1_video.scanline(&v,100,native,320,out,796);
-    CHECK(out[604]==0xFFFF0000u && out[598]==0xFF000000u);
+    CHECK(out[598]==0xFFFF0000u && out[606]==0xFF000000u);
     s1_video_command(1,NULL);CHECK(strstr(reply,"\"sprites\":5"));
     g_ram[0xF742]=2;
     size_t runoff_size=s1_video_rb_save(NULL,0);void *runoff_state=malloc(runoff_size);
@@ -1170,13 +1169,13 @@ int main(int argc,char **argv)
     word(g_ram,0xFE04,1);CHECK(s1_video_rb_load(runoff_state,runoff_size));free(runoff_state);
     word(g_ram,0xFE04,2);s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);
-    sonic1_video.scanline(&v,100,native,320,out,796);CHECK(out[610]==0xFFFF0000u);
+    sonic1_video.scanline(&v,100,native,320,out,796);CHECK(out[598]==0xFFFF0000u);
     g_ram[0xD5C0]=0;word(g_ram,0xFE04,100);word(g_ram,0xD008,0x20B0);
     word(g_ram,0xF700,0x2016);word(g_ram,0xFF10,0x2016);
     word(v.vram,0xFC00,(uint16_t)-0x2016);
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);
-    sonic1_video.scanline(&v,100,native,320,out,796);CHECK(out[398]==0xFFFF0000u);
+    sonic1_video.scanline(&v,100,native,320,out,796);CHECK(out[392]==0xFFFF0000u);
     word(g_ram,0xD008,0x20B6);word(g_ram,0xFE04,101);
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);
@@ -1195,7 +1194,7 @@ int main(int argc,char **argv)
     /* A runoff continuation accelerates from fractional entry speeds and follows a
      * lower floor in every zone. The original
      * player, collision layout and result timing remain untouched. */
-    const unsigned runoff_zones[]={0,0x100,0x200,0x202,0x300,0x400,0x500,0x501};
+    const unsigned runoff_zones[]={0,0x100,0x200,0x202,0x300,0x400,0x500};
     for(unsigned runoff_zone=0;runoff_zone<sizeof runoff_zones/sizeof runoff_zones[0];++runoff_zone) {
     memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
     g_ram[0xF600]=12;g_ram[0xD000]=1;g_ram[0xD001]=0x84;
@@ -1442,9 +1441,9 @@ int main(int argc,char **argv)
     g_ram[0xD800]=0x18;word(g_ram,0xD808,664);word(g_ram,0xD80C,80);
     word(g_ram,0xD832,600);word(g_ram,0xD834,80);
     CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD840]==0);
-    /* Each ordinary act exit uses the same presentation-only continuation.
-     * Cover all seventeen results routes; SBZ3/FZ are separate sequences. */
-    for(unsigned zone=0;zone<6;++zone)for(unsigned act=0;act<(zone==5?2u:3u);++act) {
+    /* Ordinary act exits use the same presentation-only continuation.
+     * SBZ2 returns control in place; SBZ3/FZ are separate sequences. */
+    for(unsigned zone=0;zone<6;++zone)for(unsigned act=0;act<(zone==5?1u:3u);++act) {
         memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
         g_ram[0xF600]=12;g_ram[0xD000]=1;g_ram[0xD001]=132;
         word(g_ram,0xFE10,(zone<<8)|act);g_ram[0xD5C0]=0x3A;g_ram[0xF7CC]=1;
@@ -1475,7 +1474,7 @@ int main(int argc,char **argv)
     for(unsigned n=0;n<8;++n)g_ram[0xA400+n]=1;
     word(g_ram,0xF700,800);word(g_ram,0xFF10,800);word(g_ram,0xF72A,800);
     word(g_ram,0xD008,1160);word(g_ram,0xD00C,108);
-    word(g_ram,0xD010,tiny_speed?12:0);word(g_ram,0xFE10,tiny_speed?0x501:0);
+    word(g_ram,0xD010,tiny_speed?12:0);word(g_ram,0xFE10,tiny_speed?0x400:0);
     g_ram[0xD016]=19;g_ram[0xD017]=9;
     m68k_write32(0xF796,0x2000);g_rom[0x2001]=1;memset(g_rom+0x62A10,16,16);
     for(unsigned col=0;col<16;++col)word(g_ram,128*2+col*2,0x2001);
@@ -1494,39 +1493,64 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,108,native,320,out,796);
     CHECK(out[tiny_speed?621:619]==0xFF0000FFu && out[778]==0xFF000000u);
     }
-    /* SBZ's visible trap floor supports the displayed runner before its
-     * native parent exists, then only the parent's surviving solid span.
-     * Moving/falling out of view must retain original guest visibility. */
+    /* A stopped, locked SBZ2 player waits at his real position rather than
+     * displaying a second runner. Returning control follows left movement
+     * immediately; guest state remains authoritative throughout. */
     memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
-    g_ram[0xF600]=12;g_ram[0xD000]=1;g_ram[0xD001]=4;
+    g_ram[0xF600]=12;g_ram[0xD000]=1;g_ram[0xD001]=132;
     g_ram[0xD5C0]=0x3A;g_ram[0xF7CC]=1;word(g_ram,0xFE10,0x501);
-    g_ram[0xD016]=19;g_ram[0xD017]=9;
-    g_ram[0xA400+47]=1;g_ram[0xA400+5*128+0x1E]=g_ram[0xA400+5*128+0x1F]=1;
+    for(unsigned n=0;n<40;++n)g_ram[0xA400+n]=1;
     word(g_ram,0xF700,0x1E40);word(g_ram,0xFF10,0x1E40);word(g_ram,0xF72A,0x1E40);
-    word(g_ram,0xF704,0x510);word(g_ram,0xD008,0x1FA8);word(g_ram,0xD00C,0x5AC);
-    word(g_ram,0xD010,0x600);word(g_ram,0xD002,1);m68k_write32(0xD004,0x1800);
-    for(unsigned pose=0;pose<46;++pose)word(g_rom,0x1800+pose*2,0x100);
+    word(g_ram,0xD008,0x1FA8);word(g_ram,0xD00C,108);g_ram[0xD01A]=6;
+    word(g_ram,0xD002,0x780);m68k_write32(0xD004,0x1800);
+    for(unsigned pose=0;pose<16;++pose)word(g_rom,0x1800+pose*2,0x100);
     g_rom[0x1900]=1;memset(g_rom+0x1901,0,5);
-    m68k_write32(0xF796,0x2000);g_rom[0x2001]=1;memset(g_rom+0x62A10,16,16);
-    for(unsigned col=0;col<16;++col)word(g_ram,384+col*2,0x2001);
+    word(g_rom,0x217FE+2,0x400);g_rom[0x21BFE]=1;word(g_rom,0x21BFF,0);
+    memset(g_rom+0x21AFE,0x22,32);
     word(g_ram,0xAC00,2);word(g_ram,0xAC02,0xD000);
     v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
     v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-0x1E40);
-    v.cram[1]=0xE00;memset(v.vram+32,0x11,32);
+    v.cram[1]=0xE00;v.cram[2]=0xE0;memset(v.vram+0x780*32,0x11,32);
     for(unsigned frame=0;frame<=90;++frame) {
-        if(frame==21) {
-            g_ram[0xF742]=6;g_ram[0xD840]=0x83;g_ram[0xD864]=4;
-            word(g_ram,0xD848,0x20C0);word(g_ram,0xD84C,0x5D0);g_ram[0xD859]=0x40;
-        }
-        g_ram[0xD001]=4;word(g_ram,0xFE04,frame);cpu_before=g_cpu;
+        word(g_ram,0xFE04,frame);memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
         s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
-        CHECK(g_ram[0xD001]==132 && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
         sonic1_video.scanline(&v,0,native,320,out,796);
-        if(frame==20){sonic1_video.scanline(&v,156,native,320,out,796);CHECK(out[718]==0xFF0000FFu);}
-        if(frame==30){
-            sonic1_video.scanline(&v,156,native,320,out,796);CHECK(out[778]==0xFF000000u);
-            sonic1_video.scanline(&v,163,native,320,out,796);CHECK(out[778]==0xFF0000FFu);
+        sonic1_video.scanline(&v,108,native,320,out,796);
+        CHECK(out[598]==0xFF00FF00u && out[650]==0xFF000000u);
+    }
+    g_ram[0xF7CC]=0;g_ram[0xD5C0]=0;word(g_ram,0xD008,0x1F46);
+    word(g_ram,0xD010,0xFD00);word(g_ram,0xFE04,91);
+    memcpy(ram_before,g_ram,sizeof g_ram);s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,108,native,320,out,796);
+    CHECK(out[500]==0xFF0000FFu && out[598]==0xFF000000u);
+    /* Original SBZ2 Eggman art covers early visibility and uninitialized
+     * native ownership, yields once to the native display, and never revives. */
+    memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
+    g_ram[0xF600]=12;g_ram[0xD000]=1;word(g_ram,0xFE10,0x501);g_ram[0xF742]=4;
+    for(unsigned n=0;n<40;++n)g_ram[0xA400+n]=1;
+    word(g_ram,0xF700,0x1FF0);word(g_ram,0xFF10,0x1FF0);word(g_ram,0xF704,0x510);
+    word(g_rom,0x19880,1);word(g_rom,0x19882,0x9A34);word(g_rom,0x19888,0x400);
+    word(g_rom,0x19A34,2);g_rom[0x19A36]=1;memset(g_rom+0x19A37,0,5);
+    word(g_rom,0x5E034,1);g_rom[0x5E036]=0x83;g_rom[0x5E037]=0x71;
+    g_rom[0x5E038]=0;g_rom[0x5E039]=255;memset(g_rom+0x5E03A,0,8);
+    v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+    v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-0x1FF0);
+    v.cram[1]=0xE00;v.cram[3]=0xE0;memset(v.vram+0x400*32,0x11,32);
+    for(unsigned phase=0;phase<4;++phase) {
+        if(phase==1){g_ram[0xF742]=6;g_ram[0xD800]=0x82;}
+        if(phase==2){
+            g_ram[0xD801]=132;g_ram[0xD824]=2;m68k_write32(0xD804,0x19A34);
+            word(g_ram,0xD802,0x400);word(g_ram,0xD808,0x2160);word(g_ram,0xD80C,0x5A4);
+            word(g_ram,0xAC00+3*128,2);word(g_ram,0xAC02+3*128,0xD800);
         }
+        if(phase==3){memset(g_ram+0xD800,0,64);word(g_ram,0xAC00+3*128,0);}
+        memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
+        sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,148,native,320,out,796);
+        CHECK(out[606]==(phase<3?0xFF00FF00u:0xFF000000u));
     }
     /* At running speed the continuation owns its run pose and original DPLC
      * tiles, even while the clamped native object has a walking frame.
