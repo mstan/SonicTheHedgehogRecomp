@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
-project(SonicTheHedgehogRecomp VERSION 1.0.9 LANGUAGES C)
+project(SonicTheHedgehogRecomp VERSION 1.1.0 LANGUAGES C)
+set(GENESIS_GAME_VERSION "${PROJECT_VERSION}-alpha.1")
 
 set(CMAKE_C_STANDARD 11)
 
@@ -270,7 +271,7 @@ target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
     ENABLE_RECOMPILED_CODE=1
     OWN_BACKEND=1                   # the own backend IS the Sonic 1 runtime (no clownmdemu link)
     DEFAULT_DEBUG_PORT=4378
-    GENESIS_GAME_VERSION="${PROJECT_VERSION}"
+    GENESIS_GAME_VERSION="${GENESIS_GAME_VERSION}"
     $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
     $<$<BOOL:${GEN_DEV_TRACE}>:GEN_DEV_TRACE>
 )

@@ -21,7 +21,8 @@ optional enhancements with bounded validation coverage.
 | High refresh presentation | Optional presentation above the native simulation rate. |
 | Save states | Build-specific snapshots; no cross-build compatibility promise. |
 
-See the [release notes](docs/RELEASE_NOTES_1.0.9.md) for the current update.
+This branch contains the [v1.1.0-alpha.1 pre-release](docs/RELEASE_NOTES_1.1.0-alpha.1.md).
+The latest stable release is [v1.0.9](https://github.com/mstan/SonicTheHedgehogRecomp/releases/tag/v1.0.9).
 
 Windows x64 builds default to the shared batched VDP renderer. The 6,000-frame
 Green Hill measurement gained 20.5% uncapped FPS and used 10.6% less process CPU
