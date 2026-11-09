@@ -163,6 +163,20 @@ int s1_sound_hook(uint32_t pc)
 #endif
     return 0;
 }
+int s1_sound_dispatch_miss(uint32_t pc)
+{
+#ifdef SONIC1_CLONE_DRIVER
+    /* The stock ROM identity remains 512 KiB. Its generic miss recorder
+     * filters larger addresses, so enforce coverage for our appended bank. */
+    if(active && pc>=S1_CLONE_LOAD_ADDRESS && pc<S1_CLONE_LOAD_ADDRESS+S1_CLONE_PAYLOAD_SIZE) {
+        fprintf(stderr,"[sound-driver] Missing native sound target $%06X; refusing to skip driver code\n",pc);
+        exit(1);
+    }
+#else
+    (void)pc;
+#endif
+    return 0;
+}
 void s1_sound_state_save(void *out)
 {
     uint8_t bytes[S1_SOUND_STATE_BYTES]={'S','1','S','D',1,0,0,0};

@@ -220,7 +220,7 @@ const GameSpec g_game_spec = {
 
     .handle_arg             = NULL,
     .arg_usage              = NULL,
-    .dispatch_override      = NULL,
+    .dispatch_override      = s1_sound_dispatch_miss,
     .instruction_hook       = s1_instruction_hook,
 
     .fill_frame_record      = s1_fill_frame_record,

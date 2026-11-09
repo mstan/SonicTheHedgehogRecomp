@@ -7,6 +7,7 @@ enum { S1_SOUND_STATE_BYTES = 40 };
 void s1_sound_load_settings(const char *settings);
 void s1_sound_post_reset(void);
 int s1_sound_hook(uint32_t pc);
+int s1_sound_dispatch_miss(uint32_t pc);
 int s1_sound_available(void);
 int s1_sound_selected(void);
 int s1_sound_active(void);

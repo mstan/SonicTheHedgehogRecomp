@@ -19,7 +19,7 @@ static int common_package(void *ctx,int n,RecompLauncherCModPackage *out)
 { if(ctx!=&common_context||n)return 0;memset(out,0,sizeof *out);strcpy(out->id,"common");return 1; }
 int main(int argc,char **argv)
 {
-    CHECK(argc==3); /* matching pack and <new scratch>/settings.ini */
+    CHECK(argc==3 || argc==4); /* matching pack and <new scratch>/settings.ini */
     s1_sound_load_settings(argv[2]);CHECK(!s1_sound_selected());CHECK(!s1_sound_active());
     g_ram[0xF003]=0x5A;CHECK(!s1_sound_hook(0x1396));CHECK(g_ram[0xF003]==0x5A);
     uint8_t original[S1_SOUND_STATE_BYTES],clone[S1_SOUND_STATE_BYTES];
@@ -45,6 +45,7 @@ int main(int argc,char **argv)
     uint8_t before_boot[S1_SOUND_STATE_BYTES];s1_sound_state_save(before_boot);
     s1_sound_post_reset();CHECK(s1_sound_active());CHECK(!memcmp(g_rom+0x80000,"S1CD",4));
     CHECK(s1_sound_state_valid(before_boot));
+    if(argc==4) { s1_sound_dispatch_miss(S1_CLONE_LOAD_ADDRESS+1);return 2; }
     CHECK(!s1_sound_netplay_allowed());s1_sound_state_save(clone);
     CHECK(s1_sound_state_valid(clone)&&!s1_sound_state_valid(original));
     for(unsigned queue=0;queue<3;queue++)for(unsigned id=0;id<256;id++) {
