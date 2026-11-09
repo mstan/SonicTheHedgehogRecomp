@@ -1,0 +1,79 @@
+{
+  "commit": "9c6e99358c510fa640868ce21b5fd6aea6cd01f5",
+  "sources": {
+    "MacroSetup.asm": {
+      "size": 4895,
+      "sha256": "68f9f621072d5ccc494943929fb369fa993c2a9a2fc733e591b0380b94f84d48"
+    },
+    "sound/Definitions.asm": {
+      "size": 251,
+      "sha256": "1e6a67d4400426a3ebc1e328bfc3cb2ba7ffc659635c10fb5e74d71a488bd42d"
+    },
+    "sound/Sound IDs.asm": {
+      "size": 3267,
+      "sha256": "1ab3b0f3c61f9fd6ed27292781a2c8f2ca3677589dc0cb8d6b9c4dfe467f099b"
+    },
+    "sound/Settings.asm": {
+      "size": 3234,
+      "sha256": "db30498f660d354f6c86c46ed68384b2c001e83945ac01f27db88e2a98d8ec7b"
+    },
+    "sound/SMPS2ASM - PSG Volume Envelope Equates.asm": {
+      "size": 2888,
+      "sha256": "7b5618e4f3c4be919e3d30d646be6bf8f31c7d05e7e173f055e74e3e38183caa"
+    },
+    "sound/SMPS2ASM - DAC Sample Equates.asm": {
+      "size": 2967,
+      "sha256": "93bb9ce1f83c903c349f0a1b1a81a8b51236119735d8543f0c3740e546bc081d"
+    },
+    "sound/engine/Constants.asm": {
+      "size": 1637,
+      "sha256": "bc1c729ec3b206bda18894bb9945a36f9180b509fbbc51bc54c3a32c36eb14b4"
+    },
+    "sound/engine/Functions.asm": {
+      "size": 5125,
+      "sha256": "a417be69f04252e12f0bf4f193b4a0183cd1bf477a93cc79d2933ea9eb874430"
+    },
+    "sound/engine/Macros.asm": {
+      "size": 7460,
+      "sha256": "713e307c9a2d5081f5cd569bfde787c88c68970d96f828732fffb9d5506c017c"
+    },
+    "sound/engine/MegaPCM.asm": {
+      "size": 34094,
+      "sha256": "adb6638a7d228ef11356a68779146b319f731128a605d25b6be24722f06fb70c"
+    },
+    "sound/engine/MegaPCM.Macros.asm": {
+      "size": 16468,
+      "sha256": "96c67c4b4b15555b363aad0e0d1d83215b8031ef7d44f3f2dac7a4490c7caf04"
+    },
+    "sound/engine/RAM.asm": {
+      "size": 6355,
+      "sha256": "e0d6076081871412995d53ab14076dd62a33acd063d1a54f35914abb17b442ae"
+    },
+    "sound/engine/Sonic 2 Clone Driver v2.asm": {
+      "size": 123509,
+      "sha256": "3b2cf6108eac3ae2c2f5f7cd0b60e60cc672680f6ef235a5d284dba1899bda76"
+    },
+    "sound/engine/_smps2asm_inc.asm": {
+      "size": 16509,
+      "sha256": "266c8955e1ed8bf67a4508834710931372240156e38929f3bbeeb63cced7f8d1"
+    }
+  },
+  "tools": {
+    "build_tools/Windows-x86_64/asw.exe": {
+      "size": 3455039,
+      "sha256": "6a3236038c15a16f70d91d12e3f10bf3cb14da6400ac4b73a2da43a3f29031fa"
+    },
+    "build_tools/Windows-x86_64/p2bin.exe": {
+      "size": 28672,
+      "sha256": "1323430afdfa630ab56ce76f0286ccbb05a04566126411d4b7d673f2a08115eb"
+    },
+    "build_tools/Linux-x86_64/asl": {
+      "size": 3393944,
+      "sha256": "cc444bd4e1eccbe9c2d7b69e9e582a2f1310d49b1d548a2e24b1de6459a20e2a"
+    },
+    "build_tools/Linux-x86_64/p2bin": {
+      "size": 31040,
+      "sha256": "969c1df15a15ef32bc25124093228dab3b81906d772f37fc873e00bb70a94459"
+    }
+  }
+}

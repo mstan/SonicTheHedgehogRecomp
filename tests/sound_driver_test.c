@@ -2,6 +2,7 @@
  * separately in the built game. All file writes use the caller's scratch. */
 #include "sonic1_sound_driver.h"
 #include "sonic1_clone_metadata.h"
+#include "sonic1_sound_assets.h"
 #include "genesis_runtime.h"
 #include "recomp_launcher.h"
 #include <stdio.h>
@@ -19,19 +20,20 @@ static int common_package(void *ctx,int n,RecompLauncherCModPackage *out)
 { if(ctx!=&common_context||n)return 0;memset(out,0,sizeof *out);strcpy(out->id,"common");return 1; }
 int main(int argc,char **argv)
 {
-    CHECK(argc==3 || argc==4); /* matching pack and <new scratch>/settings.ini */
+    CHECK(argc==3 || argc==4); /* verified ROM and <new scratch>/settings.ini */
     s1_sound_load_settings(argv[2]);CHECK(!s1_sound_selected());CHECK(!s1_sound_active());
     g_ram[0xF003]=0x5A;CHECK(!s1_sound_hook(0x1396));CHECK(g_ram[0xF003]==0x5A);
     uint8_t original[S1_SOUND_STATE_BYTES],clone[S1_SOUND_STATE_BYTES];
     s1_sound_state_save(original);CHECK(s1_sound_state_valid(original));
     if(!s1_sound_available()) {
-        CHECK(!s1_sound_select(1));CHECK(!s1_sound_set_pack(argv[1]));
+        CHECK(!s1_sound_select(1));
         CHECK(!s1_sound_selected() && !s1_sound_active());
         CHECK(s1_sound_state_valid(original));CHECK(!s1_sound_hook(0x71B4C));
         puts("PASS: build without replacement payload stays original and refuses activation");return 0;
     }
-    CHECK(!s1_sound_select(1));CHECK(!s1_sound_selected());
-    CHECK(s1_sound_set_pack(argv[1]));CHECK(s1_sound_verified());
+    CHECK(s1_sound_uses_rom());
+    FILE *rom=fopen(argv[1],"rb");CHECK(rom);CHECK(fread(g_rom,1,0x80000,rom)==0x80000);fclose(rom);
+    CHECK(s1_sound_select(1));CHECK(s1_sound_verified());CHECK(s1_sound_select(0));
     RecompLauncherCModProvider base={0};base.ctx=&common_context;
     base.package_count=base.feature_count=common_count;base.package_get=common_package;
     const RecompLauncherCModProvider *mods=s1_sound_mods(&base);
@@ -41,11 +43,14 @@ int main(int argc,char **argv)
     CHECK(mods->package_get(mods->ctx,0,&package)&&!package.enabled);
     CHECK(mods->feature_enable(mods->ctx,"sonic1.audio.clone-driver","sound-driver",1));
     CHECK(mods->commit(mods->ctx,"unused"));
-    s1_sound_load_settings(argv[2]);CHECK(s1_sound_selected());CHECK(!strcmp(s1_sound_pack(),argv[1]));
+    s1_sound_load_settings(argv[2]);CHECK(s1_sound_selected());
     uint8_t before_boot[S1_SOUND_STATE_BYTES];s1_sound_state_save(before_boot);
-    s1_sound_post_reset();CHECK(s1_sound_active());CHECK(!memcmp(g_rom+0x80000,"S1CD",4));
+    s1_sound_post_reset();CHECK(s1_sound_active());CHECK(!memcmp(g_rom+0x80000,"S1CR",4));
+    CHECK(!mods->feature_resource_count(mods->ctx,"sonic1.audio.clone-driver","sound-driver"));
     CHECK(s1_sound_state_valid(before_boot));
-    if(argc==4) { s1_sound_dispatch_miss(S1_CLONE_LOAD_ADDRESS+1);return 2; }
+    if(argc==4) {
+        s1_sound_dispatch_miss(!strcmp(argv[3],"missingdata")?S1_SOUND_MUSIC_BASE:S1_CLONE_LOAD_ADDRESS+1);return 2;
+    }
     CHECK(!s1_sound_netplay_allowed());s1_sound_state_save(clone);
     CHECK(s1_sound_state_valid(clone)&&!s1_sound_state_valid(original));
     for(unsigned queue=0;queue<3;queue++)for(unsigned id=0;id<256;id++) {

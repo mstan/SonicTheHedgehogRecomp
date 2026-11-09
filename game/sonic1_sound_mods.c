@@ -14,7 +14,7 @@ static const char *status(void)
     if(!s1_sound_available())return "Requires a build prepared with Clone Driver support";
     if(s1_sound_selected()!=s1_sound_active())return "Restart the game to apply the sound driver selection";
     if(s1_sound_active())return "Clone Driver active; local play";
-    return s1_sound_verified()?"Sound pack verified; disabled":"Disabled; select the generated sound pack to enable";
+    return "Ready; sound assets are prepared automatically from your Sonic 1 ROM";
 }
 static int packages(void *ctx) { (void)ctx;return 1+(base&&base->package_count?base->package_count(base->ctx):0); }
 static int features(void *ctx) { (void)ctx;return 1+(base&&base->feature_count?base->feature_count(base->ctx):0); }
@@ -24,9 +24,9 @@ static int package_get(void *ctx,int n,RecompLauncherCModPackage *out)
     if(n>0)return base&&base->package_get&&base->package_get(base->ctx,n-1,out);
     if(n<0 || !out)return 0;
     memset(out,0,sizeof *out);COPY(out->id,package_id);COPY(out->name,"Clone Driver + Mega PCM");
-    COPY(out->version,"0.1.0");COPY(out->author,"Clownacy; Vladikcomper; TheBlad768; host adapter contributors");
-    COPY(out->description,"Alternate Sonic 1 music and sound driver. Disabled by default. Requires the generated sound pack. Restart after changing drivers. Experimental; local play only.");
-    COPY(out->license,"Driver permission notice; Mega PCM MIT; local game assets");
+    COPY(out->version,"0.2.0");COPY(out->author,"Clownacy; Vladikcomper; TheBlad768; host adapter contributors");
+    COPY(out->description,"Alternate Sonic 1 sound driver. Uses music and samples from your Sonic 1 JUE REV00 ROM automatically. Disabled by default. Restart after changing drivers. Local play only.");
+    COPY(out->license,"Driver permission notice; Mega PCM MIT; ROM-sourced game assets");
     COPY(out->source_name,"Sonic 1 Clone Driver integration");COPY(out->source_url,"https://github.com/TheBlad768/s1disasm-clone-driver");
     COPY(out->status,status());out->enabled=s1_sound_selected();return 1;
 }
@@ -60,24 +60,19 @@ static int set_option(void *ctx,const char *p,const char *f,const char *o,const 
 { (void)ctx;return !ours(p)&&base&&base->feature_set_option&&base->feature_set_option(base->ctx,p,f,o,v); }
 static int resource_count(void *ctx,const char *p,const char *f)
 {
-    (void)ctx;if(ours(p))return feature(p,f)?1:0;
+    (void)ctx;if(ours(p))return 0;
     return base&&base->feature_resource_count?base->feature_resource_count(base->ctx,p,f):0;
 }
 static int resource_get(void *ctx,const char *p,const char *f,int n,RecompLauncherCModResource *out)
 {
     (void)ctx;
     if(!ours(p))return base&&base->feature_resource_get&&base->feature_resource_get(base->ctx,p,f,n,out);
-    if(!feature(p,f)||n||!out)return 0;
-    memset(out,0,sizeof *out);COPY(out->id,"sound-pack");COPY(out->label,"Clone Driver sound pack");
-    COPY(out->description,"Select clone-driver.bin produced for this build. Verified by exact size and SHA-256; your Sonic 1 ROM stays unchanged.");
-    COPY(out->path,s1_sound_pack());COPY(out->file_patterns,"*.bin");COPY(out->file_description,"Clone Driver sound pack");
-    COPY(out->status,s1_sound_verified()?"Sound pack verified":"Select the generated sound pack");
-    out->required=1;out->verified=s1_sound_verified();return 1;
+    return 0;
 }
 static int resource_set(void *ctx,const char *p,const char *f,const char *r,const char *path)
 {
     (void)ctx;mod_error[0]=0;
-    if(ours(p))return feature(p,f)&&r&&!strcmp(r,"sound-pack")&&s1_sound_set_pack(path);
+    if(ours(p))return 0;
     return base&&base->feature_resource_set_path&&base->feature_resource_set_path(base->ctx,p,f,r,path);
 }
 static int commit(void *ctx,const char *image)

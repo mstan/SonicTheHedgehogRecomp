@@ -192,6 +192,7 @@ set(SONIC_SHARED_SOURCES
     "${CMAKE_SOURCE_DIR}/game/sonic1_spec.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_audio.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_sound_driver.c"
+    "${CMAKE_SOURCE_DIR}/game/sonic1_sound_assets.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_sound_mods.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_video.c"
     "${RECOMP_ROOT}/sonicthehedgehog/sonic_extras.c"
@@ -274,14 +275,16 @@ target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
 )
 _sonic_finalize_target(SonicTheHedgehogRecomp SONIC_INCLUDES_NATIVE)
 
-option(SONIC1_SOUND_DRIVER_TESTS "Build sound adapter contract checks (requires the private probe)" OFF)
+option(SONIC1_SOUND_DRIVER_TESTS "Build sound adapter and ROM conversion contract checks" OFF)
 if(SONIC1_SOUND_DRIVER_TESTS)
+    add_executable(sonic1_sound_assets_test tests/sound_assets_test.c game/sonic1_sound_assets.c recomp-ui/src/common/sha256.c)
+    target_include_directories(sonic1_sound_assets_test PRIVATE "${CMAKE_SOURCE_DIR}/game" "${CMAKE_SOURCE_DIR}/recomp-ui/src/common")
     if(NOT SONIC_CLONE_DRIVER_PROBE_DIR)
         message(FATAL_ERROR "Sound contract checks require SONIC_CLONE_DRIVER_PROBE_DIR")
     endif()
     foreach(_sound_test sonic1_sound_driver_test sonic1_sound_driver_plain_test)
         add_executable(${_sound_test} tests/sound_driver_test.c
-            game/sonic1_sound_driver.c game/sonic1_sound_mods.c
+            game/sonic1_sound_driver.c game/sonic1_sound_mods.c game/sonic1_sound_assets.c
             "${RUNNER_ROOT}/host_atomic_file.c" recomp-ui/src/common/sha256.c)
         target_include_directories(${_sound_test} PRIVATE game ${SONIC_INCLUDES_NATIVE} recomp-ui/src)
         target_compile_definitions(${_sound_test} PRIVATE RECOMP_LAUNCHER=1 SDL_MAIN_HANDLED=1)

@@ -52,6 +52,10 @@ and adaptive widescreen.
 The Audio menu also offers **Unfiltered audio**, disabled by default. It bypasses
 the native low-pass filters; the separate enhanced FM path retains its own sound.
 
+**Clone Driver + Mega PCM** is a separate, default-off Audio mod. It prepares
+music and samples automatically from your Sonic 1 JUE REV00 ROM; no external
+sound BIN or assembler is needed. See [sound driver mods](docs/SOUND_DRIVER_MODS.md).
+
 ## How It Works
 
 The [recompiler](https://github.com/mstan/segagenesisrecomp) analyzes a Sonic 1 ROM binary and emits native C functions for discovered 68K routines. These generated functions use the same memory layout and register state as the original 68K code, but execute as compiled x64 instead of interpreted instructions.

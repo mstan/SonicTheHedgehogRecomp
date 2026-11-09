@@ -39,12 +39,15 @@ def main():
     if not HEADER.size <= payload_file.stat().st_size <= 0x380000:
         p.error("sound payload exceeds the available cartridge bank")
     payload = payload_file.read_bytes()
+    rom_assets=info.get("asset_mode")=="rom"
+    if not rom_assets:
+        p.error("full sound packs are no longer runtime inputs; use automatic preparation or a software-only --rom-assets build")
     digest = hashlib.sha256(payload).hexdigest()
     magic,*values=HEADER.unpack_from(payload)
-    if (magic!=b"S1CD" or any(info.get(k)!=v for k,v in zip(FIELDS,values)) or
+    if (magic!=(b"S1CR" if rom_assets else b"S1CD") or any(info.get(k)!=v for k,v in zip(FIELDS,values)) or
             info["source_commit"] != SOURCE_COMMIT or
             digest != info["payload_sha256"] or len(payload) != info["payload_size"] or
-            info["load_address"] != len(rom) or payload[:4] != b"S1CD" or
+            info["load_address"] != len(rom) or
             struct.unpack_from(">I", payload, 4)[0] != len(payload)):
         p.error("probe identity or image bounds mismatch")
     if not (info["ram_address"] & 0xFFFFFF == 0xFFF000 and 0 < info["ram_size"] <= 0x400 and
@@ -84,6 +87,21 @@ def main():
     for key in ("load_address", "payload_size", "initialise", "update", "queue_music", "queue_sfx", "queue_extra",
                 "ram_size", "queue_offset", "pause_offset", "guarded_update"):
         header += f"#define S1_CLONE_{key.upper()} 0x{info[key]:X}u\n"
+    if rom_assets:
+        header+="#define S1_CLONE_ASSETS_FROM_ROM 1\n"
+        data_labels={}
+        for line in (probe/"driver.lst").read_text(errors="replace").splitlines():
+            row=module.ROW.match(line)
+            label=module.LABEL.match(row[2]) if row else None
+            if label:data_labels[label[1]]=int(row[1],16)
+        for name in ("MusicIndex","SoundIndex","SpecSoundIndex","PSG_Index"):
+            address=data_labels[name]
+            if not len(rom)<=address<len(image):p.error("driver table outside software image")
+            header+=f"#define S1_CLONE_{name.upper()} 0x{address:X}u\n"
+        program="/* Generated driver software only; no music, effects or sample data. */\n#include <stdint.h>\n"
+        program+="static const uint8_t s1_clone_program[] = {\n"+"".join(
+            "    "+",".join(f"0x{b:02X}" for b in payload[i:i+16])+",\n" for i in range(0,len(payload),16))+"};\n"
+        write(out/"sonic1_clone_program.h",program)
     write(out / "sonic1_clone_metadata.h",header)
     print(f"Prepared {len(entries)} sound entry seeds; original {len(rom)} ROM bytes preserved; payload {digest}")
 

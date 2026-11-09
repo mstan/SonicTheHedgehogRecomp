@@ -11,6 +11,12 @@ import subprocess
 
 SOURCE_URL = "https://github.com/TheBlad768/s1disasm-clone-driver"
 SOURCE_COMMIT = "9c6e99358c510fa640868ce21b5fd6aea6cd01f5"
+DRIVER_SOURCES = (
+    "MacroSetup.asm", "sound/Definitions.asm", "sound/Sound IDs.asm", "sound/Settings.asm",
+    "sound/SMPS2ASM - PSG Volume Envelope Equates.asm", "sound/SMPS2ASM - DAC Sample Equates.asm",
+    *("sound/engine/"+name for name in ("Constants.asm", "Functions.asm", "Macros.asm",
+       "MegaPCM.asm", "MegaPCM.Macros.asm", "RAM.asm", "Sonic 2 Clone Driver v2.asm", "_smps2asm_inc.asm")),
+)
 LOAD_ADDRESS = 0x80000
 HEADER = struct.Struct(">4s14I")
 FIELDS = (
@@ -33,41 +39,40 @@ def run(argv: list[str], cwd: Path, log: Path) -> None:
             raise RuntimeError(f"build tool failed; see {log} and driver-errors.log") from exc
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, required=True,
-                        help="local checkout of the pinned upstream commit")
-    parser.add_argument("--assembler", type=Path, required=True,
-                        help="native Macroassembler AS executable")
-    parser.add_argument("--p2bin", type=Path, required=True,
-                        help="Clownacy p2bin executable from upstream build_tools")
-    parser.add_argument("--output", type=Path, required=True,
-                        help="new directory for disposable build products")
-    args = parser.parse_args()
-    source = args.source.resolve(strict=True)
-    assembler = args.assembler.resolve(strict=True)
-    p2bin = args.p2bin.resolve(strict=True)
-    wrapper = Path(__file__).with_name("driver.asm").resolve(strict=True)
-    commit = subprocess.check_output(
-        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
-    if commit != SOURCE_COMMIT:
-        parser.error(f"expected upstream commit {SOURCE_COMMIT}; got {commit}")
-    dirty = subprocess.check_output(
-        ["git", "-C", str(source), "status", "--porcelain", "--untracked-files=all",
-         "--", "MacroSetup.asm", "sound"], text=True)
-    if dirty.strip():
-        parser.error("upstream MacroSetup.asm or sound/ has local changes")
-    output = args.output.resolve()
+def assemble(source: Path, assembler: Path, p2bin: Path, output: Path,
+             rom_assets: bool = False) -> dict:
+    """Assemble already verified inputs; callers own their source verification."""
+    wrapper = Path(__file__).with_name("driver_rom.asm" if rom_assets else "driver.asm").resolve(strict=True)
+    output = output.resolve()
     if output.is_relative_to(source):
-        parser.error("output must be outside the upstream checkout")
+        raise ValueError("output must be outside the upstream checkout")
     if output.exists():
-        parser.error("output already exists; choose a new directory")
+        raise ValueError("output already exists; choose a new directory")
     output.mkdir(parents=True)
+    include_root=source
+    if rom_assets:
+        include_root=output / "inputs"
+        # A bounded software-only include tree makes asset inclusion impossible,
+        # independent of the assembler's include-directory precedence.
+        for name in DRIVER_SOURCES:
+            target=include_root / name;target.parent.mkdir(parents=True,exist_ok=True)
+            target.write_bytes((source/name).read_bytes())
+        overrides = include_root / "sound"
+        # Tables are populated from the player's ROM, never from game assets
+        # in the upstream repository. Their driver-relative locations are fixed.
+        for name,label,ids,end in (
+                ("Music.asm","MusicIndex",[f"ptr_mus{i:02X}" for i in range(0x81,0x94)],"ptr_musend"),
+                ("SFX.asm","SoundIndex",[f"ptr_snd{i:02X}" for i in range(0xA0,0xD0)],"ptr_sndend"),
+                ("Special SFX.asm","SpecSoundIndex",["ptr_sndD0"],"ptr_specend"),
+                ("PSG Volume Envelopes.asm","PSG_Index",[f"ptr_s1psg{i:02X}" for i in range(1,10)],"")):
+            text=f"{label}:\n"+"".join(f"{item}: dc.l 0\n" for item in ids)
+            if end:text+=f"{end}:\n"
+            (overrides / name).write_text(text,encoding="utf-8")
     obj = output / "driver.p"
     image = output / "driver-image.bin"
     # Absolute output names avoid AS's basename handling for ../source paths.
     run([str(assembler), "-xx", "-n", "-q", "-A", "-L", "-U",
-         "-i", str(source), "-o", str(obj), "-olist", str(output / "driver.lst"),
+         "-i", str(include_root), "-o", str(obj), "-olist", str(output / "driver.lst"),
          "-E", str(output / "driver-errors.log"), str(wrapper)],
         output, output / "assembler.log")
     run([str(p2bin), "-p=FF", str(obj), str(image)], output, output / "p2bin.log")
@@ -78,7 +83,7 @@ def main() -> None:
         raise ValueError("expected an isolated sound image beginning at $80000")
     magic, *values = HEADER.unpack_from(payload)
     info = dict(zip(FIELDS, values))
-    if magic != b"S1CD" or info["payload_size"] != len(payload):
+    if magic != (b"S1CR" if rom_assets else b"S1CD") or info["payload_size"] != len(payload):
         raise ValueError("invalid probe header or payload extent")
     if info["ram_address"] & 0xFFFFFF != 0xFFF000 or not 0 < info["ram_size"] <= 0x400:
         raise ValueError("driver does not fit the proposed $FFF000-$FFF3FF RAM range")
@@ -94,14 +99,29 @@ def main() -> None:
     binary.write_bytes(payload)
     manifest = {
         "status": "assembled-only; not a playable or runtime-qualified mod",
-        "source_url": SOURCE_URL, "source_commit": commit,
+        "source_url": SOURCE_URL, "source_commit": SOURCE_COMMIT,
+        "asset_mode": "rom" if rom_assets else "upstream",
         "wrapper_sha256": sha256(wrapper),
         "assembler_sha256": sha256(assembler), "p2bin_sha256": sha256(p2bin),
         "load_address": LOAD_ADDRESS, "payload_sha256": sha256(binary), **info,
     }
     (output / "probe.json").write_text(json.dumps(manifest, indent=2) + "\n",
                                        encoding="utf-8")
-    print(json.dumps(manifest, indent=2))
+    return manifest
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("source", "assembler", "p2bin", "output"):
+        parser.add_argument("--"+name,type=Path,required=True)
+    parser.add_argument("--rom-assets",action="store_true")
+    args=parser.parse_args()
+    source=args.source.resolve(strict=True)
+    commit=subprocess.check_output(["git","-C",str(source),"rev-parse","HEAD"],text=True).strip()
+    if commit!=SOURCE_COMMIT:parser.error(f"expected upstream commit {SOURCE_COMMIT}; got {commit}")
+    dirty=subprocess.check_output(["git","-C",str(source),"status","--porcelain","--untracked-files=all","--","MacroSetup.asm","sound"],text=True)
+    if dirty.strip():parser.error("upstream MacroSetup.asm or sound/ has local changes")
+    print(json.dumps(assemble(source,args.assembler.resolve(strict=True),args.p2bin.resolve(strict=True),args.output,args.rom_assets),indent=2))
 
 
 if __name__ == "__main__":

@@ -12,15 +12,19 @@ interface. Sonic 2 and Sonic 3 are outside this prototype's scope.
 
 ## Enable the mod
 
-Use a build prepared with the sound probe below. In **Mods → Audio → Clone
-Driver + Mega PCM**, select that build's `clone-driver.bin`, then enable the
-feature and press Play. The file must match the build's exact size and SHA-256.
-An invalid enabled pack prevents launch. A disabled feature does not read its
-pack, including when a previously selected file has been removed.
+Select your Sonic 1 JUE REV00 ROM, enable **Mods → Audio → Clone Driver + Mega
+PCM**, and press Play. The game prepares the sound assets from that ROM
+automatically. No separate BIN, assembler, Python installation or network
+connection is needed to play. The mod remains disabled by default.
+
+Music, effects, FM instruments, PSG envelopes and PCM samples come from the
+player's ROM. Conversion happens once at boot in memory, outside the original
+ROM bank. The ROM file and its original 524,288 bytes remain unchanged. An
+unsupported ROM is rejected when the driver is enabled.
 
 Driver selection is fixed for the running process. Restart the application
 after changing it; guest reset, save/load and rewind cannot apply a pending
-selection. Sound choices and the selected path persist in `sonic1-sound.ini`
+selection. Sound choices persist in `sonic1-sound.ini`
 beside the engine's `settings.ini`. Common audio, controller and widescreen
 settings retain their existing storage and behavior.
 
@@ -31,48 +35,53 @@ its deterministic compatibility is qualified. The new **68000** driver and
 Mega PCM library code run through the native dispatch table; the uploaded
 **Z80** program uses the existing interpreter.
 
-The sound pack uses the linked Sonic 1 port's converted music and SFX data.
+The ROM converter follows the linked Sonic 1 port's music and SFX conversion.
 For example, its Star Light arrangement uses DAC percussion. Enabling it may
 change the sound as well as the driver implementation. It preserves the stock
 REV00 gameplay ROM; the complete upstream game, which defaults to REV01 and
 other gameplay changes, is not substituted.
 
-## Build the prototype
+## Build support
 
-Requires Python 3.10+, Git, Macroassembler AS, Clownacy's p2bin and the normal
-Sonic 1 build dependencies. Supply the normal JUE REV00 ROM as
-`game/sonic.bin` and initialize the project's pinned engine/UI dependencies.
+Use the normal Sonic 1 build dependencies, Python 3.10+, the JUE REV00 ROM at
+`game/sonic.bin`, and the pinned engine/UI dependencies. On Windows x64 and
+Linux x86-64, the normal configure step automatically fetches and builds the
+driver software. The first developer build needs internet access; verified
+cached inputs work offline afterward. Players do not run these tools.
 
 ```powershell
-git clone https://github.com/TheBlad768/s1disasm-clone-driver.git C:/Temp/s1-clone-source
-git -C C:/Temp/s1-clone-source checkout 9c6e99358c510fa640868ce21b5fd6aea6cd01f5
-python tools/clone_driver_probe/build.py `
-  --source C:/Temp/s1-clone-source `
-  --assembler C:/Temp/s1-clone-source/build_tools/Windows-x86_64/asw.exe `
-  --p2bin C:/Temp/s1-clone-source/build_tools/Windows-x86_64/p2bin.exe `
-  --output C:/Temp/s1-clone-probe
 cmake -S . -B build-clone -G "Visual Studio 17 2022" -A x64 `
-  -DSONIC_CLONE_DRIVER_PROBE_DIR=C:/Temp/s1-clone-probe `
+  -DSONIC_CLONE_DRIVER_SUPPORT=ON `
   -DGENESIS_Z80_RECOMP=OFF
 cmake --build build-clone --config Release --target SonicTheHedgehogRecomp --parallel 1
 ```
 
-Leave `SONIC_CLONE_DRIVER_PROBE_DIR` empty for a normal build without the
-replacement code. Such a build keeps the package unavailable and refuses an
-enabled saved selection rather than silently changing the requested driver.
-On Linux x86-64 the upstream native tools are
-`build_tools/Linux-x86_64/asl` and `p2bin`; this prototype's execution has been
-qualified on Windows x64 only.
+`SONIC_CLONE_DRIVER_SUPPORT=AUTO` is the default. `OFF` builds the normal game
+without replacement-driver support. On other build hosts, `AUTO` keeps the
+normal game build available; supply native `SONIC_CLONE_DRIVER_ASSEMBLER` and
+`SONIC_CLONE_DRIVER_P2BIN` paths with `ON` to include the mod. Runtime execution
+has been qualified on Windows x64 only.
 
-The probe contains only sound code/data and a 60-byte metadata header.
+The fetcher uses an explicit allowlist of fourteen driver/configuration/macro
+files at a pinned commit. Each source file and bundled native build tool has
+an exact size and SHA-256 in `tools/clone_driver_probe/sources.lock.json`.
+It does not download music, samples, artwork, levels, or the complete game
+repository. A separate include tree contains only those software files and
+empty asset tables, preventing accidental assembly of upstream game assets.
+
+The generated program contains only driver software, sample descriptors and
+a 60-byte metadata header. It is embedded in the executable.
 `prepare_native.py` checks its identity and creates an augmented private image
 under the build directory, keeping all 524,288 original ROM bytes intact.
 Sound code starts in the unused cartridge bank at `$080000`. Discovery reuses
 the engine's source-verified label and jump-table extractors. Generated C,
-ROMs and music/sample packs remain local and are not checked in.
+ROMs and build products remain local and are not checked in. Developer-only
+`SONIC_CLONE_DRIVER_PROBE_DIR` can use an already prepared software-only input,
+for example when the assembler runs on another host. Full music/sample packs
+are rejected and have no runtime loading path.
 
-Current payload: 77,994 bytes; SHA-256
-`686f441bf5f3ef14ffa3b4c5e385784249329675d428ebb2d28a5bee78f7c336`.
+Current software program: 14,930 bytes; SHA-256
+`55318ed563dbcc70d0063208019813af697f8e74ec8710a9733b39291d0454a9`.
 It uses 923 bytes of the existing `$FFF000-$FFF3FF` sound RAM reservation.
 The build stages [driver and Mega PCM notices](CLONE_DRIVER_NOTICES.txt) beside
 the executable. These notices do not grant rights to game music or samples.
@@ -110,12 +119,12 @@ Old save-state migration is not required; native game saves are unaffected.
 Windows checks cover enabled boot/audio, actual Green Hill gameplay and jump
 input, pause/resume, warm and cold save/load, and the engine's real rewind and
 rollback-state self-tests. Restored screenshots and sound RAM match exactly.
-An enabled invalid pack and a file state from the other driver are rejected.
+An unsupported ROM and a file state from the other driver are rejected.
 
 With the mod disabled, a 600-frame audio capture is byte-identical to v1.0.9,
 and every sampled framebuffer hash matches. Filtered and unfiltered stock
 captures also remain byte-identical across the FM latch correction. A matching
-Clone Driver capture applies all 81,629 PCM writes to the intended DAC register;
+Clone Driver regression capture applies PCM writes to the intended DAC register;
 all register write counts match their issued destinations. Enabled boot and gameplay record
 no native dispatch misses or Tier-3 floor execution.
 
@@ -126,14 +135,18 @@ and stop clears every music track. These injections bypass gameplay triggers.
 They supplement the real gameplay check and the adapter contract tests.
 
 To build the contract test, configure with `-DSONIC1_SOUND_DRIVER_TESTS=ON`,
-build `sonic1_sound_driver_test`, then run it with the matching pack path and
+build `sonic1_sound_driver_test`, then run it with the original ROM path and
 `<new-scratch-directory>/settings.ini`. Create that empty scratch directory
 first. It tests all 256 IDs in all three queues, condition flags, pause RAM
 isolation, provider composition, settings persistence, frame-0 identity and
-rejection of a different driver's state.
+rejection of a different driver's state. `sonic1_sound_assets_test <ROM>` checks
+exact ROM identity, rejected inputs, output bounds, immutable ROM bytes,
+aliased output and repeated preparation. A source-derived reference comparison
+also checks all nineteen tracks, forty-nine effects, nine PSG envelopes and
+four PCM buffers. The four PCM buffers match the earlier local pack exactly.
 
-This is a first-consumer prototype, with listening review and broader song,
-stage and platform coverage still open. It does not qualify other Sonic games
+This is a first-consumer prototype, with broader stage and platform coverage
+still open. It does not qualify other Sonic games
 or the optional Z80 AOT backend.
 
 ## Upstream sources

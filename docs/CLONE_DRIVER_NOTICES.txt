@@ -44,6 +44,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-These permissions apply to the named driver software. They do not grant rights
-to Sonic the Hedgehog music, samples or other game materials. No sound pack is
-included in this source repository; development sound packs remain local.
+These permissions apply to the named authors' driver software and contributions.
+They do not establish rights to underlying third-party code or grant rights to
+Sonic the Hedgehog music, samples or other game materials. The complete upstream
+disassembly repository also includes game content under separate restrictions.
+
+Normal builds include a software-only driver program. Music, effects, instruments,
+envelopes and PCM samples are prepared locally from the player's verified ROM.
+No Sonic music/sample pack is bundled, and activation downloads no game assets.
