@@ -84,6 +84,13 @@ replacement layout while the rest of the original pause loop continues.
 The driver's own interrupt-mask and reentrancy macro wraps its update routine.
 Presentation frames do not drive sound ticks.
 
+The pinned shared engine preserves the guest FM address latch on Z80 data
+writes before merging the audio timestamps. Mega PCM retains register `$2A`
+across PCM writes. Sorting those raw data ports alongside 68000 FM updates
+could otherwise redirect sample bytes into note and instrument registers.
+The engine materializes an address/data pair at each Z80 data write's timestamp,
+without adding guest bus accesses or changing driver timing.
+
 | Original REV00 command | Clone Driver command |
 | --- | --- |
 | Music `$81-$93` | `$01-$13` |
@@ -105,7 +112,10 @@ rollback-state self-tests. Restored screenshots and sound RAM match exactly.
 An enabled invalid pack and a file state from the other driver are rejected.
 
 With the mod disabled, a 600-frame audio capture is byte-identical to v1.0.9,
-and every sampled framebuffer hash matches. Enabled boot and gameplay record
+and every sampled framebuffer hash matches. Filtered and unfiltered stock
+captures also remain byte-identical across the FM latch correction. A matching
+Clone Driver capture applies all 81,629 PCM writes to the intended DAC register;
+all register write counts match their issued destinations. Enabled boot and gameplay record
 no native dispatch misses or Tier-3 floor execution.
 
 Driver-level queue injections separately exercise Star Light, 1-UP restoration,
