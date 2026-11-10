@@ -10,6 +10,8 @@
 #include "genesis_runtime.h"
 #include "sonic1_video.h"
 #include "sonic1_audio.h"
+#include "sonic1_debug.h"
+#include "sonic1_sound_driver.h"
 #include "audio/event_queue.h"
 
 #include <stdint.h>
@@ -24,12 +26,16 @@ extern uint8_t g_ram[0x10000];
 /* ---- Recompiled entry trampolines ---- */
 /* Routed through recomp_call_addr so the tail-call trampoline frame
  * is set up before the recompiled function runs. */
-static void s1_call_entry_point(void) { recomp_call_addr(0x000206u); }
+static void s1_call_entry_point(void) {
+    s1_sound_post_reset();
+    recomp_call_addr(0x000206u);
+}
 static void s1_call_vblank(void)      { recomp_call_addr(0x000B10u); }
 static void s1_call_hblank(void)      { recomp_call_addr(0x001126u); }
 static int s1_instruction_hook(uint32_t pc)
 {
-    s1_audio_hook(pc);
+    if(s1_debug_hook(pc))return 1;
+    if(s1_audio_hook(pc))return 1;
     return s1_video_hook(pc);
 }
 
@@ -85,21 +91,36 @@ static void s1_call_resume(uint32_t resume_pc)
 
 static size_t s1_state_size(void)
 {
-    return s1_video_state_size()+audio_event_state_size();
+    return S1_SOUND_STATE_BYTES+s1_video_state_size()+audio_event_state_size();
 }
 static int s1_state_save(void *data,size_t size)
 {
     size_t video=s1_video_state_size();
-    return data && size==s1_state_size() && s1_video_state_save(data,video) &&
-        audio_event_state_save((uint8_t*)data+video,size-video);
+    if(!data || size!=s1_state_size())return 0;
+    s1_sound_state_save(data);
+    return s1_video_state_save((uint8_t*)data+S1_SOUND_STATE_BYTES,video) &&
+        audio_event_state_save((uint8_t*)data+S1_SOUND_STATE_BYTES+video,size-S1_SOUND_STATE_BYTES-video);
 }
 static int s1_state_load(const void *data,size_t size,int apply)
 {
     size_t video=s1_video_state_size();
-    if(!data || size!=s1_state_size() || !s1_video_state_load(data,video,0) ||
-       !audio_event_state_load((const uint8_t*)data+video,size-video,0))return 0;
-    return !apply || (s1_video_state_load(data,video,1) &&
-        audio_event_state_load((const uint8_t*)data+video,size-video,1));
+    if(!data || size!=s1_state_size() || !s1_sound_state_valid(data))return 0;
+    const uint8_t *v=(const uint8_t*)data+S1_SOUND_STATE_BYTES,*a=v+video;
+    size_t audio=size-S1_SOUND_STATE_BYTES-video;
+    if(!s1_video_state_load(v,video,0) || !audio_event_state_load(a,audio,0))return 0;
+    return !apply || (s1_video_state_load(v,video,1) && audio_event_state_load(a,audio,1));
+}
+static size_t s1_rb_save(void *dst,size_t cap)
+{
+    size_t video=s1_video_rb_save(NULL,0),total=video+S1_SOUND_STATE_BYTES;
+    if(!dst)return total;if(cap<total)return 0;
+    s1_sound_state_save(dst);
+    return s1_video_rb_save((uint8_t*)dst+S1_SOUND_STATE_BYTES,cap-S1_SOUND_STATE_BYTES)==video?total:0;
+}
+static int s1_rb_load(const void *src,size_t len)
+{
+    return src && len>=S1_SOUND_STATE_BYTES && s1_sound_state_valid(src) &&
+        s1_video_rb_load((const uint8_t*)src+S1_SOUND_STATE_BYTES,len-S1_SOUND_STATE_BYTES);
 }
 static int s1_state_at_boundary(void)
 {
@@ -165,8 +186,12 @@ const GameSpec g_game_spec = {
     .video                  = &sonic1_video,
     .video_default          = "fit",
     .logical_players        = 1,
-    .rb_state_save           = s1_video_rb_save,
-    .rb_state_load           = s1_video_rb_load,
+    .rb_state_save           = s1_rb_save,
+    .rb_state_load           = s1_rb_load,
+    .mods                   = s1_sound_mods,
+    .load_settings          = s1_sound_load_settings,
+    .netplay_allowed        = s1_sound_netplay_allowed,
+    .netplay_config_image   = s1_sound_config_image,
     .state_build_id          = SONIC1_STATE_BUILD_ID,
     .state_size              = s1_state_size,
     .state_save              = s1_state_save,
@@ -197,7 +222,7 @@ const GameSpec g_game_spec = {
 
     .handle_arg             = NULL,
     .arg_usage              = NULL,
-    .dispatch_override      = NULL,
+    .dispatch_override      = s1_sound_dispatch_miss,
     .instruction_hook       = s1_instruction_hook,
 
     .fill_frame_record      = s1_fill_frame_record,

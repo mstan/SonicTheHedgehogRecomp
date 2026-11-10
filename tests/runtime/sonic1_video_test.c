@@ -13,6 +13,9 @@ M68KState g_cpu;
 void m68k_write8(uint32_t a,uint8_t v) { g_ram[a&65535]=v; }
 void m68k_write16(uint32_t a,uint16_t v) { m68k_write8(a,v>>8);m68k_write8(a+1,v); }
 void m68k_write32(uint32_t a,uint32_t v) { m68k_write16(a,v>>16);m68k_write16(a+2,v); }
+/* This renderer/stock-audio fixture does not activate replacement sound. */
+int s1_sound_hook(uint32_t pc) { (void)pc;return 0; }
+int s1_sound_active(void) { return 0; }
 /* Host-side writes from the video adapter (glue_poke*, genesis_host_mem.h). */
 void glue_poke8(uint32_t a,uint8_t v){m68k_write8(a,v);}
 void glue_poke16(uint32_t a,uint16_t v){m68k_write16(a,v);}
@@ -298,6 +301,19 @@ int main(int argc,char **argv)
     CHECK(s1_video_hook(0xD87E));CHECK(g_cpu.D[0]==1);
     g_cpu.D[0]=(uint16_t)(1200-((500-128)&0xFF80));
     CHECK(!s1_video_hook(0x9C36));CHECK((g_cpu.D[0]&65535)==320);
+
+    /* Composed audio/debug hooks are not object-cull instructions. Merely
+     * adding another mod's site must not rebase its D0 or touch guest state. */
+    static const uint32_t unrelated_sites[]={0x1352,0x1396,0x139C,0x13A2,
+        0x13C4,0x1404,0x1418,0x2EF2,0x3562,0x71B4C,0x72B24,
+        0x16668,0x166C8,0xDECAFE};
+    for(unsigned n=0;n<sizeof unrelated_sites/sizeof *unrelated_sites;++n) {
+        g_cpu.D[0]=0x123400A0;g_cpu.SR=0x271F;
+        M68KState cpu_before=g_cpu;memcpy(ram_before,g_ram,sizeof g_ram);
+        CHECK(!s1_video_hook(unrelated_sites[n]));
+        CHECK(!memcmp(&g_cpu,&cpu_before,sizeof g_cpu));
+        CHECK(!memcmp(g_ram,ram_before,sizeof g_ram));
+    }
 
     /* Full-layout loader: rings live on the host, distant real objects still
      * instantiate. Ring state uses the original group's collected-bit byte. */
@@ -1223,6 +1239,19 @@ int main(int argc,char **argv)
     }
     sonic1_video.scanline(&v,28,native,320,out,796);CHECK(out[697]==0xFFFF0000u);
     sonic1_video.scanline(&v,12,native,320,out,796);CHECK(out[697]==0xFF000000u);
+    /* SBZ1 selects SBZ2 before fading. The outgoing continuation must not
+     * snap back to the stopped native player under the next act's rules. */
+    if(runoff_zones[runoff_zone]==0x500) {
+        g_ram[0xD5C0]=0x3A;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        g_ram[0xF600]=0x8C;word(g_ram,0xFE10,0x501);
+        memcpy(ram_before,g_ram,sizeof g_ram);
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);
+        sonic1_video.scanline(&v,28,native,320,out,796);CHECK(out[697]==0xFFFF0000u);
+        sonic1_video.scanline(&v,12,native,320,out,796);CHECK(out[598]==0xFF000000u);
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    }
     }
     /* Early wide-view capsule/ring pixels come from complete ROM art even
      * while those VRAM tiles contain another asset. Capsule ink also stays
@@ -1238,17 +1267,25 @@ int main(int argc,char **argv)
     v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
     v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-800);
     v.cram[17]=0xE0;v.cram[19]=0xE00;
-    const unsigned early_ids[]={0x3E,0x4B},early_gfx[]={0x249D,0x2400};
+    const unsigned immutable_art[]={0x39AB8,0x3ABEE};
     for(unsigned n=0;n<2;++n) {
+        word(g_rom,immutable_art[n],1);g_rom[immutable_art[n]+2]=(uint8_t)(0x83+n*2);
+        g_rom[immutable_art[n]+3]=0x71;g_rom[immutable_art[n]+4]=0;
+        g_rom[immutable_art[n]+5]=255;memset(g_rom+immutable_art[n]+6,0,8);
+    }
+    v.cram[3]=0xE00;v.cram[5]=0xE0;
+    const unsigned early_ids[]={0x3E,0x4B,0x27,0x3F,0x7D},early_gfx[]={0x249D,0x2400,0x5A0,0x5A0,0x4B6};
+    for(unsigned n=0;n<5;++n) {
         unsigned o=0xD800+n*64;g_ram[o]=(uint8_t)early_ids[n];g_ram[o+1]=4;
         m68k_write32(o+4,0x1000);word(g_ram,o+2,early_gfx[n]);
         word(g_ram,o+8,600+n*20);word(g_ram,o+12,8);
         word(g_ram,0xAC02+n*2,o);
     }
-    word(g_ram,0xAC00,4);memcpy(ram_before,g_ram,sizeof g_ram);before=v;
+    word(g_ram,0xAC00,10);memcpy(ram_before,g_ram,sizeof g_ram);before=v;
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
     CHECK(out[38]==0xFF00FF00u && out[58]==0xFF0000FFu);
+    CHECK(out[78]==0xFF0000FFu && out[98]==0xFF0000FFu && out[118]==0xFF00FF00u);
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
     CHECK(!memcmp(before.cram,v.cram,sizeof v.cram));
     v.cram[17]=0xEEE;
@@ -1519,6 +1556,13 @@ int main(int argc,char **argv)
         sonic1_video.scanline(&v,108,native,320,out,796);
         CHECK(out[598]==0xFF00FF00u && out[650]==0xFF000000u);
     }
+    /* Unlock precedes the next native idle animation update. Keep an
+     * unmoving walking-animation frame in the same standing pose. */
+    g_ram[0xF7CC]=0;g_ram[0xF742]=2;word(g_ram,0xF72A,0x2200);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,108,native,320,out,796);
+    CHECK(out[598]==0xFF00FF00u);
     g_ram[0xF7CC]=0;g_ram[0xD5C0]=0;word(g_ram,0xD008,0x1F46);
     word(g_ram,0xD010,0xFD00);word(g_ram,0xFE04,91);
     memcpy(ram_before,g_ram,sizeof g_ram);s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
@@ -1939,5 +1983,51 @@ int main(int argc,char **argv)
     sonic1_video.scanline(&v,16,native,320,out,796);
     CHECK(out[398]==0xFFFF0000u && out[16]==0xFF000000u);
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    /* An outgoing level can publish Sonic's last pose without a following
+     * Sonic DPLC DMA. In the left margin, those mappings must use that pose's
+     * ROM patterns instead of the preceding pose still in guest VRAM. */
+    CHECK(sonic1_video.configure("32:9"));
+    for(unsigned phase=0;phase<4;++phase) {
+        memset(g_ram,0,sizeof g_ram);memset(&v,0,sizeof v);s1_video_hook(0xD8DA);
+        g_ram[0xF600]=phase==0?12:phase==2?0:4;
+        g_ram[0xD000]=1;g_ram[0xD001]=132;g_ram[0xD01A]=87;
+        word(g_ram,0xFE10,0x501);word(g_ram,0xD002,0x780);
+        for(unsigned col=0;col<40;++col)g_ram[0xA400+col]=1;
+        word(g_ram,0xF700,0x1E40);word(g_ram,0xFF10,0x1E40);
+        word(g_ram,0xF728,0x1D40);word(g_ram,0xF72A,0x1E40);
+        word(g_ram,0xD008,0x1D5B);word(g_ram,0xD00C,108);
+        unsigned map=phase==3?0x2000:0x211E2;
+        m68k_write32(0xD004,map);word(g_rom,map+87*2,0x200);
+        g_rom[map+0x200]=1;memset(g_rom+map+0x201,0,5);
+        word(g_rom,0x217FE+87*2,0x100);g_rom[0x218FE]=1;word(g_rom,0x218FF,160);
+        memset(g_rom+0x21AFE+160*32,0x22,32);
+        word(g_ram,0xAC00,2);word(g_ram,0xAC02,0xD000);
+        v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
+        v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-0x1E40);
+        v.cram[1]=0xE00;v.cram[2]=0xE0;memset(v.vram+0x780*32,0x11,32);
+        memcpy(ram_before,g_ram,sizeof g_ram);before=v;M68KState saved_cpu=g_cpu;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);
+        sonic1_video.scanline(&v,108,native,320,out,796);
+        CHECK(out[9]==(phase==1 || phase==2?0xFF00FF00u:0xFF0000FFu));
+        if(phase==1) {
+            uint32_t *smooth=malloc(796*224*sizeof *smooth);CHECK(smooth);
+            sonic1_video.presentation_configure(1);
+            for(unsigned tick=1;tick<=2;++tick) {
+                word(g_ram,0xFE04,tick);
+                for(int y=0;y<224;++y) {
+                    sonic1_video.scanline(&v,y,native,320,out,796);
+                    sonic1_video.presentation_capture(&v,y,out,796,320,NULL);
+                }
+            }
+            CHECK(sonic1_video.interpolate(0.5,smooth,796,224));
+            CHECK(smooth[108*796+9]==0xFF00FF00u);
+            free(smooth);sonic1_video.presentation_configure(0);
+            word(g_ram,0xFE04,0);
+        }
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+        CHECK(!memcmp(before.vram,v.vram,sizeof v.vram));
+        CHECK(!memcmp(&saved_cpu,&g_cpu,sizeof g_cpu));
+    }
     return 0;
 }

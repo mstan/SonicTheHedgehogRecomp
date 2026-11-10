@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
-project(SonicTheHedgehogRecomp VERSION 1.0.9 LANGUAGES C)
+project(SonicTheHedgehogRecomp VERSION 1.1.0 LANGUAGES C)
+set(GENESIS_GAME_VERSION "${PROJECT_VERSION}")
 
 set(CMAKE_C_STANDARD 11)
 
@@ -96,6 +97,7 @@ endforeach()
 # ---------------------------------------------------------------------------
 enable_language(CXX)
 set(CMAKE_CXX_STANDARD 17)
+include("${CMAKE_SOURCE_DIR}/cmake/Sonic1CloneDriver.cmake")
 
 # Disk states contain host-owned scene data and are specific to this producer.
 file(GLOB_RECURSE _s1_state_inputs CONFIGURE_DEPENDS
@@ -112,6 +114,10 @@ foreach(_source IN LISTS _s1_state_inputs)
     file(SHA256 "${_source}" _s1_state_hash)
     string(APPEND _s1_state_fingerprint ";${_s1_state_hash}")
 endforeach()
+if(SONIC_CLONE_DRIVER_PROBE_DIR)
+    file(SHA256 "${SONIC_CLONE_DRIVER_PROBE_DIR}/clone-driver.bin" _s1_clone_hash)
+    string(APPEND _s1_state_fingerprint ";clone=${_s1_clone_hash}")
+endif()
 string(SHA256 _s1_state_id "${_s1_state_fingerprint}")
 set_property(SOURCE game/sonic1_spec.c APPEND PROPERTY COMPILE_DEFINITIONS
     "SONIC1_STATE_BUILD_ID=\"${_s1_state_id}\"")
@@ -157,7 +163,7 @@ if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND
 endif()
 include("${RECOMP_ROOT}/cmake/GenesisRecompGenerated.cmake")
 genesisrecomp_add_generated_sources(
-    SONIC_GENERATED_SOURCES sonic "${CMAKE_SOURCE_DIR}/game" sonic.bin
+    SONIC_GENERATED_SOURCES sonic "${SONIC_GENERATION_GAME}" sonic.bin
     REVERSE_DEBUG "${SONIC_REVERSE_DEBUG}")
 
 set(SONIC_SHARED_SOURCES
@@ -186,11 +192,18 @@ set(SONIC_SHARED_SOURCES
     ${SONIC_GENERATED_SOURCES}
     "${CMAKE_SOURCE_DIR}/game/sonic1_spec.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_audio.c"
+    "${CMAKE_SOURCE_DIR}/game/sonic1_debug.c"
+    "${CMAKE_SOURCE_DIR}/game/sonic1_sound_driver.c"
+    "${CMAKE_SOURCE_DIR}/game/sonic1_sound_assets.c"
+    "${CMAKE_SOURCE_DIR}/game/sonic1_sound_mods.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_video.c"
     "${RECOMP_ROOT}/sonicthehedgehog/sonic_extras.c"
     ${NATIVE_FLOOR_SOURCES}         # m68k_interp + decoder (engine-master glue.c needs it)
 )
 
+if(SONIC_CLONE_DRIVER_PROBE_DIR)
+    list(APPEND SONIC_SHARED_SOURCES "${CMAKE_SOURCE_DIR}/recomp-ui/src/common/sha256.c")
+endif()
 if(SONIC_REVERSE_DEBUG)
     list(APPEND SONIC_SHARED_SOURCES "${RUNNER_ROOT}/reverse_debug.c")
     message(STATUS "SONIC_REVERSE_DEBUG=ON â€” regen with GenesisRecomp --reverse-debug")
@@ -205,6 +218,7 @@ set(SONIC_INCLUDES_NATIVE
     "${RUNNER_ROOT}/external/superzazu"
     "${RUNNER_ROOT}/external/clowncommon"
     "${RUNNER_ROOT}/video"
+    "${CMAKE_SOURCE_DIR}/recomp-ui/src/common"
     "${RECOMP_ROOT}/recompiler/src"    # m68k_decoder.h / rom_parser.h (Tier-3 floor + cosim)
     "${RECOMP_ROOT}/sonicthehedgehog"
 )
@@ -217,6 +231,12 @@ endif()
 function(_sonic_finalize_target tgt includes)
     target_include_directories(${tgt} PRIVATE ${${includes}})
     target_link_libraries(${tgt} PRIVATE ${SONIC_SHARED_LIBS})
+    if(SONIC_CLONE_DRIVER_PROBE_DIR)
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/docs/CLONE_DRIVER_NOTICES.txt"
+                "$<TARGET_FILE_DIR:${tgt}>/CLONE_DRIVER_NOTICES.txt")
+    endif()
     if(MSVC)
         target_compile_options(${tgt} PRIVATE /W3 /WX- /utf-8 /wd4102 /wd4996)
         target_link_options(${tgt} PRIVATE /MAP)
@@ -251,11 +271,33 @@ target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
     ENABLE_RECOMPILED_CODE=1
     OWN_BACKEND=1                   # the own backend IS the Sonic 1 runtime (no clownmdemu link)
     DEFAULT_DEBUG_PORT=4378
-    GENESIS_GAME_VERSION="${PROJECT_VERSION}"
+    GENESIS_GAME_VERSION="${GENESIS_GAME_VERSION}"
     $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
     $<$<BOOL:${GEN_DEV_TRACE}>:GEN_DEV_TRACE>
 )
 _sonic_finalize_target(SonicTheHedgehogRecomp SONIC_INCLUDES_NATIVE)
+
+option(SONIC1_SOUND_DRIVER_TESTS "Build sound adapter and ROM conversion contract checks" OFF)
+if(SONIC1_SOUND_DRIVER_TESTS)
+    add_executable(sonic1_sound_assets_test tests/sound_assets_test.c game/sonic1_sound_assets.c recomp-ui/src/common/sha256.c)
+    target_include_directories(sonic1_sound_assets_test PRIVATE "${CMAKE_SOURCE_DIR}/game" "${CMAKE_SOURCE_DIR}/recomp-ui/src/common")
+    if(NOT SONIC_CLONE_DRIVER_PROBE_DIR)
+        message(FATAL_ERROR "Sound contract checks require SONIC_CLONE_DRIVER_PROBE_DIR")
+    endif()
+    foreach(_sound_test sonic1_sound_driver_test sonic1_sound_driver_plain_test)
+        add_executable(${_sound_test} tests/sound_driver_test.c
+            game/sonic1_sound_driver.c game/sonic1_sound_mods.c game/sonic1_sound_assets.c game/sonic1_debug.c
+            "${RUNNER_ROOT}/host_atomic_file.c" recomp-ui/src/common/sha256.c)
+        target_include_directories(${_sound_test} PRIVATE game ${SONIC_INCLUDES_NATIVE} recomp-ui/src)
+        target_compile_definitions(${_sound_test} PRIVATE RECOMP_LAUNCHER=1 SDL_MAIN_HANDLED=1)
+        target_link_libraries(${_sound_test} PRIVATE SDL2::SDL2)
+    endforeach()
+    if(MSVC)
+        target_compile_options(sonic1_sound_driver_plain_test PRIVATE /USONIC1_CLONE_DRIVER)
+    else()
+        target_compile_options(sonic1_sound_driver_plain_test PRIVATE -USONIC1_CLONE_DRIVER)
+    endif()
+endif()
 
 # Shared recomp-ui (Dear ImGui) pre-boot launcher â€” native (shipped) target
 # only. Adds the launcher sources + vendored ImGui (all permissive), defines
