@@ -1,5 +1,6 @@
 # Sonic 1 JUE REV00: first SBZ2 teleporter, debug-flight capture regression.
-# Run with --input-script and a fresh profile. Positioning is test setup;
+# Enable Debug transporter escape, restart, then run with --input-script.
+# Positioning is test setup;
 # the original teleporter object, debug exit and right input run normally.
 WAIT 600
 PRESS UP 2

@@ -1740,9 +1740,18 @@ int s1_video_hook(uint32_t pc)
         /* Staircase lowering resets on the original unload path. A larger
          * lifetime window can prevent that reset even after it leaves view. */
         return 0;
-    default:
+    case 0x78F2:case 0x7C14:case 0x7DBE:case 0x80EE:case 0x8822:case 0x88D0:
+    case 0x9C36:case 0x9E82:case 0x9F2C:case 0xA29A:case 0xB0DC:case 0xB3C2:
+    case 0xB82A:case 0xBABC:case 0xBE12:case 0xBFDC:case 0xBFFC:case 0xCF3C:
+    case 0xD0B4:case 0xD104:case 0xDAE6:case 0xE246:case 0xE3EE:case 0xE5B0:
+    case 0xE866:case 0xE976:case 0xEAD0:case 0xEB5A:case 0xEFAE:case 0xF178:
+    case 0xF6C2:case 0xFEDA:case 0xFFC4:case 0x103CA:case 0x10926:case 0x10A0C:
+    case 0x10AF6:case 0x10D3E:case 0x10D7E:case 0x1149C:case 0x11606:case 0x11E16:
+    case 0x120A2:case 0x12360:case 0x12936:case 0x15674:case 0x156E2:case 0x159F6:
+    case 0x15D58:case 0x1628E:case 0x165CC:case 0x1668C:case 0x16A9C:case 0x17204:
+    case 0x17236:case 0x1AB46:
         if(gameplay()) {
-            /* All remaining configured sites are out_of_range's CMP. D0
+            /* Only these audited sites are out_of_range's CMP. D0
              * holds a 128px-rounded offset from the original camera window.
              * Rebase it to our view; the following native CMP/BHI still owns
              * flags and the object's actual deletion/remember-state path. */
@@ -1751,6 +1760,9 @@ int s1_video_hook(uint32_t pc)
             unsigned outside=x<lo || x>=hi;
             g_cpu.D[0]=(g_cpu.D[0]&0xFFFF0000u)|(outside?641u:320u);
         }
+        return 0;
+    default:
+        /* Other adapters own their audio/debug sites and CPU operands. */
         return 0;
     }
 }

@@ -10,6 +10,10 @@ The shared engine supplies the generic Z80/audio execution and the FM latch
 correction described below. The launcher uses recomp-ui's existing mod
 interface. Sonic 2 and Sonic 3 are outside this prototype's scope.
 
+Each adapter owns its instruction sites. Widescreen culling explicitly lists
+its object-range sites and leaves audio/debug operands unchanged, even when
+the corresponding optional feature is disabled.
+
 ## Enable the mod
 
 Select your Sonic 1 JUE REV00 ROM, enable **Mods → Audio → Clone Driver + Mega

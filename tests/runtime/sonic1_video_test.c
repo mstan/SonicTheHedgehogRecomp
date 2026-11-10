@@ -302,6 +302,19 @@ int main(int argc,char **argv)
     g_cpu.D[0]=(uint16_t)(1200-((500-128)&0xFF80));
     CHECK(!s1_video_hook(0x9C36));CHECK((g_cpu.D[0]&65535)==320);
 
+    /* Composed audio/debug hooks are not object-cull instructions. Merely
+     * adding another mod's site must not rebase its D0 or touch guest state. */
+    static const uint32_t unrelated_sites[]={0x1352,0x1396,0x139C,0x13A2,
+        0x13C4,0x1404,0x1418,0x2EF2,0x3562,0x71B4C,0x72B24,
+        0x16668,0x166C8,0xDECAFE};
+    for(unsigned n=0;n<sizeof unrelated_sites/sizeof *unrelated_sites;++n) {
+        g_cpu.D[0]=0x123400A0;g_cpu.SR=0x271F;
+        M68KState cpu_before=g_cpu;memcpy(ram_before,g_ram,sizeof g_ram);
+        CHECK(!s1_video_hook(unrelated_sites[n]));
+        CHECK(!memcmp(&g_cpu,&cpu_before,sizeof g_cpu));
+        CHECK(!memcmp(g_ram,ram_before,sizeof g_ram));
+    }
+
     /* Full-layout loader: rings live on the host, distant real objects still
      * instantiate. Ring state uses the original group's collected-bit byte. */
     memset(g_ram+0xD800,0,0x1800);memset(g_ram+0xFC00,0,0xC0);

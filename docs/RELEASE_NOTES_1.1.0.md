@@ -30,6 +30,8 @@ widescreen effects and act transitions.
 - Widescreen explosion and hidden-score effects use their complete ROM artwork,
   avoiding borrowed title-card or partially loaded VRAM patterns. Native rendering,
   graphics loading and object simulation retain their original behavior.
+- Widescreen culling handles only its audited object sites. Audio and debug
+  hooks retain their own CPU operands, including with the original driver selected.
 - A stationary Sonic stays in his standing pose during the SBZ2 control handoff.
   Movement, inertia, animation changes and returning input still use the real
   player. The trap sequence retains its original timing.
