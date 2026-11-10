@@ -1226,6 +1226,19 @@ int main(int argc,char **argv)
     }
     sonic1_video.scanline(&v,28,native,320,out,796);CHECK(out[697]==0xFFFF0000u);
     sonic1_video.scanline(&v,12,native,320,out,796);CHECK(out[697]==0xFF000000u);
+    /* SBZ1 selects SBZ2 before fading. The outgoing continuation must not
+     * snap back to the stopped native player under the next act's rules. */
+    if(runoff_zones[runoff_zone]==0x500) {
+        g_ram[0xD5C0]=0x3A;
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        g_ram[0xF600]=0x8C;word(g_ram,0xFE10,0x501);
+        memcpy(ram_before,g_ram,sizeof g_ram);
+        s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+        sonic1_video.scanline(&v,0,native,320,out,796);
+        sonic1_video.scanline(&v,28,native,320,out,796);CHECK(out[697]==0xFFFF0000u);
+        sonic1_video.scanline(&v,12,native,320,out,796);CHECK(out[598]==0xFF000000u);
+        CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
+    }
     }
     /* Early wide-view capsule/ring pixels come from complete ROM art even
      * while those VRAM tiles contain another asset. Capsule ink also stays

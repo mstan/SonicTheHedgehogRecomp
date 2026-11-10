@@ -94,10 +94,12 @@ def main():
             row=module.ROW.match(line)
             label=module.LABEL.match(row[2]) if row else None
             if label:data_labels[label[1]]=int(row[1],16)
-        for name in ("MusicIndex","SoundIndex","SpecSoundIndex","PSG_Index"):
+        for name,macro in {"MusicIndex":"MUSICINDEX","SoundIndex":"SOUNDINDEX",
+                           "SpecSoundIndex":"SPECSOUNDINDEX","PSG_Index":"PSG_INDEX",
+                           "StopAllSound":"STOP_ALL","Clone_PCMIdle":"PCM_IDLE"}.items():
             address=data_labels[name]
             if not len(rom)<=address<len(image):p.error("driver table outside software image")
-            header+=f"#define S1_CLONE_{name.upper()} 0x{address:X}u\n"
+            header+=f"#define S1_CLONE_{macro} 0x{address:X}u\n"
         program="/* Generated driver software only; no music, effects or sample data. */\n#include <stdint.h>\n"
         program+="static const uint8_t s1_clone_program[] = {\n"+"".join(
             "    "+",".join(f"0x{b:02X}" for b in payload[i:i+16])+",\n" for i in range(0,len(payload),16))+"};\n"

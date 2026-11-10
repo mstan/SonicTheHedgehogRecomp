@@ -593,6 +593,12 @@ kind = "game_hook"
 
 # Optional sound driver entry points and pause writes, audited against REV00.
 [[widescreen_site]]
+addr = 0x2EF2
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x3562
+kind = "game_hook"
+[[widescreen_site]]
 addr = 0x1352
 kind = "game_hook"
 [[widescreen_site]]

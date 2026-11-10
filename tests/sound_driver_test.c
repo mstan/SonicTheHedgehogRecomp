@@ -10,8 +10,13 @@
 #define CHECK(x) do { if(!(x)) { fprintf(stderr,"line %d: %s\n",__LINE__,#x);return 1; } } while(0)
 M68KState g_cpu;
 uint8_t g_ram[65536],g_rom[0x400000];
-static uint32_t called,argument,tail;
-void recomp_call_addr(uint32_t pc) { called=pc;argument=g_cpu.D[0]; }
+static uint32_t called,argument,tail,pcm_checks,vblanks,stop_base;
+void recomp_call_addr(uint32_t pc) {
+    called=pc;argument=g_cpu.D[0];
+    if(pc==0x29A8u) { vblanks++;g_cpu.D[0]=0xDEADBEEF; }
+    if(pc==S1_CLONE_PCM_IDLE)g_cpu.D[0]=++pcm_checks>=3;
+    if(pc==S1_CLONE_STOP_ALL) { stop_base=g_cpu.A[6];g_cpu.A[6]=0; }
+}
 void recomp_tail_call(uint32_t pc) { tail=pc; }
 void m68k_write8(uint32_t pc,uint8_t value) { g_ram[pc&65535]=value; }
 static int common_context;
@@ -68,6 +73,17 @@ int main(int argc,char **argv)
     CHECK(g_ram[0xF000+S1_CLONE_PAUSE_OFFSET]==1&&g_ram[0xF003]==0x5A);
     CHECK(s1_sound_hook(0x1404));CHECK(tail==0x140A);
     CHECK(g_ram[0xF000+S1_CLONE_PAUSE_OFFSET]==128&&g_ram[0xF003]==0x5A);
+    g_ram[0xF600]=4;g_cpu.A[6]=0x12345678;called=0;
+    CHECK(s1_sound_hook(0x1404));CHECK(tail==0x140A&&called==S1_CLONE_STOP_ALL);
+    CHECK(stop_base==0xFFF000&&g_cpu.A[6]==0x12345678);
+    CHECK(!g_ram[0xF000+S1_CLONE_PAUSE_OFFSET]);
+    g_cpu.D[0]=0x12340080;g_cpu.SR=0x271F;
+    CHECK(!s1_sound_hook(0x3562));CHECK(g_cpu.D[0]==0x12340000&&g_cpu.SR==0x271F);
+    g_cpu.D[0]=0x123400D0;
+    CHECK(!s1_sound_hook(0x3562));CHECK(g_cpu.D[0]==0x12340050);
+    M68KState saved=g_cpu;
+    CHECK(!s1_sound_hook(0x2EF2));CHECK(pcm_checks==3&&vblanks==3);
+    CHECK(g_ram[0xF62A]==0x14&&!memcmp(&g_cpu,&saved,sizeof saved));
     CHECK(s1_sound_hook(0x71B4C));CHECK(called==S1_CLONE_GUARDED_UPDATE);
     CHECK(s1_sound_select(0));CHECK(s1_sound_active()&&s1_sound_state_valid(clone));
     s1_sound_post_reset();CHECK(s1_sound_active()); /* rewind/re-entry cannot apply a pending UI edit */

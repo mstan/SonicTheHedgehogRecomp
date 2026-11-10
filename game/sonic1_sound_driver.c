@@ -104,6 +104,24 @@ int s1_sound_hook(uint32_t pc)
 {
 #ifdef SONIC1_CLONE_DRIVER
     if (!active) return 0;
+    if(pc==0x2EF2u) {
+        /* REV00 starts its thirty-frame logo hold here. Mega PCM plays
+         * asynchronously; let complete game ticks drain the actual sample
+         * before the original hold/Start handling resumes. */
+        M68KState saved=g_cpu;
+        do {
+            m68k_write8(0xFFF62Au,0x14);
+            recomp_call_addr(0x29A8u);
+            recomp_call_addr(S1_CLONE_PCM_IDLE);
+        } while(!(g_cpu.D[0]&1));
+        g_cpu=saved;return 0;
+    }
+    if(pc==0x3562u) {
+        /* Display Clone's zero-based IDs; the existing queue bridge keeps
+         * translating the unchanged stock selection and playback range. */
+        g_cpu.D[0]=(g_cpu.D[0]&0xFFFF0000u)|((g_cpu.D[0]-0x80u)&0xFFFFu);
+        return 0;
+    }
     if (pc==0x1352u) {
         M68KState saved=g_cpu;
         memset(g_ram+0xF000,0,0x400);
@@ -123,7 +141,13 @@ int s1_sound_hook(uint32_t pc)
     }
     if (pc==0x13C4u || pc==0x1404u || pc==0x1418u) {
         uint8_t value=pc==0x13C4u?1:0x80;
-        m68k_write8(0xFFF000u+S1_CLONE_PAUSE_OFFSET,value);
+        if(pc==0x1404u && g_ram[0xF600]==4) {
+            /* Debug pause+A is a scene exit, not an audible resume. Stop
+             * while still muted instead of restoring pans for one tick. */
+            M68KState saved=g_cpu;g_cpu.A[6]=0xFFF000u;
+            recomp_call_addr(S1_CLONE_STOP_ALL);g_cpu=saved;
+            m68k_write8(0xFFF000u+S1_CLONE_PAUSE_OFFSET,0);
+        } else m68k_write8(0xFFF000u+S1_CLONE_PAUSE_OFFSET,value);
         move_byte_flags(value);
         if(pc!=0x1418u)recomp_tail_call(pc==0x13C4u?0x13CAu:0x140Au);
         return 1;

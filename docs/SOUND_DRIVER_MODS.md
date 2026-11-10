@@ -80,8 +80,8 @@ ROMs and build products remain local and are not checked in. Developer-only
 for example when the assembler runs on another host. Full music/sample packs
 are rejected and have no runtime loading path.
 
-Current software program: 14,930 bytes; SHA-256
-`55318ed563dbcc70d0063208019813af697f8e74ec8710a9733b39291d0454a9`.
+Current software program: 14,984 bytes; SHA-256
+`b13bba8aeb037aebdba2ac679eefed576b0964a066eca92adaeb1301555eaa45`.
 It uses 923 bytes of the existing `$FFF000-$FFF3FF` sound RAM reservation.
 The build stages [driver and Mega PCM notices](CLONE_DRIVER_NOTICES.txt) beside
 the executable. These notices do not grant rights to game music or samples.
@@ -93,6 +93,18 @@ Hooks replace the stock sound initialization, three queue entry points and
 replacement layout while the rest of the original pause loop continues.
 The driver's own interrupt-mask and reentrancy macro wraps its update routine.
 Presentation frames do not drive sound ticks.
+
+The SEGA screen waits for Mega PCM's actual sample completion before starting
+the original logo hold. Debug pause+A stops the replacement driver while muted,
+so returning to the title does not briefly resume the previous music. Ordinary
+pause/resume and slow motion keep their original behavior. With Clone enabled,
+the sound-test display uses `$00-$4F`; the original driver's `$80-$CF` display,
+selection range and queued playback IDs remain unchanged when disabled.
+
+The shared 68000 generator also accounts for immediate ADDA/SUBA adjustments
+to SP when unwinding native calls. The 1-UP restoration discards three parser
+return frames this way; executing those discarded continuations would overwrite
+the restored DAC track with the old jingle pointer.
 
 The pinned shared engine preserves the guest FM address latch on Z80 data
 writes before merging the audio timestamps. Mega PCM retains register `$2A`
@@ -127,6 +139,13 @@ captures also remain byte-identical across the FM latch correction. A matching
 Clone Driver regression capture applies PCM writes to the intended DAC register;
 all register write counts match their issued destinations. Enabled boot and gameplay record
 no native dispatch misses or Tier-3 floor execution.
+
+An actual 100-ring pickup verifies the extra-life trigger and subsequent DAC
+restoration. The resumed track stays in its original song bank and continues
+playing percussion after the fade-in. Generated-C regression checks cover
+three-frame stack skips, signed word/long adjustments, split tails and mixed
+stack data. A full SBZ1-to-SBZ2 transition also verifies that selecting the next
+act cannot discard the outgoing scene's widescreen runoff position during its fade.
 
 Driver-level queue injections separately exercise Star Light, 1-UP restoration,
 speed-up/slow-down, fade, Green Hill and stop. The 1-UP finishes and restores

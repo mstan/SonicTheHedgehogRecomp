@@ -813,7 +813,7 @@ static void runoff_animate(uint8_t *p)
  * its displayed player must remain at the actual controllable position. */
 static int act_runoff_x(int *display_y)
 {
-    int x=ram16(0xD008),zone=ram16(0xFE10);
+    int x=ram16(0xD008),zone=s_capture_frame->zone;
     SceneTail *tail=&s_actor_tails[0];
     if(s_capture_readonly || !enabled() || s_requested_width<=320)return x;
     if(zone>=0x501 || video_ram[0xD000]!=1 || recorded_demo()) {
@@ -1498,7 +1498,7 @@ static void capture_objects(void)
             int continued=!s_capture_readonly && enabled() && s_requested_width>320 &&
                 o==0xD000 && s_actor_tails[0].seen && s_actor_tails[0].object[0]==1;
             int scrap_wait=!s_capture_readonly && enabled() && s_requested_width>320 &&
-                o==0xD000 && ram16(0xFE10)==0x501 && video_ram[0xF7CC] &&
+                o==0xD000 && s_capture_frame->zone==0x501 && video_ram[0xF7CC] &&
                 !ram16(o+0x10) && ram16(o+8)>=(int)ram16(0xF72A)+352;
             const uint8_t *pose=continued?s_actor_tails[0].object:video_ram+o;
             if(continued)flags=pose[1];

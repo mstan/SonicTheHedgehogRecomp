@@ -29,6 +29,20 @@ ProbeStart:
 Clone_GuardedUpdate:
     SMPS_UpdateSoundDriver
     rts
+; Return one only when the actual Z80 sample loop is idle. The original
+; SEGA screen expects its synchronous sample call to finish before timing
+; the following hold. Read the driver's protocol under its normal bus grant.
+Clone_PCMIdle:
+    disableIntsSave
+    MPCM_stopZ80
+    moveq #0,d0
+    move.b (MPCM_Z80_RAM+Z_MPCM_LoopId).l,d0
+    MPCM_startZ80
+    cmpi.b #Z_MPCM_LOOP_IDLE,d0
+    seq d0
+    andi.w #1,d0
+    enableIntsSave
+    rts
     include "sound/engine/Functions.asm"
     include "sound/engine/MegaPCM.asm"
 
