@@ -170,7 +170,7 @@ static uint8_t pattern_pixel(const GVDP *v, uint16_t attr, int x, int y)
  * guest VRAM, PLC order and simulation clocks remain untouched. Format and
  * XOR rows follow REV00 NemDec ($1440), not a second machine execution. */
 typedef struct { uint8_t pixels[8192];unsigned ready,size,base;uint32_t hash,display_hash; } SpriteArt;
-enum { STATIC_SPRITE_ART_COUNT=23, SONIC_POSE_ART=24, SPRITE_ART_COUNT=24 };
+enum { STATIC_SPRITE_ART_COUNT=25, SONIC_POSE_ART=26, SPRITE_ART_COUNT=26 };
 static SpriteArt s_sprite_art[STATIC_SPRITE_ART_COUNT];
 /* Sonic's dynamic patterns are assembled from immutable ROM tiles for each
  * displayed pose. Keep the guest's DPLC buffer and VRAM upload unchanged. */
@@ -244,9 +244,9 @@ static uint8_t sprite_pixel(const GVDP *v,unsigned asset,unsigned pose,uint16_t 
     if(asset==SONIC_POSE_ART)return sonic_pose_pixel(v,pose,attr,x,y);
     static const unsigned addresses[]={0x3A53E,0x3401A,0x32408,0x5E860,0x35102,0x5D7B0,0x6A324,0x5CC62,0x339DA,
         0x3B3DA,0x3B532,0x3B68E,0x3B80A,0x3B926,0x3BA5C,0x3BB96,0x3401A,0x5D4C6,
-        0x36DD4,0x3A360,0x3A462,0x37582,0x5E034};
+        0x36DD4,0x3A360,0x3A462,0x37582,0x5E034,0x39AB8,0x3ABEE};
     static const unsigned bases[]={0x680,0x50F,0x513,0x300,0x518,0x49D,0x400,0x400,0x3CC,
-        0x580,0x592,0x580,0x592,0x580,0x592,0x580,0x4A0,0x46C,0x486,0x523,0x533,0x4F0,0x400};
+        0x580,0x592,0x580,0x592,0x580,0x592,0x580,0x4A0,0x46C,0x486,0x523,0x533,0x4F0,0x400,0x5A0,0x4B6};
     SpriteArt *art=&s_sprite_art[asset-1];
     if(!art->ready) {
         art->base=bases[asset-1];
@@ -532,6 +532,7 @@ static void add_mapping(unsigned map, unsigned frame, unsigned gfx, unsigned fla
         s->asset=(uint8_t)(map==0xAC70?19:map==0xDD1A?((gfx&2047u)==0x533?21:20):
             owner==0x5C?9:map==0x17D0C?8:map==0x17DD4?18:
             owner==0x82 && map==0xBEA4?17:owner==0x82 && map==0x19A34 && frame<3?23:
+            owner==0x27 || owner==0x3F?24:owner==0x7D?25:
             owner==0x0D?1:owner==0x32?(video_ram[0xFE10]==2?3:2):owner==0x84?4:owner==0x83?5:owner==0x3E?6:owner==0x4B?7:animal);
     }
 }
@@ -1498,8 +1499,11 @@ static void capture_objects(void)
             int continued=!s_capture_readonly && enabled() && s_requested_width>320 &&
                 o==0xD000 && s_actor_tails[0].seen && s_actor_tails[0].object[0]==1;
             int scrap_wait=!s_capture_readonly && enabled() && s_requested_width>320 &&
-                o==0xD000 && s_capture_frame->zone==0x501 && video_ram[0xF7CC] &&
-                !ram16(o+0x10) && ram16(o+8)>=(int)ram16(0xF72A)+352;
+                o==0xD000 && s_capture_frame->zone==0x501 &&
+                !ram16(o+0x10) && !ram16(o+0x14) && !video_ram[o+0x1C] &&
+                !(video_ram[o+0x22]&2) &&
+                ((video_ram[0xF7CC] && ram16(o+8)>=(int)ram16(0xF72A)+352) ||
+                 video_ram[0xF742]==2 || video_ram[0xF742]==4);
             const uint8_t *pose=continued?s_actor_tails[0].object:video_ram+o;
             if(continued)flags=pose[1];
             unsigned displayed_frame=scrap_wait?1:pose[0x1A];

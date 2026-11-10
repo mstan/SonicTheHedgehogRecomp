@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(SonicTheHedgehogRecomp VERSION 1.1.0 LANGUAGES C)
-set(GENESIS_GAME_VERSION "${PROJECT_VERSION}-alpha.2")
+set(GENESIS_GAME_VERSION "${PROJECT_VERSION}")
 
 set(CMAKE_C_STANDARD 11)
 
@@ -286,7 +286,7 @@ if(SONIC1_SOUND_DRIVER_TESTS)
     endif()
     foreach(_sound_test sonic1_sound_driver_test sonic1_sound_driver_plain_test)
         add_executable(${_sound_test} tests/sound_driver_test.c
-            game/sonic1_sound_driver.c game/sonic1_sound_mods.c game/sonic1_sound_assets.c
+            game/sonic1_sound_driver.c game/sonic1_sound_mods.c game/sonic1_sound_assets.c game/sonic1_debug.c
             "${RUNNER_ROOT}/host_atomic_file.c" recomp-ui/src/common/sha256.c)
         target_include_directories(${_sound_test} PRIVATE game ${SONIC_INCLUDES_NATIVE} recomp-ui/src)
         target_compile_definitions(${_sound_test} PRIVATE RECOMP_LAUNCHER=1 SDL_MAIN_HANDLED=1)

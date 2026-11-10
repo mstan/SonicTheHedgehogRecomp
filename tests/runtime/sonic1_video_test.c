@@ -1254,17 +1254,25 @@ int main(int argc,char **argv)
     v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
     v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-800);
     v.cram[17]=0xE0;v.cram[19]=0xE00;
-    const unsigned early_ids[]={0x3E,0x4B},early_gfx[]={0x249D,0x2400};
+    const unsigned immutable_art[]={0x39AB8,0x3ABEE};
     for(unsigned n=0;n<2;++n) {
+        word(g_rom,immutable_art[n],1);g_rom[immutable_art[n]+2]=(uint8_t)(0x83+n*2);
+        g_rom[immutable_art[n]+3]=0x71;g_rom[immutable_art[n]+4]=0;
+        g_rom[immutable_art[n]+5]=255;memset(g_rom+immutable_art[n]+6,0,8);
+    }
+    v.cram[3]=0xE00;v.cram[5]=0xE0;
+    const unsigned early_ids[]={0x3E,0x4B,0x27,0x3F,0x7D},early_gfx[]={0x249D,0x2400,0x5A0,0x5A0,0x4B6};
+    for(unsigned n=0;n<5;++n) {
         unsigned o=0xD800+n*64;g_ram[o]=(uint8_t)early_ids[n];g_ram[o+1]=4;
         m68k_write32(o+4,0x1000);word(g_ram,o+2,early_gfx[n]);
         word(g_ram,o+8,600+n*20);word(g_ram,o+12,8);
         word(g_ram,0xAC02+n*2,o);
     }
-    word(g_ram,0xAC00,4);memcpy(ram_before,g_ram,sizeof g_ram);before=v;
+    word(g_ram,0xAC00,10);memcpy(ram_before,g_ram,sizeof g_ram);before=v;
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
     sonic1_video.scanline(&v,0,native,320,out,796);sonic1_video.scanline(&v,8,native,320,out,796);
     CHECK(out[38]==0xFF00FF00u && out[58]==0xFF0000FFu);
+    CHECK(out[78]==0xFF0000FFu && out[98]==0xFF0000FFu && out[118]==0xFF00FF00u);
     CHECK(!memcmp(ram_before,g_ram,sizeof g_ram));
     CHECK(!memcmp(before.cram,v.cram,sizeof v.cram));
     v.cram[17]=0xEEE;
@@ -1535,6 +1543,13 @@ int main(int argc,char **argv)
         sonic1_video.scanline(&v,108,native,320,out,796);
         CHECK(out[598]==0xFF00FF00u && out[650]==0xFF000000u);
     }
+    /* Unlock precedes the next native idle animation update. Keep an
+     * unmoving walking-animation frame in the same standing pose. */
+    g_ram[0xF7CC]=0;g_ram[0xF742]=2;word(g_ram,0xF72A,0x2200);
+    s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    sonic1_video.scanline(&v,0,native,320,out,796);
+    sonic1_video.scanline(&v,108,native,320,out,796);
+    CHECK(out[598]==0xFF00FF00u);
     g_ram[0xF7CC]=0;g_ram[0xD5C0]=0;word(g_ram,0xD008,0x1F46);
     word(g_ram,0xD010,0xFD00);word(g_ram,0xFE04,91);
     memcpy(ram_before,g_ram,sizeof g_ram);s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);

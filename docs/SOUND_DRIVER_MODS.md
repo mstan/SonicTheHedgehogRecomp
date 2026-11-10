@@ -35,6 +35,19 @@ its deterministic compatibility is qualified. The new **68000** driver and
 Mega PCM library code run through the native dispatch table; the uploaded
 **Z80** program uses the existing interpreter.
 
+The stable application release keeps this alternate driver opt-in. Its pinned
+software is the Sonic 1 integration's Clone Driver 2.8.0.1; later Clone Driver
+versions and their sound/fade changes are separate integrations.
+
+## Original game quirks
+
+**Mods > Gameplay > Base game bug fixes > Debug transporter escape** is a
+separate optional enhancement. It prevents debug-flight capture and releases an
+active transporter before flying away. It is disabled by default, preserving
+the original debug transporter behavior. Normal transporter rides are unchanged.
+Restart after changing the choice. It is stored in `sonic1-bug-fixes.ini` and
+included in the running configuration and state identity.
+
 The ROM converter follows the linked Sonic 1 port's music and SFX conversion.
 For example, its Star Light arrangement uses DAC percussion. Enabling it may
 change the sound as well as the driver implementation. It preserves the stock

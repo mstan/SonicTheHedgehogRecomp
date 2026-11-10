@@ -1,4 +1,5 @@
 #include "sonic1_sound_driver.h"
+#include "sonic1_debug.h"
 #if RECOMP_LAUNCHER
 #include "recomp_launcher.h"
 #include <stdio.h>
@@ -8,6 +9,7 @@ static const char *package_id="sonic1.audio.clone-driver", *feature_id="sound-dr
 static char mod_error[256];
 #define COPY(dst,src) snprintf(dst,sizeof(dst),"%s",src)
 static int ours(const char *p) { return p && !strcmp(p,package_id); }
+static int bugfix(const char *p) { return p && !strcmp(p,"sonic1.bug-fixes"); }
 static int feature(const char *p,const char *f) { return ours(p) && f && !strcmp(f,feature_id); }
 static const char *status(void)
 {
@@ -16,13 +18,20 @@ static const char *status(void)
     if(s1_sound_active())return "Clone Driver active; local play";
     return "Ready; sound assets are prepared automatically from your Sonic 1 ROM";
 }
-static int packages(void *ctx) { (void)ctx;return 1+(base&&base->package_count?base->package_count(base->ctx):0); }
-static int features(void *ctx) { (void)ctx;return 1+(base&&base->feature_count?base->feature_count(base->ctx):0); }
+static int packages(void *ctx) { (void)ctx;return 2+(base&&base->package_count?base->package_count(base->ctx):0); }
+static int features(void *ctx) { (void)ctx;return 2+(base&&base->feature_count?base->feature_count(base->ctx):0); }
 static int package_get(void *ctx,int n,RecompLauncherCModPackage *out)
 {
     (void)ctx;
-    if(n>0)return base&&base->package_get&&base->package_get(base->ctx,n-1,out);
+    if(n>1)return base&&base->package_get&&base->package_get(base->ctx,n-2,out);
     if(n<0 || !out)return 0;
+    if(n==1) {
+        memset(out,0,sizeof *out);COPY(out->id,"sonic1.bug-fixes");COPY(out->name,"Base game bug fixes");
+        COPY(out->version,"1.0.0");COPY(out->author,"Sonic 1 recompile contributors");
+        COPY(out->description,"Optional changes to original game quirks. Debug transporter escape prevents flight-mode capture and a stuck control lock. Disabled by default to preserve original behavior. Restart after changing.");
+        COPY(out->status,s1_debug_selected()!=s1_debug_active()?"Restart to apply":"Ready");
+        out->enabled=s1_debug_selected();return 1;
+    }
     memset(out,0,sizeof *out);COPY(out->id,package_id);COPY(out->name,"Clone Driver + Mega PCM");
     COPY(out->version,"0.2.0");COPY(out->author,"Clownacy; Vladikcomper; TheBlad768; host adapter contributors");
     COPY(out->description,"Alternate Sonic 1 sound driver. Uses music and samples from your Sonic 1 JUE REV00 ROM automatically. Disabled by default. Restart after changing drivers. Local play only.");
@@ -32,12 +41,13 @@ static int package_get(void *ctx,int n,RecompLauncherCModPackage *out)
 }
 static int feature_get(void *ctx,int n,RecompLauncherCModFeature *out)
 {
-    if(n>0)return base&&base->feature_get&&base->feature_get(base->ctx,n-1,out);
+    if(n>1)return base&&base->feature_get&&base->feature_get(base->ctx,n-2,out);
     RecompLauncherCModPackage p;
-    if(!out || n<0 || !package_get(ctx,0,&p))return 0;
-    memset(out,0,sizeof *out);COPY(out->id,feature_id);COPY(out->package_id,p.id);
+    if(!out || n<0 || !package_get(ctx,n,&p))return 0;
+    memset(out,0,sizeof *out);COPY(out->id,n?"debug-transporters":feature_id);COPY(out->package_id,p.id);
     COPY(out->package_name,p.name);COPY(out->package_version,p.version);COPY(out->name,p.name);
-    COPY(out->author,p.author);COPY(out->description,p.description);COPY(out->group,"Audio");
+    COPY(out->author,p.author);COPY(out->description,p.description);COPY(out->group,n?"Gameplay":"Audio");
+    if(n)COPY(out->name,"Debug transporter escape");
     COPY(out->source_name,p.source_name);COPY(out->source_url,p.source_url);COPY(out->status,p.status);
     out->enabled=p.enabled;return 1;
 }
@@ -45,11 +55,13 @@ static int enable(void *ctx,const char *p,const char *f,int on)
 {
     (void)ctx;mod_error[0]=0;
     if(ours(p))return feature(p,f)&&s1_sound_select(on);
+    if(bugfix(p))return f && !strcmp(f,"debug-transporters") && s1_debug_select(on);
     return base&&base->feature_enable&&base->feature_enable(base->ctx,p,f,on);
 }
 static int package_enable(void *ctx,const char *p,int on)
 {
     if(ours(p))return enable(ctx,p,feature_id,on);
+    if(bugfix(p))return enable(ctx,p,"debug-transporters",on);
     return base&&base->set_enabled&&base->set_enabled(base->ctx,p,on);
 }
 static int option(void *ctx,const char *p,const char *f,int n,RecompLauncherCModOption *out)

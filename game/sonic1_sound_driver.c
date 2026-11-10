@@ -1,4 +1,5 @@
 #include "sonic1_sound_driver.h"
+#include "sonic1_debug.h"
 #include "genesis_runtime.h"
 #include "host_atomic_file.h"
 #include <SDL2/SDL.h>
@@ -45,6 +46,7 @@ int s1_sound_select(int enabled)
 }
 void s1_sound_load_settings(const char *settings)
 {
+    s1_debug_load_settings(settings);
     selected=verified=active=bound=0;error[0]=0;
     const char *slash1=strrchr(settings,'/'), *slash2=strrchr(settings,'\\');
     const char *slash=slash1;
@@ -78,10 +80,14 @@ int s1_sound_commit(void)
     if(n<0 || n>=(int)sizeof text || !genesis_atomic_file_store(settings_file,text,(size_t)n)) {
         snprintf(error,sizeof error,"Unable to save Sonic 1 sound settings.");return 0;
     }
+    if(!s1_debug_commit()) {
+        snprintf(error,sizeof error,"Unable to save Sonic 1 bug-fix settings.");return 0;
+    }
     return 1;
 }
 void s1_sound_post_reset(void)
 {
+    s1_debug_post_reset();
     if(bound)return;
     active=selected;bound=1;
     if (!active) return;
@@ -182,6 +188,7 @@ void s1_sound_state_save(void *out)
      * identity must already match the first running tick. Selection becomes
      * immutable for this process at entry; later UI edits are for a restart. */
     bytes[5]=(uint8_t)(bound?active:selected);
+    bytes[6]=(uint8_t)s1_debug_effective();
 #ifdef SONIC1_CLONE_DRIVER
     if(bytes[5])for(unsigned i=0;i<32;i++) {
         unsigned a=S1_CLONE_SHA256[2*i],b=S1_CLONE_SHA256[2*i+1];
@@ -200,5 +207,5 @@ void s1_sound_config_image(char *out,size_t size)
 {
     uint8_t state[S1_SOUND_STATE_BYTES];s1_sound_state_save(state);
     char hash[65];for(unsigned i=0;i<32;i++)snprintf(hash+2*i,3,"%02x",state[8+i]);
-    snprintf(out,size,"sonic1.sound_driver=%s\nsonic1.sound_pack=%s\n",state[5]?"clone":"original",hash);
+    snprintf(out,size,"sonic1.sound_driver=%s\nsonic1.sound_pack=%s\nsonic1.debug_transporters=%u\n",state[5]?"clone":"original",hash,state[6]);
 }

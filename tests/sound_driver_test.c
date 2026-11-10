@@ -1,6 +1,7 @@
 /* Command, state and launcher contract checks; audio execution is qualified
  * separately in the built game. All file writes use the caller's scratch. */
 #include "sonic1_sound_driver.h"
+#include "sonic1_debug.h"
 #include "sonic1_clone_metadata.h"
 #include "sonic1_sound_assets.h"
 #include "genesis_runtime.h"
@@ -19,6 +20,7 @@ void recomp_call_addr(uint32_t pc) {
 }
 void recomp_tail_call(uint32_t pc) { tail=pc; }
 void m68k_write8(uint32_t pc,uint8_t value) { g_ram[pc&65535]=value; }
+void m68k_write16(uint32_t pc,uint16_t value) { m68k_write8(pc,value>>8);m68k_write8(pc+1,value); }
 static int common_context;
 static int common_count(void *ctx) { return ctx==&common_context?1:0; }
 static int common_package(void *ctx,int n,RecompLauncherCModPackage *out)
@@ -42,15 +44,17 @@ int main(int argc,char **argv)
     RecompLauncherCModProvider base={0};base.ctx=&common_context;
     base.package_count=base.feature_count=common_count;base.package_get=common_package;
     const RecompLauncherCModProvider *mods=s1_sound_mods(&base);
-    CHECK(mods->package_count(mods->ctx)==2 && mods->feature_count(mods->ctx)==2);
+    CHECK(mods->package_count(mods->ctx)==3 && mods->feature_count(mods->ctx)==3);
     RecompLauncherCModPackage package;
-    CHECK(mods->package_get(mods->ctx,1,&package)&&!strcmp(package.id,"common"));
+    CHECK(mods->package_get(mods->ctx,2,&package)&&!strcmp(package.id,"common"));
+    CHECK(mods->package_get(mods->ctx,1,&package)&&!package.enabled&&!strcmp(package.id,"sonic1.bug-fixes"));
     CHECK(mods->package_get(mods->ctx,0,&package)&&!package.enabled);
     CHECK(mods->feature_enable(mods->ctx,"sonic1.audio.clone-driver","sound-driver",1));
     CHECK(mods->commit(mods->ctx,"unused"));
     s1_sound_load_settings(argv[2]);CHECK(s1_sound_selected());
     uint8_t before_boot[S1_SOUND_STATE_BYTES];s1_sound_state_save(before_boot);
     s1_sound_post_reset();CHECK(s1_sound_active());CHECK(!memcmp(g_rom+0x80000,"S1CR",4));
+    g_ram[0xFE08]=1;CHECK(!s1_debug_hook(0x166C8));CHECK(!s1_debug_active());
     CHECK(!mods->feature_resource_count(mods->ctx,"sonic1.audio.clone-driver","sound-driver"));
     CHECK(s1_sound_state_valid(before_boot));
     if(argc==4) {
@@ -90,6 +94,14 @@ int main(int argc,char **argv)
     CHECK(s1_sound_commit());s1_sound_load_settings(argv[2]);s1_sound_post_reset();
     CHECK(!s1_sound_active()&&!s1_sound_state_valid(clone)&&s1_sound_state_valid(original));
     CHECK(s1_sound_netplay_allowed());CHECK(!s1_sound_hook(0x71B4C));
+    CHECK(mods->feature_enable(mods->ctx,"sonic1.bug-fixes","debug-transporters",1));
+    CHECK(!s1_debug_active());CHECK(mods->commit(mods->ctx,"unused"));
+    s1_sound_load_settings(argv[2]);s1_sound_post_reset();CHECK(s1_debug_active());
+    CHECK(!s1_sound_state_valid(original));CHECK(s1_debug_hook(0x166C8));
+    g_cpu.A[0]=0xFFD800;g_ram[0xD800]=0x72;g_ram[0xD824]=6;g_ram[0xF7C8]=0x81;
+    CHECK(!s1_debug_hook(0x16668));CHECK(!g_ram[0xF7C8]&&!g_ram[0xD824]);
+    CHECK(mods->feature_enable(mods->ctx,"sonic1.bug-fixes","debug-transporters",0));
+    CHECK(s1_debug_active());CHECK(mods->commit(mods->ctx,"unused"));
     puts("PASS: all 256 IDs in three queues, pause isolation, boot selection, snapshot identity, mod composition and settings persistence");
     return 0;
 }
