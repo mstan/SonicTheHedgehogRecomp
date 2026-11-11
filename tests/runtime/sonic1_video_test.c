@@ -121,16 +121,19 @@ int main(int argc,char **argv)
     /* Title scenery spans the window, stays through an outgoing fade, and
      * does not leak into level select after its background plane is cleared. */
     g_ram[0xD040]=0x0E;g_ram[0xD000]=0;g_ram[0xA440]=1;
-    word(v.vram,0xE000,1);
+    word(v.vram,0xE000,1);word(v.vram,0xFC00,0);
     sonic1_video.scanline(&v,0,native,320,out,796);
     CHECK(out[0]==0xFFFF0000u);CHECK(out[795]==0xFFFF0000u);
-    CHECK(!memcmp(out+238,native,sizeof native));
-    /* The title's X=0 sprite mask hides Sonic's torso. Publishing a host
-     * list must not replace that hardware-composed center with unmasked
-     * title sprites; only the surrounding background needs extension. */
+    CHECK(out[237]==0xFFFF0000u && out[238]==out[237] && out[239]==out[237]);
+    sonic1_video.scanline(&v,0,native,320,out,320);
+    CHECK(!memcmp(out,native,sizeof native));
+    /* A published host list still leaves title overlays to the native
+     * compositor. Keep Plane A above the expanded background. */
     s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
+    word(v.vram,0xC000+2,1);
     sonic1_video.scanline(&v,0,native,320,out,796);
-    CHECK(!memcmp(out+238,native,sizeof native));
+    CHECK(out[238]==0xFFFF0000u && out[246]==native[8]);
+    word(v.vram,0xC000+2,0);
     /* Title VBlank installs its own scroll directly, leaving the level's
      * copied FF1C reference stale after MZ. It must not unwrap title Y=0
      * into layout row 4 and turn the extended scene entirely blue. */
@@ -139,7 +142,7 @@ int main(int argc,char **argv)
     CHECK(out[0]==0xFFFF0000u && out[795]==0xFFFF0000u);
     /* A rewritten column in the circular nametable must not sweep through
      * the extended water as a diagonal boundary. The layout and live tile
-     * art own the margins; native composition remains authoritative inside. */
+     * art own the background, with native composition for overlays. */
     g_ram[0xA441]=1;g_ram[0xA442]=2;
     for(int n=0;n<256;++n)word(g_ram,512+n*2,1);
     for(int n=0;n<4;++n)word(g_ram,0xB008+n*2,2);
@@ -369,6 +372,20 @@ int main(int argc,char **argv)
     CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD800]==0);
     word(g_ram,0xF700,274);CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD800]==0x2F);
     g_cpu.D[0]=1024-128;CHECK(!s1_video_hook(0xB0DC));CHECK((g_cpu.D[0]&65535)==320);
+
+    /* A walking Crabmeat can leave the lifetime band while its placement
+     * remains inside. Native offscreen deletion clears its respawn bit. */
+    memset(g_ram+0xD800,0,0x1800);g_ram[0xFC03]=0;g_rom[0x6B104]=0x9F;
+    g_ram[0xF76C]=0;s1_video_hook(0xD8DA);g_ram[0xF76C]=2;
+    CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD800]==0x1F && g_ram[0xFC03]==128);
+    memset(g_ram+0xD800,0,64);g_ram[0xFC03]=0;
+    CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD800]==0); /* placement outside the viewport */
+    word(g_ram,0xF700,500);
+    CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD800]==0x1F && g_ram[0xFC03]==128);
+    CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD840]==0); /* no duplicate */
+    memset(g_ram+0xD800,0,64); /* defeated Crabmeat leaves the respawn bit set */
+    CHECK(s1_video_hook(0xD980));CHECK(g_ram[0xD800]==0);
+
     CHECK(sonic1_video.configure("64:9"));sonic1_video.width(1593,224,320,224);
 
     /* Special-stage layout: draw a block far beyond the old 320px window,
@@ -773,31 +790,40 @@ int main(int argc,char **argv)
     word(g_ram,0xF700,800);word(g_ram,0xFF10,800);
     word(g_rom,0x6B000,0x600);word(g_rom,0x6B600,600);word(g_rom,0x6B602,8);
     g_rom[0x6B604]=0xC0;g_rom[0x6B605]=0;word(g_rom,0x6B606,65535);
+    word(g_ram,42,0x2001);m68k_write32(0xF796,0x2000);
+    g_rom[0x2001]=1;memset(g_rom+0x62A10,9,16);
     word(g_rom,0xF7A0,2);g_rom[0xF7A2]=1;memset(g_rom+0xF7A3,0,5);
     word(g_rom,0x37582,1);g_rom[0x37584]=0x82;g_rom[0x37585]=0x71;
     g_rom[0x37586]=0;g_rom[0x37587]=255;memset(g_rom+0x37588,0,8);
     v.reg[1]=64;v.reg[2]=0x30;v.reg[4]=7;v.reg[5]=0x50;
     v.reg[12]=1;v.reg[13]=0x3F;v.reg[16]=1;word(v.vram,0xFC00,-800);
     v.cram[1]=0xE00;v.cram[2]=0xE0;memset(v.vram+0x4F0*32,0,32);
-    for(unsigned phase=0;phase<5;++phase) {
+    for(unsigned phase=0;phase<6;++phase) {
         if(phase==1) {
             g_ram[0xF600]=8;g_ram[0xD800]=0x40;g_ram[0xD801]=4;g_ram[0xD823]=1;
             word(g_ram,0xD808,600);word(g_ram,0xD80C,8);
             m68k_write32(0xD804,0xF7A0);word(g_ram,0xD802,0x4F0);
         }
-        if(phase==2)g_ram[0xD824]=2;
-        if(phase==3){
+        if(phase==2) {
+            /* A live Moto can keep falling with no resting pose in view. */
+            word(g_ram,42,0);word(g_ram,0xD80C,400);
+        }
+        if(phase==3) {
+            word(g_ram,42,0x2001);word(g_ram,0xD80C,8);g_ram[0xD824]=2;
+        }
+        if(phase==4){
             /* The native sprite's installed DMA owns its art at takeover. */
             memset(v.vram+0x4F0*32,0x22,32);
             word(g_ram,0xAC00+4*128,2);word(g_ram,0xAC02+4*128,0xD800);
         }
-        if(phase==4){memset(g_ram+0xD800,0,64);word(g_ram,0xAC00+4*128,0);}
+        if(phase==5){memset(g_ram+0xD800,0,64);word(g_ram,0xAC00+4*128,0);}
         memcpy(ram_before,g_ram,sizeof g_ram);cpu_before=g_cpu;
         s1_video_hook(0xD65E);s1_video_hook(0xD746);upload_sat(&v);
         sonic1_video.scanline(&v,0,native,320,out,796);s1_video_command(1,NULL);
-        CHECK(strstr(reply,phase<4?"\"sprites\":1":"\"sprites\":0"));
+        int visible=phase!=2 && phase!=5;
+        CHECK(strstr(reply,visible?"\"sprites\":1":"\"sprites\":0"));
         sonic1_video.scanline(&v,8,native,320,out,796);
-        if(phase<4)CHECK(out[38]==0xFF00FF00u);
+        CHECK((out[38]==0xFF00FF00u)==visible);
         CHECK(!memcmp(ram_before,g_ram,sizeof g_ram) && !memcmp(&cpu_before,&g_cpu,sizeof g_cpu));
     }
     /* Caterkiller's floor-search initialization leaves its head and body

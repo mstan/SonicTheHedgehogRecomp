@@ -21,8 +21,7 @@ optional enhancements with bounded validation coverage.
 | High refresh presentation | Optional presentation above the native simulation rate. |
 | Save states | Build-specific snapshots; no cross-build compatibility promise. |
 
-This branch contains the [v1.1.0-alpha.1 pre-release](docs/RELEASE_NOTES_1.1.0-alpha.1.md).
-The latest stable release is [v1.0.9](https://github.com/mstan/SonicTheHedgehogRecomp/releases/tag/v1.0.9).
+See the [v1.1.1 release notes](docs/RELEASE_NOTES_1.1.1.md) for the quick-load controls.
 
 Windows x64 builds default to the shared batched VDP renderer. The 6,000-frame
 Green Hill measurement gained 20.5% uncapped FPS and used 10.6% less process CPU
@@ -132,8 +131,13 @@ The supported game build uses generated routines with the clean-room Tier-3 inte
 | Enter | Start |
 | Tab (hold) | Turbo mode |
 | Shift+F1-F9 | Save state |
-| F1-F9 | Load state |
+| Hold F1-F6 or F9 for 1.5 seconds | Load the corresponding state |
+| Hold Ctrl+F7 or Ctrl+F8 for 1.5 seconds | Load slot 7 or 8 |
 | Escape | In-game menu |
+
+With a 3-button controller layout, LB saves to slot 1 and holding RB for 1.5
+seconds loads it. A progress bar shows the hold. Releasing early, losing focus,
+or opening a menu cancels it.
 
 ## Audio & video enhancements (opt-in)
 
