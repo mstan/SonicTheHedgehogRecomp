@@ -484,9 +484,8 @@ static int scene_left(const uint8_t *ram,int camera,int w)
         return camera-(w-320)/2;
     return view_left(camera,w);
 }
-static void activation_bounds(int camera,int w,int *lo,int *hi)
+static void activation_bounds(int left,int w,int *lo,int *hi)
 {
-    int left=view_left(camera,w);
     /* out_of_range tests 128px-rounded positions. OPL must only instantiate
      * cells that this same culler retains. Loading at left+w+320 with an
      * unrounded camera let objects spawn one cell early, get deleted, and
@@ -1112,15 +1111,18 @@ static int capsule_animals(void)
 }
 /* Native floor-search initialization stays invisible. Ground only the
  * resting preview; native placements, falling and collisions still run. */
-static int resting_preview_y(int x,int y,int height)
+static int ground_preview_y(int x,int *y,int height)
 {
-    int start=y;
-    for(unsigned n=0;n<128 && y<2048;++n) {
-        int distance=animal_floor(x,y+height);
-        if(distance<0)return y+distance;
-        y+=distance+1;
+    int candidate=*y;
+    for(unsigned n=0;n<128 && candidate<2048;++n) {
+        int distance=animal_floor(x,candidate+height);
+        if(distance<0) {
+            *y=candidate+distance;
+            return 1;
+        }
+        candidate+=distance+1;
     }
-    return start;
+    return 0;
 }
 static void retire_capsule_animal(const SceneTail *tail)
 {
@@ -1228,14 +1230,21 @@ static void spawn_scene(void)
 {
     load_placements(); adopt_rings(); s_loader_active=1;
     int camera=ram16(0xF700), w=enabled()?s_requested_width:320;
-    int lo,hi;activation_bounds(camera,w,&lo,&hi);
-    int stair_lo,stair_hi;activation_bounds(camera,320,&stair_lo,&stair_hi);
+    int left=view_left(camera,w);
+    int lo,hi;activation_bounds(left,w,&lo,&hi);
+    int stair_lo,stair_hi;activation_bounds(view_left(camera,320),320,&stair_lo,&stair_hi);
     int player=ram16(0xD008);
     s_pool_pressure=0;
     for (unsigned i=0;i<s_placement_count;++i) {
         Placement *p=&s_placements[i];
         int begin=p->id==0x5B?stair_lo:lo,end=p->id==0x5B?stair_hi:hi;
         if ((int)p->x<begin || (int)p->x>=end) p->loaded=0;
+        /* Crabmeat can walk out of the culling band while its placement
+         * stays inside. Once the placement is in view, rearm it if native
+         * RememberState unloaded it. A defeated enemy keeps its state bit. */
+        else if(w>320 && p->id==0x1F && p->loaded && p->state &&
+                p->x>=left && p->x<left+w && !(video_ram[0xFC02+p->state]&128))
+            p->loaded=placement_alive(p);
         else if (!p->loaded && placement_alive(p)) p->loaded=1;
     }
     /* Fill closest to the player first, reserving space for collision-relevant
@@ -1330,19 +1339,19 @@ static void entry_placements_present(unsigned priority,int camera,int left)
             }
             add_mapping(map,frame,gfx,flags,x-camera,y-ram16(0xF704),0,0);
         } else if(p->id==0x40 && video_ram[0xFE10]==0 && priority==4) {
-            /* Keep the resting Moto visible through native floor-search
+            /* Keep grounded Motos visible through native floor-search
              * initialization. After entry, only a live original object can
              * own this preview; an expired placement must never reappear. */
             unsigned o=placement_object(p);
             if((!entry && !o) || (o && video_ram[o]!=0x40))continue;
             if(p->state && !o && (video_ram[0xFC02+p->state]&128))continue;
             if(o && s_capture_frame->identity[1+(o-0xD000)/64])continue;
-            int x=o?ram16(o+8):p->x,y=resting_preview_y(x,p->y&4095,14);
+            int x=o?ram16(o+8):p->x,y=p->y&4095;
+            if(x+32<left || x-32>=left+s_requested_width)continue;
             unsigned flags=(p->y>>14)&3,frame=0;
             if(o && video_ram[o+0x24]>=2) {
                 y=ram16(o+12);flags=video_ram[o+1];frame=video_ram[o+0x1A];
-            }
-            if(x+32<left || x-32>=left+s_requested_width)continue;
+            } else if(!ground_preview_y(x,&y,14))continue;
             unsigned first=s_capture_frame->count;
             add_mapping(0xF7A0,frame,0x4F0,flags,x-camera,y-ram16(0xF704),0,0);
             for(unsigned n=first;n<s_capture_frame->count;++n)s_capture_frame->sprites[n].asset=22;
@@ -1374,7 +1383,7 @@ static void entry_placements_present(unsigned priority,int camera,int left)
                 /* Cat_Main waits for floor contact before allocating its
                  * three segments. Keep their resting preview grounded while
                  * that invisible initialization runs. */
-                y=resting_preview_y(x,y,7);
+                ground_preview_y(x,&y,7);
                 unsigned gfx=video_ram[0xFE10]==5?0x22B0:0x24FF;
                 if(priority==4)add_mapping(0x16D6E,0,gfx,flags,x-camera,y-ram16(0xF704),0,0);
                 else for(int n=1;n<=3;++n)
@@ -1728,7 +1737,7 @@ int s1_video_hook(uint32_t pc)
          * CMP/BHI. Adjust its input, then let the original SUB set flags.
          * Patching only the later CMP cannot retain left-margin hazards. */
         if(gameplay()) {
-            int lo,hi;activation_bounds(ram16(0xF700),s_requested_width,&lo,&hi);
+            int lo,hi;activation_bounds(view_left(ram16(0xF700),s_requested_width),s_requested_width,&lo,&hi);
             int x=(int)(g_cpu.D[0]&65535u);
             unsigned outside=x<lo || x>=hi;
             unsigned input=(g_cpu.D[1]+(outside?641u:320u))&65535u;
@@ -1756,7 +1765,7 @@ int s1_video_hook(uint32_t pc)
              * Rebase it to our view; the following native CMP/BHI still owns
              * flags and the object's actual deletion/remember-state path. */
             int x=(uint16_t)((uint16_t)g_cpu.D[0]+((ram16(0xF700)-128)&0xFF80));
-            int lo,hi;activation_bounds(ram16(0xF700),s_requested_width,&lo,&hi);
+            int lo,hi;activation_bounds(view_left(ram16(0xF700),s_requested_width),s_requested_width,&lo,&hi);
             unsigned outside=x<lo || x>=hi;
             g_cpu.D[0]=(g_cpu.D[0]&0xFFFF0000u)|(outside?641u:320u);
         }
@@ -1903,7 +1912,7 @@ static int attributes_differ(const GVDP *v,uint16_t a,uint16_t b,int x,int y)
     return 0;
 }
 /* Coverage of the original SAT, including fetch limits and its X=0 mask. Keep native
- * overlay pixels while replacing the title's incomplete cached water layer. */
+ * overlay pixels while replacing the title's incomplete cached background. */
 static void title_sprite_coverage(const GVDP *v,int line,uint8_t *keep)
 {
     memset(keep,0,320);
@@ -2063,12 +2072,12 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         int row=((by>>8)&7)*128;
         for(int col=0;col<64;++col)if(video_ram[0xA440+row+col])bg_width=(col+1)*256;
     }
-    /* The title's 512px nametable is a streaming cache. Compose water as one
-     * continuous layer across the center and margins; copying cached water
-     * back over its middle reintroduces a moving seam at the old boundary. */
-    int title_water=s_title_world && width>320 && by>=152;
+    /* The title's 512px nametable is a streaming cache. Sample the same
+     * background across the center and margins to avoid a seam where the
+     * cached plane and the expanded layout meet. */
+    int title_background=s_title_world && width>320;
     uint8_t title_keep[320];
-    if(title_water)title_sprite_coverage(v,line,title_keep);
+    if(title_background)title_sprite_coverage(v,line,title_keep);
     int bg_base=-origin-hs_b;
     if(level) {
         int margin=(width-nw)/2;
@@ -2105,7 +2114,7 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
         }
         uint16_t a=fg.attr,b=bg.attr;
         uint8_t ap=gtile_row_pixel(&fg),bp=gtile_row_pixel(&bg);
-        if(title_water && nx>=0 && nx<320 && ap)title_keep[nx]=1;
+        if(title_background && nx>=0 && nx<320 && ap)title_keep[nx]=1;
         if(level && (wx<0 || wx>=s_stage_width))ap=0;
         /* Menus have a centered foreground composition, with full-width
          * scenery underneath. Special-stage planes are repeating art. */
@@ -2155,7 +2164,7 @@ static void render_scanline(const GVDP *v, int line, const uint32_t *native, int
          * the first special-stage sprite publication, the original center
          * likewise owns its early background-only fade composition. */
         if(origin>=0) {
-            if(title_water) {
+            if(title_background) {
                 for(int x=0;x<nw;++x)if(title_keep[x])out[origin+x]=native[x];
             } else memcpy(out+origin,native,(size_t)nw*sizeof(uint32_t));
         }
