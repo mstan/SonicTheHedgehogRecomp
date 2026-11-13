@@ -224,6 +224,10 @@ set(SONIC_INCLUDES_NATIVE
 )
 
 set(SONIC_SHARED_LIBS SDL2::SDL2main SDL2::SDL2)
+if(MINGW)
+    # recomp-ui uses the real main(); SDL2main adds an incompatible SDL_main shim.
+    list(REMOVE_ITEM SONIC_SHARED_LIBS SDL2::SDL2main)
+endif()
 if(WIN32)
     list(APPEND SONIC_SHARED_LIBS ws2_32 comdlg32)
 endif()
