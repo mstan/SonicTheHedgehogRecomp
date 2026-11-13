@@ -494,6 +494,10 @@ kind = "game_hook"
 
 [functions]
 extra = [
+    # Disk-state active continuations immediately after WaitForVBlank.
+    # Verified REV00 Level_MainLoop addq.w and SS_MainLoop BSR boundaries.
+    0x003AF0,
+    0x004738,
     # VBlank handler sub-routines (entered via the V-int dispatch but
     # their specific shape â€” a per-mode JSR chain â€” isn't a single jump
     # table).
@@ -584,6 +588,16 @@ blacklist = [
 ]
 
 # Debug flight must not acquire a teleporter's persistent control lock.
+# Optional access uses the stock REV00 title, level and Special Stage gates.
+[[widescreen_site]]
+addr = 0x3242
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x3982
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x4704
+kind = "game_hook"
 [[widescreen_site]]
 addr = 0x16668
 kind = "game_hook"

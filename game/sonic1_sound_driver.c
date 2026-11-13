@@ -189,6 +189,7 @@ void s1_sound_state_save(void *out)
      * immutable for this process at entry; later UI edits are for a restart. */
     bytes[5]=(uint8_t)(bound?active:selected);
     bytes[6]=(uint8_t)s1_debug_effective();
+    bytes[7]=(uint8_t)s1_access_effective();
 #ifdef SONIC1_CLONE_DRIVER
     if(bytes[5])for(unsigned i=0;i<32;i++) {
         unsigned a=S1_CLONE_SHA256[2*i],b=S1_CLONE_SHA256[2*i+1];
@@ -207,5 +208,6 @@ void s1_sound_config_image(char *out,size_t size)
 {
     uint8_t state[S1_SOUND_STATE_BYTES];s1_sound_state_save(state);
     char hash[65];for(unsigned i=0;i<32;i++)snprintf(hash+2*i,3,"%02x",state[8+i]);
-    snprintf(out,size,"sonic1.sound_driver=%s\nsonic1.sound_pack=%s\nsonic1.debug_transporters=%u\n",state[5]?"clone":"original",hash,state[6]);
+    snprintf(out,size,"sonic1.sound_driver=%s\nsonic1.sound_pack=%s\nsonic1.debug_transporters=%u\nsonic1.easy_level_select=%u\nsonic1.easy_debug=%u\n",
+        state[5]?"clone":"original",hash,state[6],!!(state[7]&S1_ACCESS_LEVEL_SELECT),!!(state[7]&S1_ACCESS_DEBUG));
 }
