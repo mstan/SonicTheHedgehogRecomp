@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(SonicTheHedgehogRecomp VERSION 1.1.1 LANGUAGES C)
+project(SonicTheHedgehogRecomp VERSION 1.2.0 LANGUAGES C)
 set(GENESIS_GAME_VERSION "${PROJECT_VERSION}")
 
 set(CMAKE_C_STANDARD 11)

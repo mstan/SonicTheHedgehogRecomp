@@ -584,6 +584,16 @@ blacklist = [
 ]
 
 # Debug flight must not acquire a teleporter's persistent control lock.
+# Optional access uses the stock REV00 title, level and Special Stage gates.
+[[widescreen_site]]
+addr = 0x3242
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x3982
+kind = "game_hook"
+[[widescreen_site]]
+addr = 0x4704
+kind = "game_hook"
 [[widescreen_site]]
 addr = 0x16668
 kind = "game_hook"

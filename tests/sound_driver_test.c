@@ -44,9 +44,10 @@ int main(int argc,char **argv)
     RecompLauncherCModProvider base={0};base.ctx=&common_context;
     base.package_count=base.feature_count=common_count;base.package_get=common_package;
     const RecompLauncherCModProvider *mods=s1_sound_mods(&base);
-    CHECK(mods->package_count(mods->ctx)==3 && mods->feature_count(mods->ctx)==3);
+    CHECK(mods->package_count(mods->ctx)==4 && mods->feature_count(mods->ctx)==5);
     RecompLauncherCModPackage package;
-    CHECK(mods->package_get(mods->ctx,2,&package)&&!strcmp(package.id,"common"));
+    CHECK(mods->package_get(mods->ctx,3,&package)&&!strcmp(package.id,"common"));
+    CHECK(mods->package_get(mods->ctx,2,&package)&&!package.enabled&&!strcmp(package.id,"sonic1.easy-access"));
     CHECK(mods->package_get(mods->ctx,1,&package)&&!package.enabled&&!strcmp(package.id,"sonic1.bug-fixes"));
     CHECK(mods->package_get(mods->ctx,0,&package)&&!package.enabled);
     CHECK(mods->feature_enable(mods->ctx,"sonic1.audio.clone-driver","sound-driver",1));
@@ -102,6 +103,52 @@ int main(int argc,char **argv)
     CHECK(!s1_debug_hook(0x16668));CHECK(!g_ram[0xF7C8]&&!g_ram[0xD824]);
     CHECK(mods->feature_enable(mods->ctx,"sonic1.bug-fixes","debug-transporters",0));
     CHECK(s1_debug_active());CHECK(mods->commit(mods->ctx,"unused"));
+    s1_sound_load_settings(argv[2]);s1_sound_post_reset();
+    CHECK(!s1_debug_active() && !s1_access_selected() && !s1_access_active());
+    CHECK(s1_sound_state_valid(original));
+    RecompLauncherCModFeature access;
+    CHECK(mods->feature_get(mods->ctx,2,&access)&&!access.enabled&&!strcmp(access.id,"level-select"));
+    CHECK(mods->feature_get(mods->ctx,3,&access)&&!access.enabled&&!strcmp(access.id,"debug-mode"));
+    CHECK(!s1_access_select(3,1));
+    CHECK(!mods->feature_enable(mods->ctx,"sonic1.easy-access","unknown",1));
+    CHECK(mods->feature_enable(mods->ctx,"sonic1.easy-access","level-select",1));
+    CHECK(!s1_access_active() && s1_sound_state_valid(original));
+    CHECK(mods->commit(mods->ctx,"unused"));
+    s1_sound_load_settings(argv[2]);CHECK(s1_access_selected()==S1_ACCESS_LEVEL_SELECT);
+    uint8_t level_select[S1_SOUND_STATE_BYTES];s1_sound_state_save(level_select);
+    CHECK(!s1_sound_state_valid(original));
+    s1_sound_post_reset();CHECK(s1_sound_state_valid(level_select));
+    saved=g_cpu;tail=0;
+    CHECK(s1_debug_hook(0x3242)&&tail==0x3254&&g_ram[0xFFE0]==1);
+    CHECK(!memcmp(&g_cpu,&saved,sizeof saved));
+    g_ram[0xFFE2]=g_ram[0xFFFA]=0;
+    CHECK(!s1_debug_hook(0x3982)&&!g_ram[0xFFE2]&&!g_ram[0xFFFA]);
+    CHECK(mods->feature_enable(mods->ctx,"sonic1.easy-access","level-select",0));
+    CHECK(mods->feature_enable(mods->ctx,"sonic1.easy-access","debug-mode",1));
+    s1_sound_post_reset();CHECK(s1_access_active()==S1_ACCESS_LEVEL_SELECT);
+    CHECK(s1_sound_state_valid(level_select)); /* pending changes cannot alter replay/rewind */
+    CHECK(mods->commit(mods->ctx,"unused"));
+    s1_sound_load_settings(argv[2]);s1_sound_post_reset();
+    CHECK(s1_access_active()==S1_ACCESS_DEBUG && !s1_sound_state_valid(level_select));
+    tail=0;CHECK(!s1_debug_hook(0x3242)&&!tail);
+    for(unsigned gate=0;gate<2;gate++) {
+        uint32_t pc=gate?0x4704:0x3982;
+        g_ram[0xFFF0]=0;g_ram[0xFFF1]=1;
+        g_ram[0xFFE2]=g_ram[0xFFFA]=0;
+        CHECK(!s1_debug_hook(pc)&&!g_ram[0xFFE2]&&!g_ram[0xFFFA]);
+        g_ram[0xFFF0]=0x80;g_ram[0xFFF1]=0;
+        CHECK(!s1_debug_hook(pc)&&!g_ram[0xFFE2]&&!g_ram[0xFFFA]);
+        g_ram[0xFFF0]=0;
+        CHECK(!s1_debug_hook(pc)&&g_ram[0xFFE2]==1&&g_ram[0xFFFA]==1);
+        CHECK(!memcmp(&g_cpu,&saved,sizeof saved));
+    }
+    char image[1024];s1_sound_config_image(image,sizeof image);
+    CHECK(strstr(image,"sonic1.easy_level_select=0\n")&&strstr(image,"sonic1.easy_debug=1\n"));
+    CHECK(mods->set_enabled(mods->ctx,"sonic1.easy-access",0));
+    CHECK(mods->commit(mods->ctx,"unused"));
+    s1_sound_load_settings(argv[2]);s1_sound_post_reset();
+    CHECK(!s1_access_active()&&!s1_debug_active()&&!s1_sound_selected());
+    CHECK(s1_sound_state_valid(original));
     puts("PASS: all 256 IDs in three queues, pause isolation, boot selection, snapshot identity, mod composition and settings persistence");
     return 0;
 }
