@@ -18,6 +18,10 @@ are included in state and replay compatibility, so loading and rewinding do
 not change the selected runtime rules. Existing sound-driver, widescreen,
 controller and bug-fix choices are preserved.
 
+Active normal-level and Special Stage disk-state restores continue after the
+saved VBlank wait, avoiding an extra audio tick from re-entering the loop top.
+Paused states retain their existing pause-loop continuation.
+
 The release retains v1.1.1's quick-load hold, title composition, enemy
 visibility and sound-driver fixes. Fresh profiles use adaptive widescreen
 with Fit to screen. Existing explicit aspect choices are preserved. The

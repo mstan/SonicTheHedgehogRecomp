@@ -49,8 +49,14 @@ static uint32_t s1_save_resume_pc(uint8_t game_mode)
 {
     switch (game_mode) {
         case 0x08:
-        case 0x0C: return 0x003AE2u;   /* Level_MainLoop (handles demo)  */
-        case 0x10: return 0x00472Au;   /* SS_MainLoop                    */
+        case 0x0C:
+            /* A supported active snapshot is parked in WaitForVBlank,
+             * with this tick's interrupt already armed. Continue after
+             * that wait rather than re-arming it at the loop top. Paused
+             * snapshots retain the original PauseGame re-entry path. */
+            return (g_ram[0xF63A] | g_ram[0xF63B]) ? 0x003AE2u : 0x003AF0u;
+        case 0x10:
+            return (g_ram[0xF63A] | g_ram[0xF63B]) ? 0x00472Au : 0x004738u;
         case 0x14: return 0x004DC4u;   /* Cont_MainLoop                  */
         case 0x04: return 0x00317Cu;   /* Tit_MainLoop                   */
         case 0x18:

@@ -494,6 +494,10 @@ kind = "game_hook"
 
 [functions]
 extra = [
+    # Disk-state active continuations immediately after WaitForVBlank.
+    # Verified REV00 Level_MainLoop addq.w and SS_MainLoop BSR boundaries.
+    0x003AF0,
+    0x004738,
     # VBlank handler sub-routines (entered via the V-int dispatch but
     # their specific shape â€” a per-mode JSR chain â€” isn't a single jump
     # table).
