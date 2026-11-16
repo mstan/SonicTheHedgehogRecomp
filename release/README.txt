@@ -1,77 +1,37 @@
-SonicTheHedgehogRecomp — native static recompilation of Sonic the Hedgehog
-===========================================================================
+Sonic the Hedgehog v1.2.1 - Windows x64 stable release
 
-A native Windows port produced by statically recompiling the Sega Genesis
-68000 code to C. No emulator core: recompiled CPU code, clean-room
-VDP/bus/scheduler, ymfm FM synthesis, clean-room SN76489 PSG.
+Run SonicTheHedgehogRecomp.exe and select your own Sonic 1 JUE REV00 ROM.
+No ROM is included. REV01 and other revisions are unqualified.
+Project license: PolyForm Noncommercial 1.0.0; see LICENSE and PERMISSIONS.md.
+Source: https://github.com/mstan/SonicTheHedgehogRecomp/tree/v1.2.1
 
-BRING YOUR OWN ROM
-------------------
-This package contains NO game data. Place your own legally obtained
-Sonic the Hedgehog (World) ROM next to the exe, named:
+Fresh profiles use adaptive Widescreen / Fit to screen. Existing saved aspect,
+audio and mod choices are preserved. 32:9 remains experimental.
 
-    sonic.bin
+Clone Driver + Mega PCM is an optional, disabled-by-default sound mod.
+Enable it in Mods > Audio, then press Play. Restart after changing drivers.
+Music and samples are generated locally from your ROM. No separate sound BIN,
+assembler, Python or network connection is required to play. Clone Driver is
+local-play only; disable it and restart before netplay. Software permissions
+and limitations are in CLONE_DRIVER_NOTICES.txt and docs/SOUND_DRIVER_MODS.md.
 
-then run SonicTheHedgehogRecomp.exe.
+Keyboard: arrows move, Z/X/C are A/B/C, Enter is Start. Configure controllers
+in the launcher. Escape opens settings; F11 toggles fullscreen.
+Shift+F1..F9 saves. Hold F1..F6 or F9 for 1.5 seconds to load.
+Hold Ctrl+F7 or Ctrl+F8 for slots 7 and 8. In the 3-button controller
+layout, LB saves slot 1 and holding RB loads it. A progress bar shows
+the hold. Releasing early cancels the load. Save states are build-specific.
+Preserve native saves and settings when updating.
 
-CONTROLS
---------
-Arrow keys = D-pad, Z/X/C = A/B/C, Enter = Start. Gamepads supported (SDL2).
-Save states: Shift+F1..F9 save, F1..F9 load.
-Escape = runtime settings. F11 = fullscreen.
+Optional Base game bug fixes > Debug transporter escape preserves the earlier
+escape enhancement. It is disabled by default; original debug rides remain.
 
-WIDESCREEN MOD (OPT-IN)
-----------------------
-In the recomp-ui launcher or Escape menu, open Mods and enable Widescreen.
-Choose 16:9, 21:9, 32:9, or Adaptive. Adaptive follows the entire window,
-without a 32:9 limit. Settings are saved beside the executable.
-Disabled uses the original renderer. No ROM patch or external mod file is needed.
+Optional Mods > Gameplay > Easy level select and debug offers independent
+shortcuts. Easy level select opens the original menu with Start at the title.
+Easy debug enables the original B toggle without the code or held A at entry.
+A changes items; C places them. Both are off by default; restart after changing.
+Special Stage item placement retains the original game's limitations.
+See docs/EASY_ACCESS.md.
 
-The custom renderer expands scenery, ring/object activation, title and special
-stages; anchors the HUD to the screen; and preserves a full-width fade canvas.
-Green Hill's background parallax follows the expanded camera near stage edges.
-The jump-SFX extra "boop" correction applies in both native and wide modes.
-
-HIGH REFRESH RATE
------------------
-In Mods, choose High refresh rate: Off, 120 Hz, 144 Hz, or Display. Display
-follows the monitor refresh rate. Off is the default. This works with native
-output and widescreen: movement and camera positions interpolate while the
-original gameplay, audio and animation rates are preserved. Menus and special
-stages retain completed images.
-
-UNFILTERED AUDIO
-----------------
-The Audio menu has an optional Unfiltered audio switch, disabled by default.
-It bypasses native low-pass filters; enhanced FM retains its separate sound.
-
-KNOWN ISSUES
-------------
-- Widescreen is experimental: extreme widths can exhaust dynamic actor storage,
-  and earlier activation changes enemy timing. Later zones, bosses and
-  save-state rewinds need further validation. The mod is disabled in netplay.
-- A brief audio/video hitch can occur on the SEGA logo screen.
-- v0.7.1 restores omitted Burrobot and Labyrinth moving-block handlers through
-  corrected disassembly table extraction. Assisted act-start, boss-approach
-  and special-stage coverage does not certify every route or boss victory.
-
-LICENSE
--------
-This software: PolyForm Noncommercial 1.0.0 — see LICENSE.
-Third-party components (ymfm BSD-3-Clause, superzazu Z80 MIT, clowncommon
-ISC, SDL2 zlib): see THIRD-PARTY-LICENSES.md.
-
-Sonic the Hedgehog is a trademark of SEGA. This project is not affiliated
-with or endorsed by SEGA. No SEGA assets are distributed.
-
-SOURCE
-------
-https://github.com/mstan/SonicTheHedgehogRecomp
-
-REPLAYABLE FEEDBACK
--------------------
-Mods > Diagnostics > Replayable feedback is ON by default. After a bug, quit
-normally and send logs/*-feedback.replay with all .sav, .config.ini and .mods.txt
-sidecars and your description. Nothing uploads automatically. See
-docs/PLAYER_FEEDBACK.md. The bundled tools/replay_diagnostic.py uses the exact
-recorded executable, your own ROM and an isolated reproduction directory.
+This production build has no development TCP server or trace rings.
+See docs/RELEASE_NOTES_1.2.0.md for changes and validation limits.
