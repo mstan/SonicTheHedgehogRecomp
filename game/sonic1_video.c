@@ -181,7 +181,7 @@ static uint8_t sonic_pose_pixel(const GVDP *v,unsigned pose,uint16_t attr,int x,
     if(pose>=88)return pattern_pixel(v,attr,x,y);
     unsigned count=s_sonic_pose_counts[pose];
     if(!count) {
-        unsigned p=0x217FEu+((g_rom[0x217FE+pose*2]<<8)|g_rom[0x217FF+pose*2]);
+        unsigned p=0x217FEu+((g_rom[0x217FE + pose*2]<<8)|g_rom[0x217FF+pose*2]);
         if(p>=0x80000u)return pattern_pixel(v,attr,x,y);
         unsigned entries=g_rom[p++];
         if(entries>16 || p+entries*2>0x80000u)return pattern_pixel(v,attr,x,y);
@@ -633,7 +633,7 @@ static void marble_present(unsigned priority,int camera,int left)
             if(type>=1 && type<=4) {
                 static const unsigned oscillators[]={2,6,10,14};
                 static const int distances[]={32,48,64,96};
-                offset=video_ram[0xFE5E+oscillators[type-1]];
+                offset=video_ram[0xFE5E + oscillators[type-1]];
                 if(p->subtype&8)offset=distances[type-1]-offset;
             }
             /* Type 5 settles in <=32 ticks after Sonic leaves. By native
