@@ -11,8 +11,7 @@ audio and mod choices are preserved. 32:9 remains experimental.
 Clone Driver + Mega PCM is an optional, disabled-by-default sound mod.
 Enable it in Mods > Audio, then press Play. Restart after changing drivers.
 Music and samples are generated locally from your ROM. No separate sound BIN,
-assembler, Python or network connection is required to play. Clone Driver is
-local-play only; disable it and restart before netplay. Software permissions
+assembler, Python or network connection is required to play. Clone Driver is for local play. Software permissions
 and limitations are in CLONE_DRIVER_NOTICES.txt and docs/SOUND_DRIVER_MODS.md.
 
 Keyboard: arrows move, Z/X/C are A/B/C, Enter is Start. Configure controllers
