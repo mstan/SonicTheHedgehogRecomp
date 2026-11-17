@@ -7,6 +7,8 @@ running FM Timer B preserves its expiry instead of restarting the deadline.
 Audio output checks both stereo channels before repeating a stalled buffer.
 Tails without a reliable common period decay smoothly instead of forming an
 artificial sustained tone.
+Quiet audio with a DC offset is evaluated by its changing signal, so a
+steady bias cannot be mistaken for a repeating musical period.
 
 Fresh profiles use adaptive Widescreen / Fit to screen. Existing saved choices
 and native campaign saves are preserved. Save states are build-specific.
