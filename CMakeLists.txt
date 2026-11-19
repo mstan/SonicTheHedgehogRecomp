@@ -276,6 +276,7 @@ target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
     OWN_BACKEND=1                   # the own backend IS the Sonic 1 runtime (no clownmdemu link)
     DEFAULT_DEBUG_PORT=4378
     GENESIS_GAME_VERSION="${GENESIS_GAME_VERSION}"
+    GENESIS_WIDESCREEN_32_9_LABEL="32:9"
     $<$<BOOL:${SONIC_REVERSE_DEBUG}>:SONIC_REVERSE_DEBUG=1>
     $<$<BOOL:${GEN_DEV_TRACE}>:GEN_DEV_TRACE>
 )

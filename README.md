@@ -32,7 +32,7 @@ ports. Build with `-DGENESIS_VDP_PLANE_IMPL=SCALAR` for the LLE reference.
 ## Experimental adaptive widescreen
 
 Enable **Mods → Widescreen** in the recomp-ui launcher or in-game Escape menu.
-Choose **16:9**, **21:9**, **32:9 (experimental)**, or **Adaptive** and resize/maximize the window.
+Choose **16:9**, **21:9**, **32:9**, or **Adaptive** and resize/maximize the window.
 Fresh installs enable **Fit to screen** by default; saved aspect/mod choices are preserved. The mod uses a separate custom scene renderer, with an
 edge-anchored HUD, expanded objects/rings, and wider title/special-stage scenery.
 Adaptive has no 32:9 cap; `--widescreen stage` remains a full-stage-width overview

@@ -2,7 +2,7 @@
 
 Fresh installs enable adaptive **Fit to screen**. Change **Mods → Widescreen** in the
 recomp-ui launcher or in-game Escape menu, then choose **16:9**, **21:9**,
-**32:9 (experimental)**, or **Adaptive**. All four choices use the custom renderer; selecting
+**32:9**, or **Adaptive**. All four choices use the custom renderer; selecting
 an aspect while the mod is disabled does not enable it. Resize/maximize the window,
 or press F11 for fullscreen. The built-in provider follows Super Metroid's
 recomp-ui mod interface; no external mod archive is needed.
