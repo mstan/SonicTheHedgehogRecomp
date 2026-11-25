@@ -1,4 +1,5 @@
 {
+  "repository": "TheBlad768/s1disasm-clone-driver",
   "commit": "9c6e99358c510fa640868ce21b5fd6aea6cd01f5",
   "sources": {
     "MacroSetup.asm": {
@@ -59,21 +60,25 @@
     }
   },
   "tools": {
-    "build_tools/Windows-x86_64/asw.exe": {
-      "size": 3455039,
-      "sha256": "6a3236038c15a16f70d91d12e3f10bf3cb14da6400ac4b73a2da43a3f29031fa"
-    },
-    "build_tools/Windows-x86_64/p2bin.exe": {
-      "size": 28672,
-      "sha256": "1323430afdfa630ab56ce76f0286ccbb05a04566126411d4b7d673f2a08115eb"
-    },
-    "build_tools/Linux-x86_64/asl": {
-      "size": 3393944,
-      "sha256": "cc444bd4e1eccbe9c2d7b69e9e582a2f1310d49b1d548a2e24b1de6459a20e2a"
-    },
-    "build_tools/Linux-x86_64/p2bin": {
-      "size": 31040,
-      "sha256": "969c1df15a15ef32bc25124093228dab3b81906d772f37fc873e00bb70a94459"
+    "repository": "TheBlad768/s1disasm-clone-driver",
+    "commit": "9c6e99358c510fa640868ce21b5fd6aea6cd01f5",
+    "files": {
+      "build_tools/Windows-x86_64/asw.exe": {
+        "size": 3455039,
+        "sha256": "6a3236038c15a16f70d91d12e3f10bf3cb14da6400ac4b73a2da43a3f29031fa"
+      },
+      "build_tools/Windows-x86_64/p2bin.exe": {
+        "size": 28672,
+        "sha256": "1323430afdfa630ab56ce76f0286ccbb05a04566126411d4b7d673f2a08115eb"
+      },
+      "build_tools/Linux-x86_64/asl": {
+        "size": 3393944,
+        "sha256": "cc444bd4e1eccbe9c2d7b69e9e582a2f1310d49b1d548a2e24b1de6459a20e2a"
+      },
+      "build_tools/Linux-x86_64/p2bin": {
+        "size": 31040,
+        "sha256": "969c1df15a15ef32bc25124093228dab3b81906d772f37fc873e00bb70a94459"
+      }
     }
   }
 }

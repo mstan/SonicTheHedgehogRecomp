@@ -11,7 +11,7 @@ import struct
 import subprocess
 import sys
 import zlib
-from build import HEADER, FIELDS, SOURCE_COMMIT
+from build import shared_builder, SOURCE_COMMIT
 
 sys.dont_write_bytecode = True
 
@@ -28,6 +28,8 @@ def main():
     probe, game, engine, out = (getattr(a, k).resolve() for k in ("probe", "game", "engine", "output"))
     if any(out.is_relative_to(x) or x.is_relative_to(out) for x in (probe,game,engine)):
         p.error("generation output must be separate from the game, engine and probe inputs")
+    builder = shared_builder(engine)
+    HEADER, FIELDS = builder.LEGACY_HEADER, builder.LEGACY_FIELDS
     marker=out / ".sonic1-clone-generation"
     if out.exists() and not marker.is_file() and any(out.iterdir()):
         p.error("output must be new, empty or previously prepared by this tool")
@@ -70,7 +72,6 @@ def main():
     if count != 1:
         p.error("game discovery list missing")
     write(out / "game.toml",config)
-    write(out / "sonic.bin",image)
     write(out / "sonic1.clone_driver.toml",
         "[functions]\nextra = [\n" + "".join(f"    0x{pc:06X},\n" for pc in sorted(entries)) + "]\n")
     write(out / "clone-code.txt","".join(f"{pc:06X}\n" for pc in sorted(module.instruction_starts(probe / "driver.lst", image))))

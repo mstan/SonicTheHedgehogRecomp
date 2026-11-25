@@ -6,9 +6,10 @@ uses the engine's existing Z80, YM2612, PSG and audio scheduling. Turning it
 off retains the original driver and its existing correctness fixes.
 
 The game repository owns the adapter, launcher package and generation inputs.
-The shared engine supplies the generic Z80/audio execution and the FM latch
-correction described below. The launcher uses recomp-ui's existing mod
-interface. Sonic 2 and Sonic 3 are outside this prototype's scope.
+The shared engine supplies the software-only Clone Driver generator, generic
+Z80/audio execution and the FM latch correction described below. Sonic 1
+retains its pinned legacy driver source family and title-specific tables. The
+launcher uses recomp-ui's existing mod interface.
 
 Each adapter owns its instruction sites. Widescreen culling explicitly lists
 its object-range sites and leaves audio/debug operands unchanged, even when
@@ -79,7 +80,7 @@ normal game build available; supply native `SONIC_CLONE_DRIVER_ASSEMBLER` and
 `SONIC_CLONE_DRIVER_P2BIN` paths with `ON` to include the mod. Runtime execution
 has been qualified on Windows x64 only.
 
-The fetcher uses an explicit allowlist of fourteen driver/configuration/macro
+The shared generator uses this title's explicit allowlist of fourteen driver/configuration/macro
 files at a pinned commit. Each source file and bundled native build tool has
 an exact size and SHA-256 in `tools/clone_driver_probe/sources.lock.json`.
 It does not download music, samples, artwork, levels, or the complete game
@@ -88,8 +89,9 @@ empty asset tables, preventing accidental assembly of upstream game assets.
 
 The generated program contains only driver software, sample descriptors and
 a 60-byte metadata header. It is embedded in the executable.
-`prepare_native.py` checks its identity and creates an augmented private image
-under the build directory, keeping all 524,288 original ROM bytes intact.
+`prepare_native.py` checks its identity and prepares discovery and metadata.
+The recompiler opens the unmodified 524,288-byte ROM and maps the separately
+assembled software in memory; it does not write a composed ROM to disk.
 Sound code starts in the unused cartridge bank at `$080000`. Discovery reuses
 the engine's source-verified label and jump-table extractors. Generated C,
 ROMs and build products remain local and are not checked in. Developer-only
