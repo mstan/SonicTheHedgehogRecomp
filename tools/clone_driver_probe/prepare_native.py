@@ -24,6 +24,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ("probe", "game", "engine", "output"):
         p.add_argument("--" + name, type=Path, required=True)
+    p.add_argument("--rom", type=Path, help="Original unmodified retail ROM")
     a = p.parse_args()
     probe, game, engine, out = (getattr(a, k).resolve() for k in ("probe", "game", "engine", "output"))
     if any(out.is_relative_to(x) or x.is_relative_to(out) for x in (probe,game,engine)):
@@ -33,7 +34,7 @@ def main():
     marker=out / ".sonic1-clone-generation"
     if out.exists() and not marker.is_file() and any(out.iterdir()):
         p.error("output must be new, empty or previously prepared by this tool")
-    rom = (game / "sonic.bin").read_bytes()
+    rom = (a.rom if a.rom is not None else game / "sonic.bin").read_bytes()
     if len(rom) != 0x80000 or zlib.crc32(rom) != 0xF9394E97:
         p.error("native generation requires the original Sonic 1 JUE REV00 ROM")
     info = json.loads((probe / "probe.json").read_text())

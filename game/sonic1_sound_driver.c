@@ -19,7 +19,7 @@ static char settings_file[1200], error[256];
 
 int s1_sound_available(void)
 {
-#if defined(S1_CLONE_ASSETS_FROM_ROM) && !defined(GENESIS_Z80_RECOMP)
+#if defined(S1_CLONE_ASSETS_FROM_ROM)
     return 1;
 #else
     return 0;
@@ -40,7 +40,7 @@ const char *s1_sound_error(void) { return error; }
 int s1_sound_select(int enabled)
 {
     if(enabled && !s1_sound_available()) {
-        snprintf(error,sizeof error,"This build does not include Clone Driver with the standard Z80 backend.");return 0;
+        snprintf(error,sizeof error,"Clone Driver is unavailable in this build.");return 0;
     }
     selected=enabled!=0;verified=s1_sound_available();error[0]=0;return 1;
 }
