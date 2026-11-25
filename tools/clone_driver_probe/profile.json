@@ -1,0 +1,39 @@
+{
+  "load_address": 524288,
+  "ram_address": 4294963200,
+  "ram_capacity": 1024,
+  "magic": "S1CR",
+  "asset_tables": [
+    {
+      "file": "sound/Music.asm",
+      "label": "MusicIndex",
+      "prefix": "ptr_mus",
+      "first": 129,
+      "count": 19,
+      "end": "ptr_musend"
+    },
+    {
+      "file": "sound/SFX.asm",
+      "label": "SoundIndex",
+      "prefix": "ptr_snd",
+      "first": 160,
+      "count": 48,
+      "end": "ptr_sndend"
+    },
+    {
+      "file": "sound/Special SFX.asm",
+      "label": "SpecSoundIndex",
+      "prefix": "ptr_snd",
+      "first": 208,
+      "count": 1,
+      "end": "ptr_specend"
+    },
+    {
+      "file": "sound/PSG Volume Envelopes.asm",
+      "label": "PSG_Index",
+      "prefix": "ptr_s1psg",
+      "first": 1,
+      "count": 9
+    }
+  ]
+}

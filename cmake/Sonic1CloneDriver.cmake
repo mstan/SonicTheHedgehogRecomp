@@ -28,7 +28,7 @@ if(NOT SONIC_CLONE_DRIVER_PROBE_DIR AND NOT SONIC_CLONE_DRIVER_SUPPORT STREQUAL 
         endif()
         execute_process(COMMAND "${Python3_EXECUTABLE}" -B
             "${CMAKE_SOURCE_DIR}/tools/clone_driver_probe/fetch_build.py"
-            --cache "${CMAKE_BINARY_DIR}/clone-driver"
+            --engine "${RECOMP_ROOT}" --cache "${CMAKE_BINARY_DIR}/clone-driver"
             --cmake-out "${CMAKE_BINARY_DIR}/clone-driver/probe-path.cmake"
             ${_s1_clone_tools} RESULT_VARIABLE _s1_clone_status)
         if(NOT _s1_clone_status EQUAL 0)
@@ -44,6 +44,8 @@ if(NOT SONIC_CLONE_DRIVER_PROBE_DIR AND NOT SONIC_CLONE_DRIVER_SUPPORT STREQUAL 
             "${CMAKE_SOURCE_DIR}/tools/clone_driver_probe/fetch_build.py"
             "${CMAKE_SOURCE_DIR}/tools/clone_driver_probe/build.py"
             "${CMAKE_SOURCE_DIR}/tools/clone_driver_probe/driver_rom.asm"
+            "${CMAKE_SOURCE_DIR}/tools/clone_driver_probe/profile.json"
+            "${RECOMP_ROOT}/tools/clone_driver/build.py"
             "${CMAKE_SOURCE_DIR}/tools/clone_driver_probe/sources.lock.json")
     elseif(SONIC_CLONE_DRIVER_SUPPORT STREQUAL "ON")
         message(FATAL_ERROR "Supply native SONIC_CLONE_DRIVER_ASSEMBLER and SONIC_CLONE_DRIVER_P2BIN on this build host")
@@ -52,6 +54,7 @@ if(NOT SONIC_CLONE_DRIVER_PROBE_DIR AND NOT SONIC_CLONE_DRIVER_SUPPORT STREQUAL 
     endif()
 endif()
 set(SONIC_GENERATION_GAME "${CMAKE_SOURCE_DIR}/game")
+set(SONIC_GENERATION_OVERLAY_ARGS "")
 if(SONIC_CLONE_DRIVER_PROBE_DIR AND NOT SONIC_CLONE_DRIVER_SUPPORT STREQUAL "OFF")
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     set(SONIC_GENERATION_GAME "${CMAKE_BINARY_DIR}/clone-input")
@@ -67,6 +70,10 @@ if(SONIC_CLONE_DRIVER_PROBE_DIR AND NOT SONIC_CLONE_DRIVER_SUPPORT STREQUAL "OFF
         --probe "${SONIC_CLONE_DRIVER_PROBE_DIR}" --game "${CMAKE_SOURCE_DIR}/game"
         --engine "${RECOMP_ROOT}" --output "${SONIC_GENERATION_GAME}"
         COMMAND_ERROR_IS_FATAL ANY)
+    set(SONIC_GENERATION_OVERLAY_ARGS
+        ROM_PATH "${CMAKE_SOURCE_DIR}/game/sonic.bin"
+        SOFTWARE_OVERLAY_ADDRESS "0x80000"
+        SOFTWARE_OVERLAY_FILE "${SONIC_CLONE_DRIVER_PROBE_DIR}/clone-driver.bin")
     include_directories("${SONIC_GENERATION_GAME}")
     add_compile_definitions(SONIC1_CLONE_DRIVER=1)
 endif()

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(SonicTheHedgehogRecomp VERSION 1.2.1 LANGUAGES C)
+project(SonicTheHedgehogRecomp VERSION 1.2.2 LANGUAGES C)
 set(GENESIS_GAME_VERSION "${PROJECT_VERSION}")
 
 set(CMAKE_C_STANDARD 11)
@@ -164,7 +164,7 @@ endif()
 include("${RECOMP_ROOT}/cmake/GenesisRecompGenerated.cmake")
 genesisrecomp_add_generated_sources(
     SONIC_GENERATED_SOURCES sonic "${SONIC_GENERATION_GAME}" sonic.bin
-    REVERSE_DEBUG "${SONIC_REVERSE_DEBUG}")
+    REVERSE_DEBUG "${SONIC_REVERSE_DEBUG}" ${SONIC_GENERATION_OVERLAY_ARGS})
 
 set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/main.c"
