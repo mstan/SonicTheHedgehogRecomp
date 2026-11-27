@@ -31,6 +31,11 @@ else()
     message(STATUS "engine: committed segagenesisrecomp submodule")
 endif()
 set(RUNNER_ROOT "${RECOMP_ROOT}/runner")
+# Resolve provider inputs before computing the current-build state identity.
+if(NOT RECOMP_SHARED_CORE_ROOT)
+    set(RECOMP_SHARED_CORE_ROOT "${RECOMP_ROOT}/external/shared-cores" CACHE PATH
+        "Optional shared core checkout root" FORCE)
+endif()
 
 option(SONIC_REVERSE_DEBUG
     "Enable Tier-1 reverse-debugger hooks (sgrdb_write*, ring buffer, rdb_* TCP cmds). \
