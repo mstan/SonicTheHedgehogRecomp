@@ -1,3 +1,4 @@
+#include "mod_transaction.h"
 #include "sonic1_debug.h"
 #include "genesis_runtime.h"
 #include "host_atomic_file.h"
@@ -68,12 +69,19 @@ int s1_debug_commit(void)
     return *access_file && genesis_atomic_file_store(access_file,text,(size_t)n);
 }
 
+static int access_write(unsigned count,const uint16_t *offsets) {
+    uint8_t expected[2],replacement[2]={1,1};rmod_patch patches[2];
+    for(unsigned i=0;i<count;++i){expected[i]=g_ram[offsets[i]];patches[i]=(rmod_patch){"ram",offsets[i],&expected[i],&replacement[i],1};}
+    return genesis_mod_apply("sonic1.easy-access.rev00",patches,count);
+}
+
 int s1_debug_hook(uint32_t pc)
 {
     /* REV00 Tit_ChkLevSel is reached after Start is accepted. Reuse the
      * original menu and sound test without changing controller input. */
     if(pc==0x3242u && (access_active&S1_ACCESS_LEVEL_SELECT)) {
-        m68k_write8(0xFFFFE0u,1);
+        const uint16_t offsets[]={0xFFE0};
+        if(!access_write(1,offsets))return 0;
         recomp_tail_call(0x3254u);
         return 1;
     }
@@ -82,8 +90,8 @@ int s1_debug_hook(uint32_t pc)
      * credits demos keep their original behavior. No registers are changed. */
     if((pc==0x3982u || pc==0x4704u) && (access_active&S1_ACCESS_DEBUG) &&
        !(g_ram[0xFFF0] | g_ram[0xFFF1])) {
-        m68k_write8(0xFFFFE2u,1);
-        m68k_write8(0xFFFFFAu,1);
+        const uint16_t offsets[]={0xFFE2,0xFFFA};
+        if(!access_write(2,offsets))return 0;
     }
     if(!active || !(g_ram[0xFE08] | g_ram[0xFE09]))return 0;
     /* REV00 Tele_Action captures the debug cursor as if it were Sonic.

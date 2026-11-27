@@ -31,6 +31,11 @@ else()
     message(STATUS "engine: committed segagenesisrecomp submodule")
 endif()
 set(RUNNER_ROOT "${RECOMP_ROOT}/runner")
+# Resolve provider inputs before computing the current-build state identity.
+if(NOT RECOMP_SHARED_CORE_ROOT)
+    set(RECOMP_SHARED_CORE_ROOT "${RECOMP_ROOT}/external/shared-cores" CACHE PATH
+        "Optional shared core checkout root" FORCE)
+endif()
 
 option(SONIC_REVERSE_DEBUG
     "Enable Tier-1 reverse-debugger hooks (sgrdb_write*, ring buffer, rdb_* TCP cmds). \
@@ -107,8 +112,20 @@ file(GLOB_RECURSE _s1_state_inputs CONFIGURE_DEPENDS
     "${RECOMP_ROOT}/external/z80-recomp-core/*.c" "${RECOMP_ROOT}/external/z80-recomp-core/*.h"
     "${RECOMP_ROOT}/recompiler/src/*.c" "${RECOMP_ROOT}/recompiler/src/*.h")
 list(FILTER _s1_state_inputs EXCLUDE REGEX "/(generated|s1disasm|external/SDL2)/")
+if(GENESIS_Z80_RECOMP)
+    list(APPEND _s1_state_inputs "${CMAKE_CURRENT_SOURCE_DIR}/tools/prepare_native_z80.py" "${SONIC_Z80_RECOMPILER}")
+endif()
+foreach(_shared_component recomp-mod-core recomp-persistence-core recomp-audio-core recomp-input-core recomp-diagnostics-core recomp-presentation-core sega-psg-core)
+    file(GLOB_RECURSE _shared_state_inputs CONFIGURE_DEPENDS
+        "${RECOMP_SHARED_CORE_ROOT}/${_shared_component}/src/*.c"
+        "${RECOMP_SHARED_CORE_ROOT}/${_shared_component}/src/*.cpp"
+        "${RECOMP_SHARED_CORE_ROOT}/${_shared_component}/src/*.h"
+        "${RECOMP_SHARED_CORE_ROOT}/${_shared_component}/include/*.h"
+        "${RECOMP_SHARED_CORE_ROOT}/${_shared_component}/CMakeLists.txt")
+    list(APPEND _s1_state_inputs ${_shared_state_inputs})
+endforeach()
 list(SORT _s1_state_inputs)
-set(_s1_state_fingerprint "Sonic1-state-v1;${CMAKE_C_COMPILER_ID};${CMAKE_C_COMPILER_VERSION};${CMAKE_CXX_COMPILER_ID};${CMAKE_CXX_COMPILER_VERSION};${CMAKE_SIZEOF_VOID_P};${CMAKE_SYSTEM_PROCESSOR};${GEN_ENABLE_TRACE};${GEN_DEV_TRACE};${SONIC_REVERSE_DEBUG};${CMAKE_C_FLAGS};${CMAKE_C_FLAGS_RELEASE};${CMAKE_CXX_FLAGS};${CMAKE_CXX_FLAGS_RELEASE}")
+set(_s1_state_fingerprint "Sonic1-state-v1;native-z80=${GENESIS_Z80_RECOMP};${CMAKE_C_COMPILER_ID};${CMAKE_C_COMPILER_VERSION};${CMAKE_CXX_COMPILER_ID};${CMAKE_CXX_COMPILER_VERSION};${CMAKE_SIZEOF_VOID_P};${CMAKE_SYSTEM_PROCESSOR};${GEN_ENABLE_TRACE};${GEN_DEV_TRACE};${SONIC_REVERSE_DEBUG};${CMAKE_C_FLAGS};${CMAKE_C_FLAGS_RELEASE};${CMAKE_CXX_FLAGS};${CMAKE_CXX_FLAGS_RELEASE}")
 foreach(_source IN LISTS _s1_state_inputs)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_source}")
     file(SHA256 "${_source}" _s1_state_hash)
@@ -162,9 +179,40 @@ if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND
         "VDP scanline renderer (SCALAR reference or BATCHED HLE)")
 endif()
 include("${RECOMP_ROOT}/cmake/GenesisRecompGenerated.cmake")
+set(SONIC_ROM_PATH "" CACHE FILEPATH "Original verified Sonic 1 ROM for generation")
 genesisrecomp_add_generated_sources(
     SONIC_GENERATED_SOURCES sonic "${SONIC_GENERATION_GAME}" sonic.bin
+    ROM_PATH "${SONIC_ROM_PATH}"
     REVERSE_DEBUG "${SONIC_REVERSE_DEBUG}" ${SONIC_GENERATION_OVERLAY_ARGS})
+
+# Native sound generation remains bound to the original ROM and producer.
+if(GENESIS_Z80_RECOMP)
+  set(SONIC_Z80_RECOMPILER "" CACHE FILEPATH "Host SmsRecomp for original sound generation")
+  if(NOT EXISTS "${SONIC_Z80_RECOMPILER}")
+    message(FATAL_ERROR "Native Sonic 1 sound needs SONIC_Z80_RECOMPILER")
+  endif()
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  set(_sonic_z80_dir "${CMAKE_CURRENT_BINARY_DIR}/native-z80")
+  set(GENESIS_Z80_AOT_SOURCE "${_sonic_z80_dir}/generated/s1z80_step.c" CACHE FILEPATH "Generated native sound program" FORCE)
+  set(GENESIS_Z80_AOT_ENTRY s1z80_step CACHE STRING "Generated native sound entry" FORCE)
+  set(_sonic_z80_clone_args)
+  set(_sonic_z80_clone_deps)
+  if(SONIC_CLONE_DRIVER_PROBE_DIR AND NOT SONIC_CLONE_DRIVER_SUPPORT STREQUAL "OFF")
+    set(_sonic_z80_clone_args --clone "${SONIC_CLONE_DRIVER_PROBE_DIR}")
+    set(_sonic_z80_clone_deps "${SONIC_CLONE_DRIVER_PROBE_DIR}/probe.json" "${SONIC_CLONE_DRIVER_PROBE_DIR}/clone-driver.bin")
+  endif()
+  add_custom_command(OUTPUT "${GENESIS_Z80_AOT_SOURCE}" "${_sonic_z80_dir}/generated/s1z80_step.h"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/prepare_native_z80.py"
+      --rom "${SONIC_ROM_PATH}" --output "${_sonic_z80_dir}" ${_sonic_z80_clone_args}
+    COMMAND "${SONIC_Z80_RECOMPILER}" --game "${_sonic_z80_dir}/game.toml" --flat-step
+      --flat-step-variant "${_sonic_z80_dir}/reset.bin"
+      --flat-step-variant "${_sonic_z80_dir}/bootstrap.bin"
+      --flat-step-variant "${_sonic_z80_dir}/megapcm.bin"
+      --flat-step-variant "${_sonic_z80_dir}/megapcm-running.bin"
+    DEPENDS ${_sonic_z80_clone_deps} "${SONIC_ROM_PATH}" "${SONIC_Z80_RECOMPILER}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/prepare_native_z80.py"
+    VERBATIM)
+  set_source_files_properties("${GENESIS_Z80_AOT_SOURCE}" PROPERTIES GENERATED TRUE)
+endif()
 
 set(SONIC_SHARED_SOURCES
     "${RUNNER_ROOT}/main.c"
