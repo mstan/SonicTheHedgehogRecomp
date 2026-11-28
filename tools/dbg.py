@@ -22,9 +22,12 @@ Usage:
 """
 
 import json
-import socket
+import os
+from pathlib import Path
 import sys
-import time
+
+sys.path.insert(0, str(Path(os.environ.get("GENESIS_RECOMP_ROOT", Path(__file__).resolve().parents[1] / "segagenesisrecomp")) / "tools"))
+from genesis_tcp import request_raw
 
 PORT = 4378
 HOST = "127.0.0.1"
@@ -36,33 +39,11 @@ def send_cmd(cmd_dict):
     _cmd_id += 1
     cmd_dict["id"] = _cmd_id
 
-    s = socket.socket()
-    s.settimeout(5)
     try:
-        s.connect((HOST, PORT))
+        return request_raw(PORT, cmd_dict, host=HOST, timeout=5)
     except ConnectionRefusedError:
         return '{"error": "connection refused -- is SonicTheHedgehogRecomp.exe running?"}'
 
-    msg = json.dumps(cmd_dict) + "\n"
-    s.sendall(msg.encode())
-
-    # Wait a bit for response, then read
-    time.sleep(0.1)
-    chunks = []
-    while True:
-        try:
-            chunk = s.recv(65536)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            if b'\n' in chunk:
-                break
-        except socket.timeout:
-            break
-
-    s.close()
-    data = b''.join(chunks).decode().strip()
-    return data
 
 
 def main():

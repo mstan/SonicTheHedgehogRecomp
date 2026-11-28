@@ -54,12 +54,7 @@ option(GEN_DEV_TRACE
 option(GEN_ENABLE_TRACE
     "Build the TCP cmd server + observability rings (frame_snapshots). OFF for release." ON)
 if(GEN_ENABLE_TRACE)
-    set(GEN_TRACE_SOURCES
-        "${RUNNER_ROOT}/cmd_server.c"
-        "${RUNNER_ROOT}/frame_snapshots.c")
     add_compile_definitions(GEN_ENABLE_TRACE=1)
-else()
-    set(GEN_TRACE_SOURCES "${RUNNER_ROOT}/cmd_server_stub.c")
 endif()
 
 # SDL2 discovery. Windows uses the bundled VC devel package; macOS/Linux
@@ -139,34 +134,6 @@ string(SHA256 _s1_state_id "${_s1_state_fingerprint}")
 set_property(SOURCE game/sonic1_spec.c APPEND PROPERTY COMPILE_DEFINITIONS
     "SONIC1_STATE_BUILD_ID=\"${_s1_state_id}\"")
 
-set(FM_SOURCES
-    "${RUNNER_ROOT}/audio/ym2612_ymfm.cpp"
-    "${RUNNER_ROOT}/external/ymfm/src/ymfm_opn.cpp"
-    "${RUNNER_ROOT}/external/ymfm/src/ymfm_ssg.cpp"
-    "${RUNNER_ROOT}/external/ymfm/src/ymfm_adpcm.cpp"
-    "${RUNNER_ROOT}/external/ymfm/src/ymfm_pcm.cpp"
-)
-
-# Backend split (teardown #4/#5/#10, validated on Sonic 1):
-#   - Native target  = the clean-room own backend (VDP+bus+Z80 scheduler). It is
-#     THE Sonic 1 runtime â€” not a toggle â€” and links ZERO clownmdemu (AGPL-free).
-# It is the only backend: the OWN_BACKEND conditionals were removed from the
-# runner once every game migrated, so there is nothing left to select.
-set(OWN_BACKEND_SOURCES
-    "${RUNNER_ROOT}/video/genesis_vdp.c"
-    "${RUNNER_ROOT}/video/genesis_bus.c"
-    "${RUNNER_ROOT}/video/genesis_machine.c"
-    "${RUNNER_ROOT}/external/superzazu/z80.c")   # MIT Z80 core, embedded by genesis_machine
-
-# Tier-3 floor + differential co-sim: the clean-room 68000 interpreter and the
-# recompiler's decoder. Engine master's glue.c references m68k_interp_run_framed
-# unconditionally, so every target links these (game master predates the floor).
-set(NATIVE_FLOOR_SOURCES
-    "${RUNNER_ROOT}/m68k_interp.c"
-    "${RECOMP_ROOT}/recompiler/src/m68k_decoder.c"
-    "${RECOMP_ROOT}/recompiler/src/rom_parser.c")
-
-# ---------------------------------------------------------------------------
 # Shared sources / includes / link libs
 # ---------------------------------------------------------------------------
 
@@ -214,29 +181,10 @@ if(GENESIS_Z80_RECOMP)
   set_source_files_properties("${GENESIS_Z80_AOT_SOURCE}" PROPERTIES GENERATED TRUE)
 endif()
 
+genesisrecomp_runner_sources(RUNNER_SOURCES
+    TRACE "${GEN_ENABLE_TRACE}" REVERSE_DEBUG "${SONIC_REVERSE_DEBUG}")
 set(SONIC_SHARED_SOURCES
-    "${RUNNER_ROOT}/main.c"
-    "${RUNNER_ROOT}/audio.c"
-    "${RUNNER_ROOT}/chip_trace.c"   # self-stubs unless GEN_DEV_TRACE=ON (no-op in release)
-    ${GEN_TRACE_SOURCES}            # cmd_server.c + frame_snapshots.c, or cmd_server_stub.c (GEN_ENABLE_TRACE=OFF)
-    "${RUNNER_ROOT}/glue.c"
-    "${RUNNER_ROOT}/fiber_compat.c"   # cross-platform fiber shim (Win32 Fibers / POSIX ucontext) â€” glue.c depends on it
-    "${RUNNER_ROOT}/crash_report.c"
-    "${RUNNER_ROOT}/input_script.c"
-    "${RUNNER_ROOT}/gamepad.c"
-    "${RUNNER_ROOT}/input_map.c"      # per-player Genesis button bindings (kbd+pad, 3/6-btn)
-    "${RUNNER_ROOT}/app_config.c"     # settings.ini + rom.cfg load/save
-    "${RUNNER_ROOT}/audio/event_queue.c"
-    ${FM_SOURCES}
-    "${RUNNER_ROOT}/audio/sn76489.c"
-    "${RUNNER_ROOT}/audio/mixer.c"
-    "${RUNNER_ROOT}/audio/observability.c"
-    "${RUNNER_ROOT}/cosim_state.c"  # pointer-free end-state hash for benchmarks + co-sim
-    # Verified-enhancement shadow layer (opt-in via env, default OFF; links no
-    # clownmdemu, safe to ship). See segagenesisrecomp/docs/SHADOW_ENHANCEMENTS.md.
-    "${RUNNER_ROOT}/audio/audio_shadow.c"   # envelope-correlation verifier
-    "${RUNNER_ROOT}/audio/fm_shadow.cpp"    # parallel ymfm chip (cleaner highs / ym3438 ladder-off)
-    "${RUNNER_ROOT}/video/color_lut.c"      # present-time 9-bit CRT/composite LUT
+    ${RUNNER_SOURCES}
     ${SONIC_GENERATED_SOURCES}
     "${CMAKE_SOURCE_DIR}/game/sonic1_spec.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_audio.c"
@@ -246,14 +194,12 @@ set(SONIC_SHARED_SOURCES
     "${CMAKE_SOURCE_DIR}/game/sonic1_sound_mods.c"
     "${CMAKE_SOURCE_DIR}/game/sonic1_video.c"
     "${RECOMP_ROOT}/sonicthehedgehog/sonic_extras.c"
-    ${NATIVE_FLOOR_SOURCES}         # m68k_interp + decoder (engine-master glue.c needs it)
 )
 
 if(SONIC_CLONE_DRIVER_PROBE_DIR)
     list(APPEND SONIC_SHARED_SOURCES "${CMAKE_SOURCE_DIR}/recomp-ui/src/common/sha256.c")
 endif()
 if(SONIC_REVERSE_DEBUG)
-    list(APPEND SONIC_SHARED_SOURCES "${RUNNER_ROOT}/reverse_debug.c")
     message(STATUS "SONIC_REVERSE_DEBUG=ON â€” regen with GenesisRecomp --reverse-debug")
 endif()
 
@@ -281,6 +227,7 @@ if(WIN32)
 endif()
 
 function(_sonic_finalize_target tgt includes)
+    genesisrecomp_runner_target(${tgt})
     target_include_directories(${tgt} PRIVATE ${${includes}})
     target_link_libraries(${tgt} PRIVATE ${SONIC_SHARED_LIBS})
     if(SONIC_CLONE_DRIVER_PROBE_DIR)
@@ -315,7 +262,6 @@ endfunction()
 
 add_executable(SonicTheHedgehogRecomp
     ${SONIC_SHARED_SOURCES}
-    ${OWN_BACKEND_SOURCES}          # clean-room VDP+bus+Z80 scheduler (native = own backend)
 )
 add_dependencies(SonicTheHedgehogRecomp ${SONIC_GENERATED_SOURCES_TARGET})
 target_compile_definitions(SonicTheHedgehogRecomp PRIVATE
@@ -393,7 +339,6 @@ option(GENESIS_BUILD_COSIM "Build the differential co-simulation target (dev-onl
 if(GENESIS_BUILD_COSIM)
     add_executable(SonicTheHedgehogRecomp_cosim
         ${SONIC_SHARED_SOURCES}
-        ${OWN_BACKEND_SOURCES}
         "${RUNNER_ROOT}/cosim.c"
         "${RUNNER_ROOT}/cosim_visible.c"                      # visible-surface hashes + memchunks localizer
         "${RUNNER_ROOT}/cosim_cycles.c"                       # cross-backend work-cycle ruler

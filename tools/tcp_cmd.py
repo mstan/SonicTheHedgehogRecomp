@@ -1,18 +1,10 @@
 #!/usr/bin/env python3
-"""Send a single TCP command and print response. Usage: tcp_cmd.py <json>"""
-import socket, json, sys
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.settimeout(3)
-s.connect(('127.0.0.1', 4378))
-cmd = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {'id':1,'cmd':'ping'}
-s.sendall((json.dumps(cmd) + '\n').encode())
-data = b''
-while True:
-    try:
-        chunk = s.recv(8192)
-        if not chunk: break
-        data += chunk
-        if b'\n' in data: break
-    except: break
-s.close()
-print(data.decode().strip())
+"""Send one Sonic 1 JSON diagnostic command (default port 4378)."""
+import json
+import os
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(os.environ.get("GENESIS_RECOMP_ROOT", Path(__file__).resolve().parents[1] / "segagenesisrecomp")) / "tools"))
+from genesis_tcp import request_raw
+command = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {"id": 1, "cmd": "ping"}
+print(request_raw(4378, command, timeout=3))

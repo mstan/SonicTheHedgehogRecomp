@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# build-linux.sh — DEFINITIVE Linux build/package script for a recomp game.
+# build-linux.sh â€” DEFINITIVE Linux build/package script for a recomp game.
 #
 # This is the Linux counterpart to tools/make_release.ps1 (Windows). It mirrors
 # the same prod-vs-debug discipline:
 #
-#   prod  (default) — strips ALL developer tooling: no TCP debug server, no
+#   prod  (default) â€” strips ALL developer tooling: no TCP debug server, no
 #                     observability rings, no oracle backend. The shipped build.
-#   debug           — compiles the TCP debug server + rings back in.
+#   debug           â€” compiles the TCP debug server + rings back in.
 #
 # It configures + builds with cmake/make, then wraps the ELF into a
 # self-contained x86_64 AppImage whose AppRun:
 #   * auto-finds a ROM (by extension) sitting next to the .AppImage and passes
-#     it as argv[1] — so the user just drops their ROM beside the AppImage,
+#     it as argv[1] â€” so the user just drops their ROM beside the AppImage,
 #   * exports the SDL hints that make controllers work out-of-the-box on a
 #     Steam Deck (reads the pad natively instead of Steam's keyboard remap).
 #
@@ -132,9 +132,10 @@ echo "      ELF: $BIN ($(du -h "$BIN" | cut -f1))"
 if [ "$DO_PACKAGE" = "0" ]; then echo "      (--no-package) done."; exit 0; fi
 
 echo "[3/3] package AppImage"
-TOOLS="$HOME/recomp-tools"
-LINUXDEPLOY="$TOOLS/linuxdeploy --appimage-extract-and-run"
-APPIMAGETOOL="$TOOLS/appimagetool --appimage-extract-and-run"
+ENGINE="${GENESIS_RECOMP_ROOT:-$REPO/segagenesisrecomp}"
+source "$ENGINE/tools/release/appimage.sh"
+genesis_appimage_tools "$BUILD"
+LINUXDEPLOY="$LINUXDEPLOY_BIN --appimage-extract-and-run"
 mkdir -p "$OUT"
 EXE="$(basename "$BIN")"
 SLUG="$(echo "$APP_NAME" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-')"
@@ -201,7 +202,7 @@ EOF
 chmod +x "$APPDIR/AppRun"
 
 APP="$OUT/$APP_NAME-x86_64.AppImage"
-ARCH=x86_64 $APPIMAGETOOL "$APPDIR" "$APP"
+genesis_package_appimage "$APPDIR" "$APP"
 chmod +x "$APP"
 echo "      BUILT: $APP ($(du -h "$APP" | cut -f1))"
 
