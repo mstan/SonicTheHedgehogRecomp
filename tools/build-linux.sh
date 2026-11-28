@@ -135,7 +135,7 @@ echo "[3/3] package AppImage"
 ENGINE="${GENESIS_RECOMP_ROOT:-$REPO/segagenesisrecomp}"
 source "$ENGINE/tools/release/appimage.sh"
 genesis_appimage_tools "$BUILD"
-LINUXDEPLOY="$LINUXDEPLOY_BIN --appimage-extract-and-run"
+LINUXDEPLOY=( "$LINUXDEPLOY_BIN" --appimage-extract-and-run )
 mkdir -p "$OUT"
 EXE="$(basename "$BIN")"
 SLUG="$(echo "$APP_NAME" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-')"
@@ -168,7 +168,7 @@ Categories=Game;
 Terminal=false
 EOF
 
-$LINUXDEPLOY --appdir "$APPDIR" --executable "$BIN" \
+"${LINUXDEPLOY[@]}" --appdir "$APPDIR" --executable "$BIN" \
     --desktop-file "$WORK/$SLUG.desktop" --icon-file "$WORK/$SLUG.png"
 mkdir -p "$APPDIR/usr/bin/docs" "$APPDIR/usr/bin/tools"
 cp "$(dirname "$BIN")/docs/PLAYER_FEEDBACK.md" "$APPDIR/usr/bin/docs/"
